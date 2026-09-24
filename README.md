@@ -1,4 +1,4 @@
-# pi-jev-todo-list
+# pi-jev-todo-audit
 
 A [Pi](https://pi.dev) extension that watches [`@juicesharp/rpiv-todo`](https://www.npmjs.com/package/@juicesharp/rpiv-todo) drift. Every 10 completed agent loops it asks the **jev** model (TypeSafe's Choice primitive) one batched question set — *is the board's in_progress task what the agent is actually doing? what happened to it? which board task matches? has the agent drifted?* — and injects a corrective nudge into the running loop when the answer is no.
 
@@ -7,7 +7,7 @@ Read-only toward rpiv-todo: state is reconstructed from the session branch's per
 ## Install
 
 ```sh
-pi install git:github.com/xz-dev/pi-jev-todo-list
+pi install git:github.com/xz-dev/pi-jev-todo-audit
 ```
 
 Restart your Pi session. Requires a TypeSafe API key for the `jev` model.

@@ -1,5 +1,5 @@
 {
-	"name": "pi-jev-todo-list",
+	"name": "pi-jev-todo-audit",
 	"version": "0.1.0",
 	"description": "Periodic todo-board audit for Pi: every N loops, asks the jev model (TypeSafe Choice) whether the agent's work matches the rpiv-todo board, and injects a corrective nudge when it does not.",
 	"type": "module",
