@@ -40,6 +40,8 @@ export interface AuditConfig {
 	timeoutMs: number;
 	/** Max chars of recent activity fed to jev as state. */
 	activityBudgetChars: number;
+	/** Audits an in_progress task may span before being flagged stale. */
+	staleAuditSpans: number;
 }
 
 export const DEFAULT_CONFIG: AuditConfig = {
@@ -53,6 +55,7 @@ export const DEFAULT_CONFIG: AuditConfig = {
 	apiUrl: "https://api.typesafe.ai/v1/systemone",
 	timeoutMs: 30_000,
 	activityBudgetChars: 4_000,
+	staleAuditSpans: 3,
 };
 
 /** Keys a project-level file may set. apiKey/apiKeyEnvVar stay global-only. */
@@ -66,6 +69,7 @@ const PROJECT_ALLOWED_KEYS: ReadonlySet<keyof AuditConfig> = new Set([
 	"apiUrl",
 	"timeoutMs",
 	"activityBudgetChars",
+	"staleAuditSpans",
 ]);
 
 /** Global config path — ~/.pi/agent/jev-todo-audit.json (or PI_CODING_AGENT_DIR). */
@@ -127,6 +131,7 @@ function applyLayer(cfg: AuditConfig, o: Record<string, unknown>): AuditConfig {
 		apiUrl: str(o.apiUrl) ?? cfg.apiUrl,
 		timeoutMs: num(o.timeoutMs, cfg.timeoutMs, 1_000),
 		activityBudgetChars: num(o.activityBudgetChars, cfg.activityBudgetChars, 500),
+		staleAuditSpans: num(o.staleAuditSpans, cfg.staleAuditSpans, 1),
 	};
 }
 

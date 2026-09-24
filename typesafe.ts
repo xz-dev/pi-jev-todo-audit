@@ -19,6 +19,7 @@ export interface AuditAnswers {
 	current_match?: ChoiceAnswer;
 	drift?: ChoiceAnswer;
 	board_warranted?: ChoiceAnswer;
+	granularity?: ChoiceAnswer;
 }
 
 export type AuditResult =
@@ -82,6 +83,16 @@ export function buildAuditRequest(board: BoardSnapshot, activity: string, model:
 				on_track: "Work follows the board's plan",
 				drifted: "Work has wandered off the board's plan",
 				blocked: "Work is blocked, not drifted",
+			},
+		},
+		granularity: {
+			type: "choice",
+			instructions: "Can the in_progress task(s) on the board each be verified by a single observable result (a test passing, a file existing, a command succeeding)?",
+			criteria: {
+				single_verifiable_outcome: "Each in_progress task maps to one checkable deliverable",
+				bundles_multiple_outcomes: "At least one in_progress task bundles several deliverables and should be split",
+				ambiguous_done_criteria: "At least one in_progress task has no clear completion signal",
+				not_applicable: "No in_progress task exists, or the board cannot be evaluated",
 			},
 		},
 	};

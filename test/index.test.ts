@@ -121,4 +121,41 @@ describe("index wiring", () => {
 		expect(auditCalls.length).toBeGreaterThan(0);
 		expect(sent.some((s) => s.message.customType === "jev-todo-audit")).toBe(true);
 	});
+
+	test("long-lived in_progress task triggers split nudge in injected message", async () => {
+		// task #5 enters in_progress at loop 0; 40 assistant msgs → age 40 > 30
+		// (staleAuditSpans 3 × interval 10). alignment aligned → still injects
+		// because the task is stale.
+		const saved = { ...auditAnswers };
+		auditAnswers.alignment = { choice: "aligned", confidence: 0.95 };
+		auditAnswers.stale_status = undefined as unknown as typeof auditAnswers.stale_status;
+		auditAnswers.current_match = undefined as unknown as typeof auditAnswers.current_match;
+		auditCalls.length = 0;
+		try {
+			const { pi, handlers, sent } = makePi();
+			makeExtension(pi, { ...cfgMod.DEFAULT_CONFIG, apiKeyEnvVar: "JEV_AUDIT_TEST_KEY" });
+			const branch: unknown[] = [
+				{ type: "message", message: { role: "user", content: "work on task 5" } },
+				todoResult([{ id: 5, subject: "Big coarse task", status: "in_progress" }]),
+			];
+			const ctx = makeCtx(branch);
+			await emit(handlers, "session_start", {}, ctx);
+
+			for (let i = 0; i < 40; i++) {
+				branch.push({ type: "message", message: { role: "assistant", content: `working ${i}` } });
+				await emit(handlers, "turn_end", { turnIndex: i }, ctx);
+			}
+
+			// Audits fired at loops 10, 20, 30, 40; only the loop-40 audit has
+			// task age > 30 → stale → split inject.
+			expect(auditCalls.length).toBe(4);
+			expect(sent.length).toBe(1);
+			expect(sent[0].message.customType).toBe("jev-todo-audit");
+			expect(sent[0].message.content).toContain("split");
+			expect(sent[0].message.content).toContain("#5");
+		} finally {
+			for (const k of Object.keys(auditAnswers) as (keyof typeof auditAnswers)[]) delete auditAnswers[k];
+			Object.assign(auditAnswers, saved);
+		}
+	});
 });

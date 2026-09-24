@@ -23,19 +23,23 @@ turn_end → loop count++ (replayed from branch, survives restart/compaction)
                    replay board + digest recent activity
                                 │
                    POST api.typesafe.ai/v1/systemone (model: jev)
-                   4 Choice questions in one request
+                   5-6 Choice questions in one request
                                 │
               ┌─────────────────┼──────────────────────┐
               v                 v                      v
           aligned         not_aligned             any used answer
            silent         confidence ok           confidence < 0.5
-                            │                        │
-                            v                        v
-              inject corrective message        notify user, no injection
+          (unless                                  │
+          stale/coarse)                            v
+                            │                notify user, no injection
+                            v
+              inject corrective message
               (steer → next turn boundary)
 ```
 
-The injected message names the stale task id, the matching board task (or instructs the agent to create one), and — when jev reports drift — orders the agent to stop and resume board order.
+The injected message names the stale task id, the matching board task (or instructs the agent to create one), and — when jev reports drift — orders the agent to stop and resume board order. When the board has no `in_progress` task (empty, all pending, or all done), a sixth question `board_warranted` asks whether the work even merits a board — trivial/idle work stays silent instead of nagging the agent to create tasks.
+
+**Granularity & staleness**: every audit also asks jev whether each in_progress task has a single verifiable outcome (`granularity`: single verifiable / bundles outcomes / ambiguous done-criteria / n/a). Separately, the extension stamps when each task entered in_progress by diffing todo snapshots on the branch; a task spanning more than `staleAuditSpans` audits (default 3) is flagged stale. Either signal — stale, or jev saying the task bundles outcomes — adds a step to the injected message telling the agent to split it. Even a perfectly aligned board gets the split nudge: coarse tasks are the audit's own blind spot.
 
 A `/jev-audit` command fires the same audit on demand, ignoring the interval and the user-message cooldown — useful when you suspect drift and don't want to wait for the next 10-loop boundary.
 
@@ -51,7 +55,7 @@ Minimal setup — `~/.pi/agent/jev-todo-audit.json` with just the key:
 
 Or export `TYPESAFE_API_KEY` (env wins over the file). Every other field is optional; a missing or malformed file falls back to defaults.
 
-**Project override**: `<repo>/.pi/jev-todo-audit.json` merges over the global file when the project is trusted (`ctx.isProjectTrusted()`). Project files can set tuning fields (`interval`, `cooldownLoops`, `confidenceThreshold`, `enabled`, `notifyOnAligned`, `activityBudgetChars`, `timeoutMs`, `apiUrl`, `model`) but **cannot** set `apiKey` / `apiKeyEnvVar` — secrets stay out of repos.
+**Project override**: `<repo>/.pi/jev-todo-audit.json` merges over the global file when the project is trusted (`ctx.isProjectTrusted()`). Project files can set tuning fields (`interval`, `cooldownLoops`, `confidenceThreshold`, `enabled`, `notifyOnAligned`, `activityBudgetChars`, `timeoutMs`, `apiUrl`, `model`, `staleAuditSpans`) but **cannot** set `apiKey` / `apiKeyEnvVar` — secrets stay out of repos.
 
 `PI_CODING_AGENT_DIR` overrides `~/.pi/agent` when you run pi with a non-default agent dir. If the legacy `~/.config/jev-todo-audit/config.json` still exists you'll get a one-time warning at session start; move it to the new path. Full surface:
 
@@ -67,7 +71,8 @@ Or export `TYPESAFE_API_KEY` (env wins over the file). Every other field is opti
 	"apiUrl": "https://api.typesafe.ai/v1/systemone",
 	"timeoutMs": 30000,
 	"activityBudgetChars": 4000,
-	"notifyOnAligned": false
+	"notifyOnAligned": false,
+	"staleAuditSpans": 3
 }
 ```
 
@@ -84,6 +89,7 @@ Or export `TYPESAFE_API_KEY` (env wins over the file). Every other field is opti
 | `timeoutMs` | Audit request timeout; failures skip quietly and retry at the next trigger. | `30000` |
 | `activityBudgetChars` | Max chars of recent transcript fed to jev as state. | `4000` |
 | `notifyOnAligned` | Also notify on aligned audits. | `false` |
+| `staleAuditSpans` | Audits a task may sit in_progress before the split nudge fires. | `3` |
 
 A missing or malformed file falls back to defaults. The extension reads the global file always, and the project file only when the project is trusted.
 

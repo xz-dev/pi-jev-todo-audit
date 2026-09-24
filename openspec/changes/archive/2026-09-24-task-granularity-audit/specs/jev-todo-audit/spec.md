@@ -1,53 +1,4 @@
-# jev-todo-audit Specification
-
-## Purpose
-Periodically audits the agent's todo board (rpiv-todo) against actual conversation activity using the jev model (TypeSafe Choice primitive), and nudges the agent back on track when the two disagree.
-
-## Requirements
-
-### Requirement: Loop counting from session branch
-
-The extension SHALL count completed agent loops as the number of finalized assistant messages on the current session branch, starting from the first loop of the session. The count SHALL be reconstructed from the session branch on session start, compaction, and session-tree changes, so it survives restarts, reloads, and compaction. The runtime in-memory counter SHALL be authoritative between reconstructions.
-
-#### Scenario: Count survives restart
-- **WHEN** the session is reloaded or the process restarted
-- **THEN** the loop count equals the number of assistant messages on the branch, and auditing continues from that count
-
-#### Scenario: Aborted turns do not count
-- **WHEN** an assistant message is aborted before finalization (never persisted to the branch)
-- **THEN** the loop count is not incremented for it
-
-#### Scenario: Branch switch follows the branch
-- **WHEN** the user switches to a different session branch
-- **THEN** the loop count is recomputed from that branch's assistant messages
-
-### Requirement: Audit every 10th loop
-
-The extension SHALL trigger a jev audit at every loop count that is a positive multiple of the configured interval (default 10). A trigger point that is skipped by the cooldown rule SHALL NOT be deferred or retried; the next multiple is the next trigger point.
-
-#### Scenario: Tenth loop triggers
-- **WHEN** the loop count reaches 10
-- **THEN** a jev audit is initiated
-
-#### Scenario: First audit timing
-- **WHEN** the session begins and the user's first prompt runs at least 6 loops
-- **THEN** the first audit fires at loop 10, not earlier
-
-### Requirement: User-message cooldown
-
-The extension SHALL skip the audit for a trigger point when 5 or fewer loops have completed since the most recent user message on the branch (including steering messages). The skip is final for that trigger point.
-
-#### Scenario: Recent user message skips audit
-- **WHEN** the loop count hits a multiple of 10 and the last user message was 3 loops ago
-- **THEN** no audit runs for that trigger point and the next audit waits for the next multiple of 10
-
-#### Scenario: Older user message does not skip
-- **WHEN** the loop count hits a multiple of 10 and the last user message was 7 loops ago
-- **THEN** the audit runs
-
-#### Scenario: Steering counts as a user message
-- **WHEN** the user steers mid-run and the 10th loop lands 2 loops after the steer
-- **THEN** the audit for that trigger point is skipped
+## MODIFIED Requirements
 
 ### Requirement: Audit request content
 
@@ -134,16 +85,6 @@ The extension SHALL additionally detect over-coarse in_progress tasks and nudge 
 #### Scenario: Granularity answer not applicable
 - **WHEN** the `granularity` answer is `not_applicable` or `single_verifiable_outcome`
 - **THEN** no split instruction is added on granularity grounds alone
-
-Audit execution SHALL never block, abort, or corrupt the agent loop. An audit network error, timeout, or malformed response SHALL be skipped with at most one user notification, and the next trigger point proceeds normally. The extension SHALL read todo state only from persisted session branch data and SHALL NOT import or call into rpiv-todo's internal modules.
-
-#### Scenario: API failure does not disturb the run
-- **WHEN** the TypeSafe API call fails or times out during an audit
-- **THEN** the agent loop continues unaffected, the failed audit is not retried at an arbitrary time, and the next audit waits for the next trigger point
-
-#### Scenario: No coupling to rpiv-todo internals
-- **WHEN** the audit reads todo state
-- **THEN** it reconstructs the snapshot from the session branch's todo tool results, without importing rpiv-todo modules
 
 ### Requirement: Configuration
 

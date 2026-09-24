@@ -106,4 +106,14 @@ describe("config", () => {
 	test("projectConfigPath sits under .pi", () => {
 		expect(projectConfigPath("/repo")).toBe("/repo/.pi/jev-todo-audit.json");
 	});
+
+	test("staleAuditSpans default + project override", () => {
+		expect(DEFAULT_CONFIG.staleAuditSpans).toBe(3);
+		const dir = mkdtempSync(join(tmpdir(), "jev-cfg-"));
+		const proj = join(dir, "project.json");
+		writeFileSync(proj, JSON.stringify({ staleAuditSpans: 5 }));
+		const cfg = loadConfig({ globalPath: join(dir, "nope.json"), projectPath: proj, projectTrusted: true });
+		expect(cfg.staleAuditSpans).toBe(5);
+		rmSync(dir, { recursive: true });
+	});
 });

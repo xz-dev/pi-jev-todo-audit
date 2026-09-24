@@ -10,7 +10,7 @@
 import type { ExtensionAPI, ExtensionCommandContext } from "@earendil-works/pi-coding-agent";
 import { existsSync } from "node:fs";
 import { agentConfigPath, legacyConfigPath, loadConfig, projectConfigPath, resolveApiKey, type AuditConfig } from "./config.js";
-import { replayBoard } from "./board.js";
+import { replayBoardWithAges, staleTaskIds } from "./board.js";
 import { freshCounter, onTurnEnd, onUserMessage, replayCounter, shouldAudit, type LoopCounter } from "./counter.js";
 import { buildAuditRequest, runAudit } from "./typesafe.js";
 import { decide } from "./verdict.js";
@@ -74,7 +74,7 @@ export default function (pi: ExtensionAPI, cfgOverride?: AuditConfig) {
 		const c = counterFor(sid(ctx));
 		inFlight = true;
 		try {
-			const board = replayBoard(ctx.sessionManager.getBranch());
+			const board = replayBoardWithAges(ctx.sessionManager.getBranch());
 			const req = buildAuditRequest(board, recentActivity(ctx, cfg.activityBudgetChars), cfg.model);
 			const res = await runAudit(req, { apiUrl: cfg.apiUrl, apiKey, timeoutMs: cfg.timeoutMs });
 
@@ -83,7 +83,8 @@ export default function (pi: ExtensionAPI, cfgOverride?: AuditConfig) {
 				return;
 			}
 
-			const action = decide(res.answers, board, cfg.confidenceThreshold, c.totalLoops);
+			const staleIds = staleTaskIds(board, c.totalLoops, cfg.interval, cfg.staleAuditSpans);
+			const action = decide(res.answers, board, cfg.confidenceThreshold, c.totalLoops, staleIds);
 			if (action.kind === "notify") {
 				ctx.ui?.notify?.(action.text, "info");
 			} else if (action.kind === "inject") {

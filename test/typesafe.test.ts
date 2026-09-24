@@ -12,10 +12,10 @@ const board: BoardSnapshot = {
 };
 
 describe("typesafe request", () => {
-	test("non-empty board → 4 questions, no board_warranted", () => {
+	test("non-empty board → 5 questions, no board_warranted", () => {
 		const req = buildAuditRequest(board, "edited parser.ts", "jev-latest");
 		expect(req.model).toBe("jev-latest");
-		expect(Object.keys(req.questions).sort()).toEqual(["alignment", "current_match", "drift", "stale_status"]);
+		expect(Object.keys(req.questions).sort()).toEqual(["alignment", "current_match", "drift", "granularity", "stale_status"]);
 		for (const q of Object.values(req.questions)) expect(q.type).toBe("choice");
 	});
 
@@ -56,6 +56,7 @@ describe("typesafe request", () => {
 		const crit = req.questions.current_match.criteria as Record<string, string>;
 		expect(Object.keys(crit)).toEqual([NOT_ON_BOARD]);
 		expect(req.questions.board_warranted).toBeDefined();
+		expect(req.questions.granularity).toBeDefined();
 		const bw = req.questions.board_warranted.criteria as Record<string, string>;
 		expect(Object.keys(bw).sort()).toEqual(["idle", "trivial", "warranted"]);
 	});

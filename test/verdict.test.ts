@@ -204,4 +204,73 @@ describe("verdict", () => {
 		expect(r.kind).toBe("inject");
 		if (r.kind === "inject") expect(r.text).toContain("create todo task(s)");
 	});
+
+	test("aligned + stale in_progress → inject with split", () => {
+		const a: AuditAnswers = { alignment: ans("aligned", 0.9) };
+		const r = decide(a, board, 0.5, 40, [5]);
+		expect(r.kind).toBe("inject");
+		if (r.kind === "inject") {
+			expect(r.text).toContain("split");
+			expect(r.text).toContain("#5");
+			expect(r.text).toContain("single verifiable outcome");
+		}
+	});
+
+	test("aligned + no stale → silent (unchanged)", () => {
+		const a: AuditAnswers = { alignment: ans("aligned", 0.9) };
+		expect(decide(a, board, 0.5, 40, []).kind).toBe("silent");
+		expect(decide(a, board, 0.5, 40).kind).toBe("silent");
+	});
+
+	test("granularity bundles_multiple_outcomes → split in inject", () => {
+		const a: AuditAnswers = {
+			alignment: ans("aligned", 0.9),
+			granularity: ans("bundles_multiple_outcomes", 0.9),
+		};
+		const r = decide(a, board, 0.5, 10, []);
+		expect(r.kind).toBe("inject");
+		if (r.kind === "inject") expect(r.text).toContain("split");
+	});
+
+	test("granularity ambiguous_done_criteria → split", () => {
+		const a: AuditAnswers = {
+			alignment: ans("aligned", 0.9),
+			granularity: ans("ambiguous_done_criteria", 0.9),
+		};
+		expect(decide(a, board, 0.5, 10, []).kind).toBe("inject");
+	});
+
+	test("granularity single_verifiable_outcome / not_applicable → no split", () => {
+		for (const c of ["single_verifiable_outcome", "not_applicable"]) {
+			const a: AuditAnswers = {
+				alignment: ans("aligned", 0.9),
+				granularity: ans(c, 0.9),
+			};
+			expect(decide(a, board, 0.5, 10, []).kind).toBe("silent");
+		}
+	});
+
+	test("low-confidence granularity → no split on that basis", () => {
+		const a: AuditAnswers = {
+			alignment: ans("aligned", 0.9),
+			granularity: ans("bundles_multiple_outcomes", 0.3),
+		};
+		expect(decide(a, board, 0.5, 10, []).kind).toBe("silent");
+	});
+
+	test("not_aligned + stale → both alignment steps AND split step", () => {
+		const a: AuditAnswers = {
+			alignment: ans("not_aligned", 0.9),
+			stale_status: ans("actually_completed", 0.9),
+			current_match: ans("7", 0.9),
+			drift: ans("on_track", 0.9),
+			granularity: ans("bundles_multiple_outcomes", 0.9),
+		};
+		const r = decide(a, board, 0.5, 10, [5]);
+		expect(r.kind).toBe("inject");
+		if (r.kind === "inject") {
+			expect(r.text).toContain("mark #5");
+			expect(r.text).toContain("split");
+		}
+	});
 });

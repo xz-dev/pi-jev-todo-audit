@@ -21,6 +21,12 @@ export interface BoardSnapshot {
 	nextId: number;
 }
 
+/** Board + the loop index at which each task entered in_progress. */
+export interface BoardWithAges extends BoardSnapshot {
+	/** taskId → assistant-message count when it last transitioned to in_progress. */
+	inProgressSince: Map<number, number>;
+}
+
 export const EMPTY_BOARD: BoardSnapshot = { tasks: [], nextId: 1 };
 
 interface BranchEntry {
@@ -40,19 +46,53 @@ export function isTaskDetails(value: unknown): value is { tasks: BoardTask[]; ne
  * when no valid snapshot exists on the branch.
  */
 export function replayBoard(branch: Iterable<unknown>): BoardSnapshot {
+	return replayBoardWithAges(branch);
+}
+
+/**
+ * Same last-write-wins replay as replayBoard, but also stamps each task's
+ * in_progress entry point: the assistant-message count at the snapshot where
+ * the task's status transitioned to in_progress. Re-entries restamp.
+ * Completed/deleted tasks drop their stamp.
+ */
+export function replayBoardWithAges(branch: Iterable<unknown>): BoardWithAges {
 	let result: BoardSnapshot = { tasks: [], nextId: 1 };
+	const inProgressSince = new Map<number, number>();
+	const prevStatus = new Map<number, BoardTask["status"]>();
+	let loops = 0;
 	for (const entry of branch) {
 		const e = entry as BranchEntry;
 		if (e.type !== "message") continue;
 		const msg = e.message;
+		if (msg?.role === "assistant") {
+			loops++;
+			continue;
+		}
 		if (msg?.role !== "toolResult" || msg.toolName !== "todo") continue;
 		if (!isTaskDetails(msg.details)) continue;
 		result = {
 			tasks: msg.details.tasks.map((t) => ({ ...t })),
 			nextId: msg.details.nextId,
 		};
+		const seen = new Set<number>();
+		for (const t of result.tasks) {
+			seen.add(t.id);
+			const was = prevStatus.get(t.id);
+			if (t.status === "in_progress" && was !== "in_progress") {
+				inProgressSince.set(t.id, loops);
+			} else if (t.status !== "in_progress") {
+				inProgressSince.delete(t.id);
+			}
+			prevStatus.set(t.id, t.status);
+		}
+		for (const id of prevStatus.keys()) {
+			if (!seen.has(id)) {
+				prevStatus.delete(id);
+				inProgressSince.delete(id);
+			}
+		}
 	}
-	return result;
+	return { ...result, inProgressSince };
 }
 
 /** Visible (non-deleted) tasks. */
@@ -77,4 +117,20 @@ export function renderBoardLines(board: BoardSnapshot): string[] {
 /** In-progress tasks currently claimed on the board. */
 export function inProgressTasks(board: BoardSnapshot): BoardTask[] {
 	return visibleTasks(board).filter((t) => t.status === "in_progress");
+}
+
+/**
+ * Task ids that have been in_progress for more than `staleSpans` audit
+ * intervals. `currentLoops` is the counter's totalLoops; `interval` is the
+ * audit cadence. Missing stamp (task was in_progress before the first
+ * snapshot we saw) counts as age 0 — conservative.
+ */
+export function staleTaskIds(board: BoardWithAges, currentLoops: number, interval: number, staleSpans: number): number[] {
+	const out: number[] = [];
+	for (const t of inProgressTasks(board)) {
+		const since = board.inProgressSince.get(t.id) ?? currentLoops;
+		const ageLoops = currentLoops - since;
+		if (ageLoops > staleSpans * interval) out.push(t.id);
+	}
+	return out;
 }

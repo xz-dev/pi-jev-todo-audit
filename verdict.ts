@@ -20,7 +20,27 @@ function conf(a: ChoiceAnswer | undefined): number {
 	return a?.confidence ?? 0;
 }
 
-export function decide(answers: AuditAnswers, board: BoardSnapshot, threshold: number, loop: number): VerdictAction {
+/** Which in_progress task ids need splitting, from staleness + granularity. */
+function splitTargets(answers: AuditAnswers, board: BoardSnapshot, threshold: number, staleIds: number[]): number[] {
+	const ids = new Set<number>(staleIds);
+	const g = answers.granularity;
+	const coarse = g && (g.choice === "bundles_multiple_outcomes" || g.choice === "ambiguous_done_criteria") && conf(g) >= threshold;
+	if (coarse) {
+		// granularity answers describe the worst offender; flag all in_progress.
+		for (const t of inProgressTasks(board)) ids.add(t.id);
+	}
+	return [...ids].sort((a, b) => a - b);
+}
+
+function splitStep(ids: number[], board: BoardSnapshot): string {
+	const labels = ids.map((id) => {
+		const t = board.tasks.find((t) => t.id === id);
+		return t ? `#${id} "${t.subject}"` : `#${id}`;
+	}).join(", ");
+	return `split ${labels} into smaller tasks — each with a single verifiable outcome (test passes, file exists, command exits 0)`;
+}
+
+export function decide(answers: AuditAnswers, board: BoardSnapshot, threshold: number, loop: number, staleIds: number[] = []): VerdictAction {
 	const align = answers.alignment;
 	if (!align) return { kind: "notify", text: "[jev audit] missing alignment answer — audit skipped" };
 
@@ -28,7 +48,13 @@ export function decide(answers: AuditAnswers, board: BoardSnapshot, threshold: n
 		if (conf(align) < threshold) {
 			return { kind: "notify", text: `[jev audit @ loop ${loop}] alignment uncertain (confidence ${conf(align).toFixed(2)}) — left alone` };
 		}
-		return { kind: "silent" };
+		const splits = splitTargets(answers, board, threshold, staleIds);
+		if (splits.length === 0) return { kind: "silent" };
+		// Coarse-but-aligned board: agent is doing the work, the task is just
+		// too big to steer by. Nudge a split instead of leaving silent.
+		const text = [`[jev audit @ loop ${loop}] Board is aligned, but task(s) too coarse to steer by.`,
+			"Fix the board now via the todo tool:", `1. ${splitStep(splits, board)}`].join("\n");
+		return { kind: "inject", text };
 	}
 
 	// No in_progress task on the board: nothing to compare against. If the
@@ -71,6 +97,7 @@ export function decide(answers: AuditAnswers, board: BoardSnapshot, threshold: n
 	const stale = answers.stale_status?.choice;
 	const match = answers.current_match?.choice;
 	const drifted = answers.drift?.choice === "drifted" && conf(answers.drift) >= threshold;
+	const splits = splitTargets(answers, board, threshold, staleIds);
 	const inProg = inProgressTasks(board);
 	const inProgLabel = inProg.map((t) => `#${t.id} "${t.subject}"`).join(", ") || "(none)";
 
@@ -90,6 +117,7 @@ export function decide(answers: AuditAnswers, board: BoardSnapshot, threshold: n
 	if (match && match !== NOT_ON_BOARD) steps.push(`set #${match} in_progress with an accurate activeForm`);
 	else steps.push("create todo task(s) for the work you are actually doing, plus planned follow-ups, and set the current one in_progress");
 
+	if (splits.length > 0) steps.push(splitStep(splits, board));
 	if (drifted) steps.push("STOP the off-plan work and resume the next pending board task");
 
 	lines.push("Fix the board now via the todo tool:", ...steps.map((s, i) => `${i + 1}. ${s}`));
