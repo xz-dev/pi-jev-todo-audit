@@ -29,12 +29,14 @@ type Handler = (event: any, ctx: any) => Promise<any>;
 
 function makePi() {
 	const handlers = new Map<string, Handler[]>();
+	const commands = new Map<string, { handler: (args: string, ctx: any) => Promise<void> }>();
 	const sent: { message: any; options: any }[] = [];
 	const pi = {
 		on: (event: string, h: Handler) => { handlers.set(event, [...(handlers.get(event) ?? []), h]); },
-		sendMessage: (message: any, options: any) => { sent.push({ message, options }); return Promise.resolve(); },
+		registerCommand: (name: string, opts: any) => { commands.set(name, opts); },
+		sendMessage: (message: any, options: any) => { sent.push({ message, options }); },
 	} as unknown as ExtensionAPI;
-	return { pi, handlers, sent };
+	return { pi, handlers, commands, sent };
 }
 
 const todoResult = (tasks: unknown[]) => ({
@@ -101,5 +103,22 @@ describe("index wiring", () => {
 		}
 		// loop 20 → audit #2
 		expect(auditCalls.length).toBe(2);
+	});
+
+	test("/jev-audit command fires audit immediately, bypassing interval+cooldown", async () => {
+		const { pi, handlers, commands, sent } = makePi();
+		makeExtension(pi, { ...cfgMod.DEFAULT_CONFIG, apiKeyEnvVar: "JEV_AUDIT_TEST_KEY" });
+		const branch: unknown[] = [
+			{ type: "message", message: { role: "user", content: "go" } },
+			todoResult([{ id: 5, subject: "Board task", status: "in_progress" }]),
+		];
+		const ctx = makeCtx(branch);
+		await emit(handlers, "session_start", {}, ctx);
+		// manual trigger at loop 0 — no turn_end ever fired, still audits
+		const cmd = commands.get("jev-audit");
+		expect(cmd).toBeDefined();
+		await cmd!.handler("", ctx);
+		expect(auditCalls.length).toBeGreaterThan(0);
+		expect(sent.some((s) => s.message.customType === "jev-todo-audit")).toBe(true);
 	});
 });

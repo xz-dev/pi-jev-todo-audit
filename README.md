@@ -37,6 +37,8 @@ turn_end → loop count++ (replayed from branch, survives restart/compaction)
 
 The injected message names the stale task id, the matching board task (or instructs the agent to create one), and — when jev reports drift — orders the agent to stop and resume board order.
 
+A `/jev-audit` command fires the same audit on demand, ignoring the interval and the user-message cooldown — useful when you suspect drift and don't want to wait for the next 10-loop boundary.
+
 ## Configuration
 
 Minimal setup — `~/.config/jev-todo-audit/config.json` with just the key:

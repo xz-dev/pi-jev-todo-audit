@@ -7,7 +7,7 @@
  * message when it does not. Purely advisory: failures never touch the loop.
  */
 
-import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
+import type { ExtensionAPI, ExtensionCommandContext } from "@earendil-works/pi-coding-agent";
 import { loadConfig, resolveApiKey, type AuditConfig } from "./config.js";
 import { replayBoard } from "./board.js";
 import { freshCounter, onTurnEnd, onUserMessage, replayCounter, shouldAudit, type LoopCounter } from "./counter.js";
@@ -59,6 +59,49 @@ export default function (pi: ExtensionAPI, cfgOverride?: AuditConfig) {
 	const counterFor = (id: string) => counters.get(id) ?? freshCounter();
 	let inFlight = false;
 
+	/** Shared audit body: replay board → call jev → act on verdict. */
+	async function auditNow(ctx: Ctx & { ui?: { notify?: (m: string, l?: "error" | "warning" | "info") => void } }, label: string) {
+		if (inFlight) return;
+		const apiKey = resolveApiKey(cfg);
+		if (!apiKey) {
+			ctx.ui?.notify?.(`[jev audit] no API key: set ${cfg.apiKeyEnvVar} or apiKey in ~/.config/jev-todo-audit/config.json`, "warning");
+			return;
+		}
+		const c = counterFor(sid(ctx));
+		inFlight = true;
+		try {
+			const board = replayBoard(ctx.sessionManager.getBranch());
+			const req = buildAuditRequest(board, recentActivity(ctx, cfg.activityBudgetChars), cfg.model);
+			const res = await runAudit(req, { apiUrl: cfg.apiUrl, apiKey, timeoutMs: cfg.timeoutMs });
+
+			if (!res.ok) {
+				ctx.ui?.notify?.(`[jev audit ${label}] failed: ${res.error}`, "warning");
+				return;
+			}
+
+			const action = decide(res.answers, board, cfg.confidenceThreshold, c.totalLoops);
+			if (action.kind === "notify") {
+				ctx.ui?.notify?.(action.text, "info");
+			} else if (action.kind === "inject") {
+				// steer > followUp: lands at the next turn boundary of the running
+				// loop instead of waiting for the run to settle.
+				pi.sendMessage(
+					{ customType: "jev-todo-audit", content: action.text, display: true },
+					{ deliverAs: "steer" },
+				);
+				if (cfg.notifyOnAligned === false) {
+					ctx.ui?.notify?.(`[jev audit ${label}] correction injected`, "info");
+				}
+			} else if (cfg.notifyOnAligned) {
+				ctx.ui?.notify?.(`[jev audit ${label}] board aligned ✓`, "info");
+			}
+		} catch (err) {
+			ctx.ui?.notify?.(`[jev audit ${label}] error: ${err instanceof Error ? err.message : String(err)}`, "warning");
+		} finally {
+			inFlight = false;
+		}
+	}
+
 	pi.on("session_start", async (_e, ctx) => {
 		counters.set(sid(ctx), replayCounter(ctx.sessionManager.getBranch()));
 		// Background audit is useless without a key — warn once at session start.
@@ -86,45 +129,13 @@ export default function (pi: ExtensionAPI, cfgOverride?: AuditConfig) {
 		const c = counterFor(sid(ctx));
 		onTurnEnd(c);
 		if (!shouldAudit(c, cfg.interval, cfg.cooldownLoops) || inFlight) return;
-
-		const apiKey = resolveApiKey(cfg);
-		if (!apiKey) {
-			ctx.ui?.notify?.(`[jev audit] ${cfg.apiKeyEnvVar} not set — audit skipped`, "warning");
-			return;
-		}
-
-		inFlight = true;
-		try {
-			const board = replayBoard(ctx.sessionManager.getBranch());
-			const req = buildAuditRequest(board, recentActivity(ctx, cfg.activityBudgetChars), cfg.model);
-			const res = await runAudit(req, { apiUrl: cfg.apiUrl, apiKey, timeoutMs: cfg.timeoutMs });
-
-			if (!res.ok) {
-				ctx.ui?.notify?.(`[jev audit @ loop ${c.totalLoops}] failed: ${res.error}`, "warning");
-				return;
-			}
-
-			const action = decide(res.answers, board, cfg.confidenceThreshold, c.totalLoops);
-			if (action.kind === "notify") {
-				ctx.ui?.notify?.(action.text, "info");
-			} else if (action.kind === "inject") {
-				// steer > followUp: lands at the next turn boundary of the running
-				// loop instead of waiting for the run to settle.
-				pi.sendMessage(
-					{ customType: "jev-todo-audit", content: action.text, display: true },
-					{ deliverAs: "steer" },
-				);
-				if (cfg.notifyOnAligned === false) {
-					ctx.ui?.notify?.(`[jev audit @ loop ${c.totalLoops}] correction injected`, "info");
-				}
-			} else if (cfg.notifyOnAligned) {
-				ctx.ui?.notify?.(`[jev audit @ loop ${c.totalLoops}] board aligned ✓`, "info");
-			}
-		} catch (err) {
-			ctx.ui?.notify?.(`[jev audit @ loop ${c.totalLoops}] error: ${err instanceof Error ? err.message : String(err)}`, "warning");
-		} finally {
-			inFlight = false;
-		}
+		await auditNow(ctx, `@ loop ${c.totalLoops}`);
 	});
 
+	pi.registerCommand("jev-audit", {
+		description: "Manually trigger a jev todo-board audit right now (ignores interval/cooldown)",
+		handler: async (_args, ctx: ExtensionCommandContext) => {
+			await auditNow(ctx, "manual");
+		},
+	});
 }
