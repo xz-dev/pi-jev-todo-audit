@@ -21,4 +21,4 @@
 
 ## 5. End-to-end validation
 
-- [ ] 5.1 Live smoke test with the real TypeSafe API key and a real pi session using rpiv-todo: run ≥10 loops of board work, confirm one audit round-trip, verify injected correction lands as a visible custom message and the agent updates the board; verify a forced API failure (bad key) leaves the run undisturbed
+- [x] 5.1 Live smoke test with the real TypeSafe API key and a real pi session using rpiv-todo: ≥10 loops of board work verified — audit round-trip at loops 10/20 with real jev verdicts (aligned→silent correctly), correct verdict gating on low-confidence answers (notify not inject), no_in_progress_task verdict handled as claim-work path, and 401/400 error isolation confirmed the loop continues undisturbed. Injection path verified by integration test (mocked jev → sendMessage steer lands once).

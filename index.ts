@@ -53,7 +53,6 @@ function recentActivity(ctx: Ctx, budget: number): string {
 
 export default function (pi: ExtensionAPI, cfgOverride?: AuditConfig) {
 	const cfg: AuditConfig = cfgOverride ?? loadConfig();
-	console.error(`[jev-audit] loaded enabled=${cfg.enabled} interval=${cfg.interval} keyEnv=${cfg.apiKeyEnvVar}`);
 	if (!cfg.enabled) return;
 
 	const counters = new Map<string, LoopCounter>();
@@ -86,7 +85,6 @@ export default function (pi: ExtensionAPI, cfgOverride?: AuditConfig) {
 	pi.on("turn_end", async (_e, ctx) => {
 		const c = counterFor(sid(ctx));
 		onTurnEnd(c);
-		console.error(`[jev-audit] turn_end total=${c.totalLoops} sinceUser=${c.totalLoops-c.lastUserMsgAt}`);
 		if (!shouldAudit(c, cfg.interval, cfg.cooldownLoops) || inFlight) return;
 
 		const apiKey = resolveApiKey(cfg);
@@ -99,24 +97,19 @@ export default function (pi: ExtensionAPI, cfgOverride?: AuditConfig) {
 		try {
 			const board = replayBoard(ctx.sessionManager.getBranch());
 			const req = buildAuditRequest(board, recentActivity(ctx, cfg.activityBudgetChars), cfg.model);
-			console.error(`[jev-audit] firing @loop${c.totalLoops} tasks=${board.tasks.length}`);
 			const res = await runAudit(req, { apiUrl: cfg.apiUrl, apiKey, timeoutMs: cfg.timeoutMs });
-			console.error(`[jev-audit] result ok=${res.ok} ${res.ok?JSON.stringify(res.answers):res.error}`);
 
 			if (!res.ok) {
-				console.error(`[jev-audit] notify fail`);
 				ctx.ui?.notify?.(`[jev audit @ loop ${c.totalLoops}] failed: ${res.error}`, "warning");
 				return;
 			}
 
 			const action = decide(res.answers, board, cfg.confidenceThreshold, c.totalLoops);
-			console.error(`[jev-audit] action=${action.kind}`);
 			if (action.kind === "notify") {
 				ctx.ui?.notify?.(action.text, "info");
 			} else if (action.kind === "inject") {
 				// steer > followUp: lands at the next turn boundary of the running
 				// loop instead of waiting for the run to settle.
-				console.error(`[jev-audit] injecting steer msg`);
 				pi.sendMessage(
 					{ customType: "jev-todo-audit", content: action.text, display: true },
 					{ deliverAs: "steer" },

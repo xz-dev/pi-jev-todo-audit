@@ -57,7 +57,7 @@ async function emit(handlers: Map<string, Handler[]>, name: string, event: any, 
 }
 
 describe("index wiring", () => {
-	test("loop 10 fires audit + injects followUp correction; cooldown skips", async () => {
+	test("loop 10 fires audit + injects steer correction; cooldown skips", async () => {
 		const { pi, handlers, sent } = makePi();
 		makeExtension(pi, { ...cfgMod.DEFAULT_CONFIG, apiKeyEnvVar: "JEV_AUDIT_TEST_KEY" });
 
@@ -84,6 +84,7 @@ describe("index wiring", () => {
 		expect(sent[0].options).toEqual({ deliverAs: "steer" });
 		expect(sent[0].message.customType).toBe("jev-todo-audit");
 		expect(sent[0].message.content).toContain("#5");
+		expect(sent[0].message.content).toContain("create todo task");
 
 		// user steers at loop 10 → cooldown resets; loops 11..15 inside window
 		branch.push({ type: "message", message: { role: "user", content: "wait, do X first" } });
