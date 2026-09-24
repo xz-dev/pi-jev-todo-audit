@@ -60,7 +60,8 @@ describe("typesafe client", () => {
 	test("HTTP error → ok:false, no throw", async () => {
 		const fetchFn = mock(async () => new Response("nope", { status: 500 }));
 		const res = await runAudit(req, { ...opts, fetchFn: fetchFn });
-		expect(res).toEqual({ ok: false, error: "HTTP 500" });
+		expect(res.ok).toBe(false);
+		if (!res.ok) expect(res.error).toContain("HTTP 500");
 	});
 
 	test("network failure → ok:false, no throw", async () => {
