@@ -36,7 +36,14 @@ export function decide(answers: AuditAnswers, board: BoardSnapshot, threshold: n
 	// resolving a stale task. `stale_status` is meaningless in this path —
 	// only alignment and current_match drive the message.
 	if (align.choice === "no_in_progress_task") {
-		const used = [align, answers.current_match].filter(Boolean) as ChoiceAnswer[];
+		// Empty board → warrant gate: trivial/idle work stays silent.
+		// Missing board_warranted means the question wasn't asked (board has
+		// tasks) — keep existing inject behavior.
+		const warrant = answers.board_warranted;
+		if (warrant && (warrant.choice === "trivial" || warrant.choice === "idle")) {
+			return { kind: "silent" };
+		}
+		const used = [align, answers.current_match, warrant].filter(Boolean) as ChoiceAnswer[];
 		if (used.some((a) => conf(a) < threshold)) {
 			return { kind: "notify", text: `[jev audit @ loop ${loop}] board has no in_progress but agent is working — verdict uncertain (conf ${conf(align).toFixed(2)})` };
 		}

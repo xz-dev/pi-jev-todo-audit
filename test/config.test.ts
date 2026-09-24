@@ -2,7 +2,7 @@ import { describe, expect, test } from "bun:test";
 import { mkdtempSync, writeFileSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { DEFAULT_CONFIG, loadConfig, resolveApiKey } from "../config.js";
+import { DEFAULT_CONFIG, agentConfigPath, loadConfig, projectConfigPath, resolveApiKey } from "../config.js";
 
 describe("config", () => {
 	test("missing file → defaults", () => {
@@ -64,5 +64,46 @@ describe("config", () => {
 		const cfg = { ...DEFAULT_CONFIG, apiKeyEnvVar: "JEV_TEST_BLANK", apiKey: "sk-file" };
 		expect(resolveApiKey(cfg)).toBe("sk-file");
 		delete process.env.JEV_TEST_BLANK;
+	});
+
+	test("project layer ignored when untrusted", () => {
+		const dir = mkdtempSync(join(tmpdir(), "jev-cfg-"));
+		const proj = join(dir, "project.json");
+		writeFileSync(proj, JSON.stringify({ interval: 3 }));
+		const cfg = loadConfig({ globalPath: join(dir, "nope.json"), projectPath: proj, projectTrusted: false });
+		expect(cfg.interval).toBe(DEFAULT_CONFIG.interval);
+		rmSync(dir, { recursive: true });
+	});
+
+	test("project layer merges when trusted", () => {
+		const dir = mkdtempSync(join(tmpdir(), "jev-cfg-"));
+		const proj = join(dir, "project.json");
+		writeFileSync(proj, JSON.stringify({ interval: 3, notifyOnAligned: true }));
+		const cfg = loadConfig({ globalPath: join(dir, "nope.json"), projectPath: proj, projectTrusted: true });
+		expect(cfg.interval).toBe(3);
+		expect(cfg.notifyOnAligned).toBe(true);
+		rmSync(dir, { recursive: true });
+	});
+
+	test("project layer cannot set apiKey/apiKeyEnvVar", () => {
+		const dir = mkdtempSync(join(tmpdir(), "jev-cfg-"));
+		const proj = join(dir, "project.json");
+		writeFileSync(proj, JSON.stringify({ apiKey: "sk-proj", apiKeyEnvVar: "PROJ_KEY", interval: 7 }));
+		const cfg = loadConfig({ globalPath: join(dir, "nope.json"), projectPath: proj, projectTrusted: true });
+		expect(cfg.interval).toBe(7); // allowed key still merges
+		expect(cfg.apiKey).toBeUndefined(); // dropped
+		expect(cfg.apiKeyEnvVar).toBe(DEFAULT_CONFIG.apiKeyEnvVar); // dropped
+		rmSync(dir, { recursive: true });
+	});
+
+	test("agent path honors PI_CODING_AGENT_DIR", () => {
+		process.env.PI_CODING_AGENT_DIR = "/tmp/jev-agent-test";
+		expect(agentConfigPath()).toBe("/tmp/jev-agent-test/jev-todo-audit.json");
+		delete process.env.PI_CODING_AGENT_DIR;
+		expect(agentConfigPath()).toContain(".pi/agent/jev-todo-audit.json");
+	});
+
+	test("projectConfigPath sits under .pi", () => {
+		expect(projectConfigPath("/repo")).toBe("/repo/.pi/jev-todo-audit.json");
 	});
 });

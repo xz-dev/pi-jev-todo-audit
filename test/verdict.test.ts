@@ -125,4 +125,83 @@ describe("verdict", () => {
 		if (r.kind === "inject") expect(r.text).toContain("create todo task(s)");
 		else expect.unreachable();
 	});
+
+	test("empty board + warranted=trivial → silent", () => {
+		const empty: BoardSnapshot = { tasks: [], nextId: 1 };
+		const a: AuditAnswers = {
+			alignment: ans("no_in_progress_task", 0.9),
+			board_warranted: ans("trivial", 0.9),
+		};
+		expect(decide(a, empty, 0.5, 10).kind).toBe("silent");
+	});
+
+	test("empty board + warranted=idle → silent", () => {
+		const empty: BoardSnapshot = { tasks: [], nextId: 1 };
+		const a: AuditAnswers = {
+			alignment: ans("no_in_progress_task", 0.9),
+			board_warranted: ans("idle", 0.9),
+		};
+		expect(decide(a, empty, 0.5, 10).kind).toBe("silent");
+	});
+
+	test("empty board + warranted=warranted → inject 'create'", () => {
+		const empty: BoardSnapshot = { tasks: [], nextId: 1 };
+		const a: AuditAnswers = {
+			alignment: ans("no_in_progress_task", 0.9),
+			board_warranted: ans("warranted", 0.9),
+			current_match: ans("not_on_board", 0.9),
+		};
+		const r = decide(a, empty, 0.5, 10);
+		expect(r.kind).toBe("inject");
+		if (r.kind === "inject") expect(r.text).toContain("create todo task(s)");
+	});
+
+	test("empty board + low-confidence board_warranted → notify", () => {
+		const empty: BoardSnapshot = { tasks: [], nextId: 1 };
+		const a: AuditAnswers = {
+			alignment: ans("no_in_progress_task", 0.9),
+			board_warranted: ans("warranted", 0.2),
+			current_match: ans("not_on_board", 0.9),
+		};
+		expect(decide(a, empty, 0.5, 10).kind).toBe("notify");
+	});
+
+	test("non-empty board + no_in_progress_task → inject even without board_warranted field", () => {
+		// board_warranted omitted from request → answer missing → keep existing inject
+		const b: BoardSnapshot = { tasks: [{ id: 1, subject: "s1", status: "pending" }], nextId: 2 };
+		const a: AuditAnswers = {
+			alignment: ans("no_in_progress_task", 0.9),
+			current_match: ans("1", 0.9),
+		};
+		const r = decide(a, b, 0.5, 10);
+		expect(r.kind).toBe("inject");
+		if (r.kind === "inject") expect(r.text).toContain("set #1 in_progress");
+	});
+
+	test("all-done board + trivial → silent", () => {
+		const doneBoard: BoardSnapshot = {
+			tasks: [{ id: 1, subject: "s1", status: "completed" }, { id: 2, subject: "s2", status: "completed" }],
+			nextId: 3,
+		};
+		const a: AuditAnswers = {
+			alignment: ans("no_in_progress_task", 0.9),
+			board_warranted: ans("trivial", 0.9),
+		};
+		expect(decide(a, doneBoard, 0.5, 10).kind).toBe("silent");
+	});
+
+	test("all-done board + warranted → inject 'create'", () => {
+		const doneBoard: BoardSnapshot = {
+			tasks: [{ id: 1, subject: "s1", status: "completed" }],
+			nextId: 2,
+		};
+		const a: AuditAnswers = {
+			alignment: ans("no_in_progress_task", 0.9),
+			board_warranted: ans("warranted", 0.9),
+			current_match: ans("not_on_board", 0.9),
+		};
+		const r = decide(a, doneBoard, 0.5, 10);
+		expect(r.kind).toBe("inject");
+		if (r.kind === "inject") expect(r.text).toContain("create todo task(s)");
+	});
 });

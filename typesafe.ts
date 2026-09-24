@@ -5,7 +5,7 @@
  */
 
 import type { BoardSnapshot } from "./board.js";
-import { renderBoardLines, visibleTasks } from "./board.js";
+import { renderBoardLines, inProgressTasks, visibleTasks } from "./board.js";
 
 export interface ChoiceAnswer {
 	choice: string;
@@ -18,6 +18,7 @@ export interface AuditAnswers {
 	stale_status?: ChoiceAnswer;
 	current_match?: ChoiceAnswer;
 	drift?: ChoiceAnswer;
+	board_warranted?: ChoiceAnswer;
 }
 
 export type AuditResult =
@@ -47,47 +48,60 @@ export function buildAuditRequest(board: BoardSnapshot, activity: string, model:
 	}
 	matchCriteria[NOT_ON_BOARD] = "The current work does not correspond to any task on the board";
 
-	return {
-		state,
-		model,
-		questions: {
-			alignment: {
-				type: "choice",
-				instructions: "Is the agent's current work the task(s) currently marked in_progress on the todo board?",
-				criteria: {
-					aligned: "Current work matches the in_progress task(s)",
-					not_aligned: "Current work is something else than the in_progress task(s)",
-					no_in_progress_task: "The board has no in_progress task right now",
-					unclear: "Not enough evidence to tell",
-				},
+	const questions: AuditRequest["questions"] = {
+		alignment: {
+			type: "choice",
+			instructions: "Is the agent's current work the task(s) currently marked in_progress on the todo board?",
+			criteria: {
+				aligned: "Current work matches the in_progress task(s)",
+				not_aligned: "Current work is something else than the in_progress task(s)",
+				no_in_progress_task: "The board has no in_progress task right now",
+				unclear: "Not enough evidence to tell",
 			},
-			stale_status: {
-				type: "choice",
-				instructions: "If the displayed in_progress task is not what the agent is doing, what actually happened to it?",
-				criteria: {
-					actually_completed: "It was finished but never marked completed",
-					still_ongoing: "It was paused mid-way, not finished",
-					cancelled: "It was abandoned on purpose",
-					deliberately_deferred: "It was deliberately shelved for later",
-					other: "None of the above fits",
-				},
+		},
+		stale_status: {
+			type: "choice",
+			instructions: "If the displayed in_progress task is not what the agent is doing, what actually happened to it?",
+			criteria: {
+				actually_completed: "It was finished but never marked completed",
+				still_ongoing: "It was paused mid-way, not finished",
+				cancelled: "It was abandoned on purpose",
+				deliberately_deferred: "It was deliberately shelved for later",
+				other: "None of the above fits",
 			},
-			current_match: {
-				type: "choice",
-				instructions: "Which board task does the agent's current work actually correspond to?",
-				criteria: matchCriteria,
-			},
-			drift: {
-				type: "choice",
-				instructions: "Has the agent drifted away from the plan represented by the todo board?",
-				criteria: {
-					on_track: "Work follows the board's plan",
-					drifted: "Work has wandered off the board's plan",
-					blocked: "Work is blocked, not drifted",
-				},
+		},
+		current_match: {
+			type: "choice",
+			instructions: "Which board task does the agent's current work actually correspond to?",
+			criteria: matchCriteria,
+		},
+		drift: {
+			type: "choice",
+			instructions: "Has the agent drifted away from the plan represented by the todo board?",
+			criteria: {
+				on_track: "Work follows the board's plan",
+				drifted: "Work has wandered off the board's plan",
+				blocked: "Work is blocked, not drifted",
 			},
 		},
 	};
+
+	// Only ask when nothing is in_progress: an empty board OR an all-done
+	// board. If something is already claimed in_progress, the board is live
+	// and the warrant question would be noise.
+	if (inProgressTasks(board).length === 0) {
+		questions.board_warranted = {
+			type: "choice",
+			instructions: "Does the agent's current activity warrant tracking on a todo board?",
+			criteria: {
+				warranted: "Long-running or multi-step work that benefits from tracked tasks",
+				trivial: "Short single-step work (one answer, one edit, a quick lookup) that does not need a board",
+				idle: "No substantive work in progress (chat, clarifying question, awaiting input)",
+			},
+		};
+	}
+
+	return { state, model, questions };
 }
 
 export async function runAudit(

@@ -12,11 +12,29 @@ const board: BoardSnapshot = {
 };
 
 describe("typesafe request", () => {
-	test("single request carries all 4 choice questions", () => {
+	test("non-empty board → 4 questions, no board_warranted", () => {
 		const req = buildAuditRequest(board, "edited parser.ts", "jev-latest");
 		expect(req.model).toBe("jev-latest");
 		expect(Object.keys(req.questions).sort()).toEqual(["alignment", "current_match", "drift", "stale_status"]);
 		for (const q of Object.values(req.questions)) expect(q.type).toBe("choice");
+	});
+
+	test("all-done board → board_warranted included", () => {
+		const doneBoard: BoardSnapshot = {
+			tasks: [{ id: 1, subject: "done", status: "completed" }, { id: 2, subject: "also done", status: "completed" }],
+			nextId: 3,
+		};
+		const req = buildAuditRequest(doneBoard, "x", "jev-latest");
+		expect(req.questions.board_warranted).toBeDefined();
+	});
+
+	test("pending-only board → board_warranted included", () => {
+		const pendingBoard: BoardSnapshot = {
+			tasks: [{ id: 1, subject: "queued", status: "pending" }],
+			nextId: 2,
+		};
+		const req = buildAuditRequest(pendingBoard, "x", "jev-latest");
+		expect(req.questions.board_warranted).toBeDefined();
 	});
 
 	test("state embeds board rows + activity", () => {
@@ -32,11 +50,14 @@ describe("typesafe request", () => {
 		expect(crit["3"]).toContain("Write parser");
 	});
 
-	test("empty board → not_on_board only", () => {
+	test("empty board → not_on_board only + board_warranted question present", () => {
 		const req = buildAuditRequest({ tasks: [], nextId: 1 }, "x", "jev-latest");
 		expect(req.state).toContain("(board is empty)");
 		const crit = req.questions.current_match.criteria as Record<string, string>;
 		expect(Object.keys(crit)).toEqual([NOT_ON_BOARD]);
+		expect(req.questions.board_warranted).toBeDefined();
+		const bw = req.questions.board_warranted.criteria as Record<string, string>;
+		expect(Object.keys(bw).sort()).toEqual(["idle", "trivial", "warranted"]);
 	});
 });
 

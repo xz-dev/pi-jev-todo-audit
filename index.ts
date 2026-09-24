@@ -8,13 +8,14 @@
  */
 
 import type { ExtensionAPI, ExtensionCommandContext } from "@earendil-works/pi-coding-agent";
-import { loadConfig, resolveApiKey, type AuditConfig } from "./config.js";
+import { existsSync } from "node:fs";
+import { agentConfigPath, legacyConfigPath, loadConfig, projectConfigPath, resolveApiKey, type AuditConfig } from "./config.js";
 import { replayBoard } from "./board.js";
 import { freshCounter, onTurnEnd, onUserMessage, replayCounter, shouldAudit, type LoopCounter } from "./counter.js";
 import { buildAuditRequest, runAudit } from "./typesafe.js";
 import { decide } from "./verdict.js";
 
-type Ctx = { sessionManager: { getSessionId(): string; getBranch(): Iterable<unknown> } };
+type Ctx = { sessionManager: { getSessionId(): string; getBranch(): Iterable<unknown> }; cwd?: string; isProjectTrusted?: () => boolean };
 const sid = (ctx: Ctx) => ctx.sessionManager.getSessionId() ?? "";
 
 interface BranchMsg {
@@ -52,19 +53,22 @@ function recentActivity(ctx: Ctx, budget: number): string {
 }
 
 export default function (pi: ExtensionAPI, cfgOverride?: AuditConfig) {
-	const cfg: AuditConfig = cfgOverride ?? loadConfig();
+	// Global layer resolved eagerly; project layer merges on first session_start
+	// once we can see ctx.cwd + ctx.isProjectTrusted().
+	let cfg: AuditConfig = cfgOverride ?? loadConfig({ globalPath: agentConfigPath() });
 	if (!cfg.enabled) return;
 
 	const counters = new Map<string, LoopCounter>();
 	const counterFor = (id: string) => counters.get(id) ?? freshCounter();
 	let inFlight = false;
+	let projectMerged = false;
 
 	/** Shared audit body: replay board → call jev → act on verdict. */
 	async function auditNow(ctx: Ctx & { ui?: { notify?: (m: string, l?: "error" | "warning" | "info") => void } }, label: string) {
 		if (inFlight) return;
 		const apiKey = resolveApiKey(cfg);
 		if (!apiKey) {
-			ctx.ui?.notify?.(`[jev audit] no API key: set ${cfg.apiKeyEnvVar} or apiKey in ~/.config/jev-todo-audit/config.json`, "warning");
+			ctx.ui?.notify?.(`[jev audit] no API key: set ${cfg.apiKeyEnvVar} or apiKey in ${agentConfigPath()}`, "warning");
 			return;
 		}
 		const c = counterFor(sid(ctx));
@@ -103,10 +107,21 @@ export default function (pi: ExtensionAPI, cfgOverride?: AuditConfig) {
 	}
 
 	pi.on("session_start", async (_e, ctx) => {
+		if (!projectMerged) {
+			projectMerged = true;
+			const trusted = ctx.isProjectTrusted?.() ?? false;
+			const projPath = ctx.cwd ? projectConfigPath(ctx.cwd) : undefined;
+			if (projPath && trusted && existsSync(projPath)) {
+				cfg = loadConfig({ globalPath: agentConfigPath(), projectPath: projPath, projectTrusted: true });
+			}
+			if (existsSync(legacyConfigPath())) {
+				ctx.ui?.notify?.(`[jev-todo-audit] config moved — copy ${legacyConfigPath()} to ${agentConfigPath()}`, "warning");
+			}
+		}
 		counters.set(sid(ctx), replayCounter(ctx.sessionManager.getBranch()));
 		// Background audit is useless without a key — warn once at session start.
 		if (!resolveApiKey(cfg)) {
-			ctx.ui?.notify?.(`[jev-todo-audit] no API key: set ${cfg.apiKeyEnvVar} or apiKey in ~/.config/jev-todo-audit/config.json`, "warning");
+			ctx.ui?.notify?.(`[jev-todo-audit] no API key: set ${cfg.apiKeyEnvVar} or apiKey in ${agentConfigPath()}`, "warning");
 		}
 	});
 	pi.on("session_compact", async (_e, ctx) => {

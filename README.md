@@ -41,7 +41,7 @@ A `/jev-audit` command fires the same audit on demand, ignoring the interval and
 
 ## Configuration
 
-Minimal setup — `~/.config/jev-todo-audit/config.json` with just the key:
+Minimal setup — `~/.pi/agent/jev-todo-audit.json` with just the key:
 
 ```json
 {
@@ -49,7 +49,11 @@ Minimal setup — `~/.config/jev-todo-audit/config.json` with just the key:
 }
 ```
 
-Or export `TYPESAFE_API_KEY` (env wins over the file). Every other field is optional; a missing or malformed file falls back to defaults. Full surface:
+Or export `TYPESAFE_API_KEY` (env wins over the file). Every other field is optional; a missing or malformed file falls back to defaults.
+
+**Project override**: `<repo>/.pi/jev-todo-audit.json` merges over the global file when the project is trusted (`ctx.isProjectTrusted()`). Project files can set tuning fields (`interval`, `cooldownLoops`, `confidenceThreshold`, `enabled`, `notifyOnAligned`, `activityBudgetChars`, `timeoutMs`, `apiUrl`, `model`) but **cannot** set `apiKey` / `apiKeyEnvVar` — secrets stay out of repos.
+
+`PI_CODING_AGENT_DIR` overrides `~/.pi/agent` when you run pi with a non-default agent dir. If the legacy `~/.config/jev-todo-audit/config.json` still exists you'll get a one-time warning at session start; move it to the new path. Full surface:
 
 ```json
 {
@@ -81,7 +85,7 @@ Or export `TYPESAFE_API_KEY` (env wins over the file). Every other field is opti
 | `activityBudgetChars` | Max chars of recent transcript fed to jev as state. | `4000` |
 | `notifyOnAligned` | Also notify on aligned audits. | `false` |
 
-A missing or malformed file falls back to defaults. The extension only reads this file.
+A missing or malformed file falls back to defaults. The extension reads the global file always, and the project file only when the project is trusted.
 
 ## How it counts
 
