@@ -8,7 +8,7 @@ The agent maintains a todo board (`rpiv-todo`), but the model sometimes drifts: 
 
 - New Pi extension package in this repo (`pi install`-able, or loaded from `.pi/`): a **todo-board auditor** that is fully passive toward `rpiv-todo` (reads state via session-branch replay, never imports its internals).
 - Counts completed agent loops (assistant messages on the branch) from the very first loop; survives restart/compaction by replaying the branch.
-- Every 10th loop, calls the TypeSafe API (`https://api.typesafe.ai/v1/systemone`, model `jev`) with one multi-question Choice request comparing the current todo snapshot against recent conversation activity.
+- Every 10th loop, calls the TypeSafe API (`https://api.typesafe.ai/v1/systemone`, model `jev-latest`) with one multi-question Choice request comparing the current todo snapshot against recent conversation activity.
 - **Cooldown rule**: if the 10th loop lands within 5 loops of the last user message, the audit for that trigger point is skipped (not deferred) — the agent is likely turning to new instructions.
 - On a verdict of misalignment, injects a corrective custom message into the conversation (via `turn_end` continuation) instructing the agent to update the todo board (complete/stale/cancel/defer the displayed task; add its current work; resume board order if drifting). Aligned verdicts are logged only, low-confidence verdicts notify the user instead of acting.
 - API errors/timeouts never block the agent loop: the audit is skipped and retried at the next trigger point.

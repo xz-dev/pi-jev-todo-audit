@@ -36,7 +36,7 @@ describe("config", () => {
 		writeFileSync(p, JSON.stringify({ interval: -3, model: 42, confidenceThreshold: 0.9 }));
 		const cfg = loadConfig(p);
 		expect(cfg.interval).toBe(10);
-		expect(cfg.model).toBe("jev");
+		expect(cfg.model).toBe("jev-latest");
 		expect(cfg.confidenceThreshold).toBe(0.9);
 		rmSync(dir, { recursive: true });
 	});

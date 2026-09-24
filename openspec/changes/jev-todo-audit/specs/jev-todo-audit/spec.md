@@ -52,7 +52,7 @@ The extension SHALL skip the audit for a trigger point when 5 or fewer loops hav
 
 ### Requirement: Audit request content
 
-Each audit SHALL send one request to the TypeSafe API (`POST /v1/systemone`, model `jev`) containing: (a) the current todo snapshot as rendered task lines with status, and (b) a summary of recent conversation activity since the last user message or last audit (whichever is later). The request SHALL ask, in a single call, the jev Choice questions for: (1) whether current work matches the task(s) shown in_progress, (2) the true state of the displayed in_progress task(s) when misaligned (completed / still ongoing / cancelled / deliberately deferred / other), (3) which board task the current work matches, or none, and (4) whether the agent has drifted from the board's plan. Question 3's options SHALL be generated dynamically from the current board snapshot and always include a not-on-board option.
+Each audit SHALL send one request to the TypeSafe API (`POST /v1/systemone`, model `jev-latest`) containing: (a) the current todo snapshot as rendered task lines with status, and (b) a summary of recent conversation activity since the last user message or last audit (whichever is later). The request SHALL ask, in a single call, the jev Choice questions for: (1) whether current work matches the task(s) shown in_progress, (2) the true state of the displayed in_progress task(s) when misaligned (completed / still ongoing / cancelled / deliberately deferred / other), (3) which board task the current work matches, or none, and (4) whether the agent has drifted from the board's plan. Question 3's options SHALL be generated dynamically from the current board snapshot and always include a not-on-board option.
 
 #### Scenario: One request carries all questions
 - **WHEN** an audit fires
@@ -100,11 +100,11 @@ Audit execution SHALL never block, abort, or corrupt the agent loop. An audit ne
 
 ### Requirement: Configuration
 
-The extension SHALL be configurable with: audit interval (default 10), user-message cooldown loops (default 5), confidence threshold (default 0.5), model name (default `jev`), API key source, and an enable/disable switch. The API key MAY come from a configured environment variable (checked first) or a literal `apiKey` field in the config file (pi-style convenience); a blank or absent value in either place is ignored. Missing or malformed configuration SHALL fall back to defaults without failing extension load.
+The extension SHALL be configurable with: audit interval (default 10), user-message cooldown loops (default 5), confidence threshold (default 0.5), model name (default `jev-latest`), API key source, and an enable/disable switch. The API key MAY come from a configured environment variable (checked first) or a literal `apiKey` field in the config file (pi-style convenience); a blank or absent value in either place is ignored. Missing or malformed configuration SHALL fall back to defaults without failing extension load.
 
 #### Scenario: Defaults apply when unconfigured
 - **WHEN** the extension loads with no configuration file
-- **THEN** auditing runs with interval 10, cooldown 5, threshold 0.5, model `jev`
+- **THEN** auditing runs with interval 10, cooldown 5, threshold 0.5, model `jev-latest`
 
 #### Scenario: Disabled extension is inert
 - **WHEN** configuration sets the extension to disabled

@@ -2,7 +2,7 @@
 
 ## Context
 
-Greenfield repo. Target host: Pi Agent extension API (types from `@earendil-works/pi-coding-agent`). Two external systems: `rpiv-todo` (todo board; source studied at `~/.pi/agent/npm/node_modules/@juicesharp/rpiv-todo/`) and TypeSafe API (`https://api.typesafe.ai/v1/systemone`, Choice primitive, model `jev`). Pi's built-in `turnIndex` resets to 0 on every `agent_start`, so it cannot provide a session-lifetime loop count — counting must be reconstructed from the persisted branch, the same technique rpiv-todo itself uses to survive reload/compaction.
+Greenfield repo. Target host: Pi Agent extension API (types from `@earendil-works/pi-coding-agent`). Two external systems: `rpiv-todo` (todo board; source studied at `~/.pi/agent/npm/node_modules/@juicesharp/rpiv-todo/`) and TypeSafe API (`https://api.typesafe.ai/v1/systemone`, Choice primitive, model `jev-latest`). Pi's built-in `turnIndex` resets to 0 on every `agent_start`, so it cannot provide a session-lifetime loop count — counting must be reconstructed from the persisted branch, the same technique rpiv-todo itself uses to survive reload/compaction.
 
 ## Goals / Non-Goals
 

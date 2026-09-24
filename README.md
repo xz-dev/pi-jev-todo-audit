@@ -49,7 +49,7 @@ Optional. `~/.config/jev-todo-audit/config.json` (or `$XDG_CONFIG_HOME/jev-todo-
 	"interval": 10,
 	"cooldownLoops": 5,
 	"confidenceThreshold": 0.5,
-	"model": "jev",
+	"model": "jev-latest",
 	"apiUrl": "https://api.typesafe.ai/v1/systemone",
 	"timeoutMs": 30000,
 	"activityBudgetChars": 4000,
@@ -65,7 +65,7 @@ Optional. `~/.config/jev-todo-audit/config.json` (or `$XDG_CONFIG_HOME/jev-todo-
 | `interval` | Audit every Nth completed loop. | `10` |
 | `cooldownLoops` | Skip a trigger when this many or fewer loops passed since the last user message. Skipped means skipped — not deferred. | `5` |
 | `confidenceThreshold` | Minimum jev confidence to inject a correction; below it the extension notifies instead. | `0.5` |
-| `model` | TypeSafe model id. | `"jev"` |
+| `model` | TypeSafe model id. | `"jev-latest"` |
 | `apiUrl` | TypeSafe System One endpoint. | `https://api.typesafe.ai/v1/systemone` |
 | `timeoutMs` | Audit request timeout; failures skip quietly and retry at the next trigger. | `30000` |
 | `activityBudgetChars` | Max chars of recent transcript fed to jev as state. | `4000` |

@@ -105,7 +105,10 @@ export async function runAudit(
 			body: JSON.stringify(req),
 			signal: AbortSignal.timeout(opts.timeoutMs),
 		});
-		if (!res.ok) return { ok: false, error: `HTTP ${res.status}` };
+		if (!res.ok) {
+			const body = await res.text().catch(() => "");
+			return { ok: false, error: `HTTP ${res.status}${body ? `: ${body.slice(0, 300)}` : ""}` };
+		}
 		const body = (await res.json()) as { answers?: AuditAnswers };
 		if (!body.answers || typeof body.answers !== "object") {
 			return { ok: false, error: "malformed response: no answers" };

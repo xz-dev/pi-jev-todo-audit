@@ -40,7 +40,7 @@ export const DEFAULT_CONFIG: AuditConfig = {
 	interval: 10,
 	cooldownLoops: 5,
 	confidenceThreshold: 0.5,
-	model: "jev",
+	model: "jev-latest",
 	apiKeyEnvVar: "TYPESAFE_API_KEY",
 	enabled: true,
 	notifyOnAligned: false,

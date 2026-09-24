@@ -13,27 +13,27 @@ const board: BoardSnapshot = {
 
 describe("typesafe request", () => {
 	test("single request carries all 4 choice questions", () => {
-		const req = buildAuditRequest(board, "edited parser.ts", "jev");
-		expect(req.model).toBe("jev");
+		const req = buildAuditRequest(board, "edited parser.ts", "jev-latest");
+		expect(req.model).toBe("jev-latest");
 		expect(Object.keys(req.questions).sort()).toEqual(["alignment", "current_match", "drift", "stale_status"]);
 		for (const q of Object.values(req.questions)) expect(q.type).toBe("choice");
 	});
 
 	test("state embeds board rows + activity", () => {
-		const req = buildAuditRequest(board, "edited parser.ts", "jev");
+		const req = buildAuditRequest(board, "edited parser.ts", "jev-latest");
 		expect(req.state).toContain("[in_progress] #3 Write parser (writing parser)");
 		expect(req.state).toContain("edited parser.ts");
 	});
 
 	test("current_match options = visible tasks + not_on_board (deleted excluded)", () => {
-		const req = buildAuditRequest(board, "x", "jev");
+		const req = buildAuditRequest(board, "x", "jev-latest");
 		const crit = req.questions.current_match.criteria as Record<string, string>;
 		expect(Object.keys(crit).sort()).toEqual(["3", "5", NOT_ON_BOARD]);
 		expect(crit["3"]).toContain("Write parser");
 	});
 
 	test("empty board → not_on_board only", () => {
-		const req = buildAuditRequest({ tasks: [], nextId: 1 }, "x", "jev");
+		const req = buildAuditRequest({ tasks: [], nextId: 1 }, "x", "jev-latest");
 		expect(req.state).toContain("(board is empty)");
 		const crit = req.questions.current_match.criteria as Record<string, string>;
 		expect(Object.keys(crit)).toEqual([NOT_ON_BOARD]);
@@ -41,7 +41,7 @@ describe("typesafe request", () => {
 });
 
 describe("typesafe client", () => {
-	const req: AuditRequest = buildAuditRequest(board, "x", "jev");
+	const req: AuditRequest = buildAuditRequest(board, "x", "jev-latest");
 	const opts = { apiUrl: "https://x.test/v1/systemone", apiKey: "k", timeoutMs: 1000 };
 
 	test("ok response → parsed answers", async () => {
@@ -53,7 +53,7 @@ describe("typesafe client", () => {
 		if (res.ok) expect(res.answers.alignment?.choice).toBe("aligned");
 		const call = (fetchFn as any).mock.calls[0];
 		expect(call[0]).toBe(opts.apiUrl);
-		expect(JSON.parse(call[1].body as string).model).toBe("jev");
+		expect(JSON.parse(call[1].body as string).model).toBe("jev-latest");
 		expect((call[1].headers as Record<string, string>).authorization).toBe("Bearer k");
 	});
 
