@@ -95,19 +95,24 @@ export default function (pi: ExtensionAPI, cfgOverride?: AuditConfig) {
 		try {
 			const board = replayBoard(ctx.sessionManager.getBranch());
 			const req = buildAuditRequest(board, recentActivity(ctx, cfg.activityBudgetChars), cfg.model);
+			console.error(`[jev-audit] firing @loop${c.totalLoops} tasks=${board.tasks.length}`);
 			const res = await runAudit(req, { apiUrl: cfg.apiUrl, apiKey, timeoutMs: cfg.timeoutMs });
+			console.error(`[jev-audit] result ok=${res.ok} ${res.ok?JSON.stringify(res.answers):res.error}`);
 
 			if (!res.ok) {
+				console.error(`[jev-audit] notify fail`);
 				ctx.ui?.notify?.(`[jev audit @ loop ${c.totalLoops}] failed: ${res.error}`, "warning");
 				return;
 			}
 
 			const action = decide(res.answers, board, cfg.confidenceThreshold, c.totalLoops);
+			console.error(`[jev-audit] action=${action.kind}`);
 			if (action.kind === "notify") {
 				ctx.ui?.notify?.(action.text, "info");
 			} else if (action.kind === "inject") {
 				// steer > followUp: lands at the next turn boundary of the running
 				// loop instead of waiting for the run to settle.
+				console.error(`[jev-audit] injecting steer msg`);
 				pi.sendMessage(
 					{ customType: "jev-todo-audit", content: action.text, display: true },
 					{ deliverAs: "steer" },
