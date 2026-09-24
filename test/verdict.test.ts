@@ -102,4 +102,27 @@ describe("verdict", () => {
 		if (r.kind === "inject") expect(r.text).toContain("STOP");
 		else expect.unreachable();
 	});
+
+	test("no_in_progress_task + match → inject 'claim it'", () => {
+		const b: BoardSnapshot = { tasks: [{ id: 1, subject: "s1", status: "pending" }], nextId: 2 };
+		const a: AuditAnswers = {
+			alignment: ans("no_in_progress_task", 0.99),
+			current_match: ans("1", 0.9),
+			drift: ans("on_track", 0.9),
+		};
+		const r = decide(a, b, 0.5, 10);
+		expect(r.kind).toBe("inject");
+		if (r.kind === "inject") expect(r.text).toContain("set #1 in_progress");
+	});
+
+	test("no_in_progress_task + no match → inject 'create + claim'", () => {
+		const b: BoardSnapshot = { tasks: [{ id: 1, subject: "s1", status: "pending" }], nextId: 2 };
+		const a: AuditAnswers = {
+			alignment: ans("no_in_progress_task", 0.99),
+			current_match: ans("not_on_board", 0.9),
+		};
+		const r = decide(a, b, 0.5, 10);
+		if (r.kind === "inject") expect(r.text).toContain("create todo task(s)");
+		else expect.unreachable();
+	});
 });

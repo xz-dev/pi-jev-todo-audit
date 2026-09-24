@@ -31,10 +31,27 @@ export function decide(answers: AuditAnswers, board: BoardSnapshot, threshold: n
 		return { kind: "silent" };
 	}
 
-	// Verdict requires action → only the answers that drive the correction
-	// (alignment + stale_status + current_match) gate the injection. `drift`
-	// is advisory garnish: it only adds the stop-and-resume line when it is
-	// itself confident; a low-confidence drift never blocks the correction.
+	// No in_progress task on the board: nothing to compare against. If the
+	// agent is working anyway, the fix is "claim what you're doing", not
+	// resolving a stale task. `stale_status` is meaningless in this path —
+	// only alignment and current_match drive the message.
+	if (align.choice === "no_in_progress_task") {
+		const used = [align, answers.current_match].filter(Boolean) as ChoiceAnswer[];
+		if (used.some((a) => conf(a) < threshold)) {
+			return { kind: "notify", text: `[jev audit @ loop ${loop}] board has no in_progress but agent is working — verdict uncertain (conf ${conf(align).toFixed(2)})` };
+		}
+		const match = answers.current_match?.choice;
+		const drifted = answers.drift?.choice === "drifted" && conf(answers.drift) >= threshold;
+		const steps: string[] = [];
+		if (match && match !== NOT_ON_BOARD) steps.push(`set #${match} in_progress with an accurate activeForm`);
+		else steps.push("create todo task(s) for your current work and mark it in_progress");
+		if (drifted) steps.push("STOP the off-plan work and resume the next pending board task");
+		const text = [`[jev audit @ loop ${loop}] No task marked in_progress but you are actively working.`,
+			"Fix the board now via the todo tool:", ...steps.map((s, i) => `${i + 1}. ${s}`)].join("\n");
+		return { kind: "inject", text };
+	}
+
+	// not_aligned / unclear: stale-task path — alignment + stale_status + current_match gate.
 	const used = [align, answers.stale_status, answers.current_match].filter(Boolean) as ChoiceAnswer[];
 	const low = used.find((a) => conf(a) < threshold);
 	if (low) {

@@ -78,6 +78,10 @@ When the verdict says work is aligned with the board, the extension SHALL take n
 - **WHEN** jev answers that the displayed in_progress task is actually completed and the current work matches no board task
 - **THEN** a corrective message is injected naming the affected task id and the required board updates, and it reaches the agent at the next turn boundary
 
+#### Scenario: No in_progress task while agent works
+- **WHEN** jev answers `no_in_progress_task` (board has none marked) and the agent is actively working
+- **THEN** a corrective message is injected telling the agent to claim the current work (set the matching task in_progress, or create it when nothing matches)
+
 #### Scenario: Drift verdict orders return to board
 - **WHEN** jev answers that the agent drifted from the plan
 - **THEN** the injected message instructs the agent to stop the off-plan work and resume the next board task
