@@ -53,6 +53,7 @@ function recentActivity(ctx: Ctx, budget: number): string {
 
 export default function (pi: ExtensionAPI, cfgOverride?: AuditConfig) {
 	const cfg: AuditConfig = cfgOverride ?? loadConfig();
+	console.error(`[jev-audit] loaded enabled=${cfg.enabled} interval=${cfg.interval} keyEnv=${cfg.apiKeyEnvVar}`);
 	if (!cfg.enabled) return;
 
 	const counters = new Map<string, LoopCounter>();
@@ -81,6 +82,7 @@ export default function (pi: ExtensionAPI, cfgOverride?: AuditConfig) {
 	pi.on("turn_end", async (_e, ctx) => {
 		const c = counterFor(sid(ctx));
 		onTurnEnd(c);
+		console.error(`[jev-audit] turn_end total=${c.totalLoops} sinceUser=${c.totalLoops-c.lastUserMsgAt}`);
 		if (!shouldAudit(c, cfg.interval, cfg.cooldownLoops) || inFlight) return;
 
 		const apiKey = resolveApiKey(cfg);
