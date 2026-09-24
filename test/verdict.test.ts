@@ -78,4 +78,28 @@ describe("verdict", () => {
 		const r = decide(a, board, 0.5, 10);
 		expect(r.kind).toBe("notify");
 	});
+
+	test("low-confidence drift does NOT block injection (gating only applies to driving answers)", () => {
+		const a: AuditAnswers = {
+			alignment: ans("not_aligned", 0.9),
+			stale_status: ans("actually_completed", 0.9),
+			current_match: ans("7", 0.9),
+			drift: ans("drifted", 0.3), // low conf — ignored entirely
+		};
+		const r = decide(a, board, 0.5, 10);
+		expect(r.kind).toBe("inject");
+		if (r.kind === "inject") expect(r.text).not.toContain("STOP");
+	});
+
+	test("confident drift adds STOP line", () => {
+		const a: AuditAnswers = {
+			alignment: ans("not_aligned", 0.9),
+			stale_status: ans("actually_completed", 0.9),
+			current_match: ans("7", 0.9),
+			drift: ans("drifted", 0.9),
+		};
+		const r = decide(a, board, 0.5, 10);
+		if (r.kind === "inject") expect(r.text).toContain("STOP");
+		else expect.unreachable();
+	});
 });

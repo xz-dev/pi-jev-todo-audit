@@ -31,8 +31,11 @@ export function decide(answers: AuditAnswers, board: BoardSnapshot, threshold: n
 		return { kind: "silent" };
 	}
 
-	// Verdict requires action → every used answer must clear the threshold.
-	const used = [align, answers.stale_status, answers.current_match, answers.drift].filter(Boolean) as ChoiceAnswer[];
+	// Verdict requires action → only the answers that drive the correction
+	// (alignment + stale_status + current_match) gate the injection. `drift`
+	// is advisory garnish: it only adds the stop-and-resume line when it is
+	// itself confident; a low-confidence drift never blocks the correction.
+	const used = [align, answers.stale_status, answers.current_match].filter(Boolean) as ChoiceAnswer[];
 	const low = used.find((a) => conf(a) < threshold);
 	if (low) {
 		return {
@@ -43,7 +46,7 @@ export function decide(answers: AuditAnswers, board: BoardSnapshot, threshold: n
 
 	const stale = answers.stale_status?.choice;
 	const match = answers.current_match?.choice;
-	const drift = answers.drift?.choice;
+	const drifted = answers.drift?.choice === "drifted" && conf(answers.drift) >= threshold;
 	const inProg = inProgressTasks(board);
 	const inProgLabel = inProg.map((t) => `#${t.id} "${t.subject}"`).join(", ") || "(none)";
 
@@ -52,7 +55,7 @@ export function decide(answers: AuditAnswers, board: BoardSnapshot, threshold: n
 		`- Board shows in_progress: ${inProgLabel} → jev: ${stale ?? "unknown"}`,
 		`- Current work matches: ${match && match !== NOT_ON_BOARD ? `#${match}` : "nothing on the board"}`,
 	];
-	if (drift === "drifted") lines.push("- Direction: drifted off the board's plan");
+	if (drifted) lines.push("- Direction: drifted off the board's plan");
 
 	const steps: string[] = [];
 	if (stale === "actually_completed") steps.push(`mark ${inProgLabel} completed`);
@@ -63,7 +66,7 @@ export function decide(answers: AuditAnswers, board: BoardSnapshot, threshold: n
 	if (match && match !== NOT_ON_BOARD) steps.push(`set #${match} in_progress with an accurate activeForm`);
 	else steps.push("create todo task(s) for the work you are actually doing, plus planned follow-ups, and set the current one in_progress");
 
-	if (drift === "drifted") steps.push("STOP the off-plan work and resume the next pending board task");
+	if (drifted) steps.push("STOP the off-plan work and resume the next pending board task");
 
 	lines.push("Fix the board now via the todo tool:", ...steps.map((s, i) => `${i + 1}. ${s}`));
 	return { kind: "inject", text: lines.join("\n") };
