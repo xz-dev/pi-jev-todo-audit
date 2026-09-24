@@ -62,6 +62,10 @@ export default function (pi: ExtensionAPI, cfgOverride?: AuditConfig) {
 
 	pi.on("session_start", async (_e, ctx) => {
 		counters.set(sid(ctx), replayCounter(ctx.sessionManager.getBranch()));
+		// Background audit is useless without a key — warn once at session start.
+		if (!resolveApiKey(cfg)) {
+			ctx.ui?.notify?.(`[jev-todo-audit] no API key: set ${cfg.apiKeyEnvVar} or apiKey in ~/.config/jev-todo-audit/config.json`, "warning");
+		}
 	});
 	pi.on("session_compact", async (_e, ctx) => {
 		counters.set(sid(ctx), replayCounter(ctx.sessionManager.getBranch()));

@@ -48,7 +48,7 @@ The audit runs inside the `turn_end` handler (the loop is still streaming). `del
 The TypeSafe fetch is awaited inside the `turn_end` handler only up to its timeout (30s worst case). This delays the next model request of the same run by at most the audit duration — acceptable for a 10-loop cadence; the agent is otherwise idle between turns. All fetch errors are caught: skip + one `notify` + return without `continue`.
 
 ### D8: Config — JSON file next to the package, env-var key
-`~/.config/jev-todo-audit/config.json` (`interval`, `cooldownLoops`, `confidenceThreshold`, `model`, `apiKeyEnvVar`, `apiKey`, `enabled`, `notifyOnAligned`), read at extension load, malformed → defaults. Key resolution order: env var named by `apiKeyEnvVar` (trimmed) first, then `apiKey` in the file — matching pi-agent convention that secrets may live in config.
+`~/.config/jev-todo-audit/config.json` (`interval`, `cooldownLoops`, `confidenceThreshold`, `model`, `apiKeyEnvVar`, `apiKey`, `enabled`, `notifyOnAligned`), read at extension load, malformed → defaults. Key resolution: env var named by `apiKeyEnvVar` (trimmed, non-blank) first, then `apiKey` in the file — matching pi-agent convention that secrets may live in config. At `session_start` the extension warns once when neither resolves to a non-blank value.
 
 ### D9: Package layout
 Single extension entry `index.ts` (default export factory) + modules: `counter.ts` (D2/D3), `board.ts` (todo snapshot from branch, D1), `typesafe.ts` (client, D4), `verdict.ts` (D5 mapping + message composition), `config.ts` (D8). Plain `fetch`, no runtime deps; `@earendil-works/pi-coding-agent` as dev-only type dependency.

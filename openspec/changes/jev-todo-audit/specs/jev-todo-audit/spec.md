@@ -100,7 +100,7 @@ Audit execution SHALL never block, abort, or corrupt the agent loop. An audit ne
 
 ### Requirement: Configuration
 
-The extension SHALL be configurable with: audit interval (default 10), user-message cooldown loops (default 5), confidence threshold (default 0.5), model name (default `jev-latest`), API key source, and an enable/disable switch. The API key MAY come from a configured environment variable (checked first) or a literal `apiKey` field in the config file (pi-style convenience); a blank or absent value in either place is ignored. Missing or malformed configuration SHALL fall back to defaults without failing extension load.
+The extension SHALL be configurable with: audit interval (default 10), user-message cooldown loops (default 5), confidence threshold (default 0.5), model name (default `jev-latest`), API key source, and an enable/disable switch. The API key MAY come from a configured environment variable (checked first) or a literal `apiKey` field in the config file (pi-style convenience); a value that is empty or all-whitespace counts as absent. At session start the extension SHALL warn once when no key resolves from either source. Missing or malformed configuration SHALL fall back to defaults without failing extension load.
 
 #### Scenario: Defaults apply when unconfigured
 - **WHEN** the extension loads with no configuration file

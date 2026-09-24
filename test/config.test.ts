@@ -48,4 +48,21 @@ describe("config", () => {
 		expect(resolveApiKey(cfg)).toBe("sk-env");
 		delete process.env.JEV_TEST_KEY;
 	});
+
+	test("blank apiKey in file counts as absent", () => {
+		const dir = mkdtempSync(join(tmpdir(), "jev-cfg-"));
+		const p = join(dir, "config.json");
+		writeFileSync(p, JSON.stringify({ apiKey: "   " }));
+		const cfg = loadConfig(p);
+		expect(cfg.apiKey).toBeUndefined();
+		expect(resolveApiKey({ ...cfg, apiKeyEnvVar: "JEV_MISSING_XYZ" })).toBeUndefined();
+		rmSync(dir, { recursive: true });
+	});
+
+	test("blank env var counts as absent, falls back to file key", () => {
+		process.env.JEV_TEST_BLANK = "  \n\t ";
+		const cfg = { ...DEFAULT_CONFIG, apiKeyEnvVar: "JEV_TEST_BLANK", apiKey: "sk-file" };
+		expect(resolveApiKey(cfg)).toBe("sk-file");
+		delete process.env.JEV_TEST_BLANK;
+	});
 });

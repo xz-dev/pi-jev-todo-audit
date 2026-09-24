@@ -39,7 +39,15 @@ The injected message names the stale task id, the matching board task (or instru
 
 ## Configuration
 
-Optional. `~/.config/jev-todo-audit/config.json` (or `$XDG_CONFIG_HOME/jev-todo-audit/config.json`):
+Minimal setup — `~/.config/jev-todo-audit/config.json` with just the key:
+
+```json
+{
+	"apiKey": "sk-..."
+}
+```
+
+Or export `TYPESAFE_API_KEY` (env wins over the file). Every other field is optional; a missing or malformed file falls back to defaults. Full surface:
 
 ```json
 {
