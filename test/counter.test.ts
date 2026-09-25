@@ -30,37 +30,52 @@ describe("counter", () => {
 	test("audit fires at multiples of 10 when past cooldown", () => {
 		const c = freshCounter();
 		onUserMessage(c);
-		for (let i = 0; i < 9; i++) {
+		for (let i = 0; i < 19; i++) {
 			onTurnEnd(c);
-			expect(shouldAudit(c, 10, 5)).toBe(false);
+			expect(shouldAudit(c, 10, 10)).toBe(false);
 		}
-		onTurnEnd(c); // loop 10
-		expect(shouldAudit(c, 10, 5)).toBe(true);
+		onTurnEnd(c); // loop 20, sinceUser=20 > 10
+		expect(shouldAudit(c, 10, 10)).toBe(true);
 	});
 
-	test("cooldown skips trigger inside 5 loops of user msg; next multiple still fires", () => {
+	test("cooldown 10 boundary: exactly 10 skips, 11 fires", () => {
+		// user msg at loop 0 → trigger at loop 10 has since=10 → skip
+		const c = freshCounter();
+		onUserMessage(c);
+		for (let i = 0; i < 10; i++) onTurnEnd(c);
+		expect(loopsSinceUserMsg(c)).toBe(10);
+		expect(shouldAudit(c, 10, 10)).toBe(false);
+		// user msg at loop 9 → loop 20 trigger has since=11 → fire
+		const c2 = replayCounter(branch("user", ...Array(9).fill("assistant"), "user", ...Array(11).fill("assistant")));
+		expect(c2.totalLoops).toBe(20);
+		expect(loopsSinceUserMsg(c2)).toBe(11);
+		expect(shouldAudit(c2, 10, 10)).toBe(true);
+	});
+
+	test("cooldown skips trigger inside 10 loops of user msg; next multiple still fires", () => {
 		const c = freshCounter();
 		onUserMessage(c); // initial prompt
-		for (let i = 0; i < 7; i++) onTurnEnd(c); // loops 1..7
-		onUserMessage(c); // user steers at loop 7
-		onTurnEnd(c); // 8
-		onTurnEnd(c); // 9
-		onTurnEnd(c); // 10 — 3 loops after user msg → skip
-		expect(shouldAudit(c, 10, 5)).toBe(false);
-		for (let i = 0; i < 10; i++) onTurnEnd(c); // loops 11..20
-		expect(shouldAudit(c, 10, 5)).toBe(true); // 20 - 7 = 13 > 5
+		for (let i = 0; i < 17; i++) onTurnEnd(c); // loops 1..17
+		onUserMessage(c); // user steers at loop 17
+		onTurnEnd(c); // 18
+		onTurnEnd(c); // 19
+		onTurnEnd(c); // 20 — 3 loops after user msg → skip
+		expect(shouldAudit(c, 10, 10)).toBe(false);
+		for (let i = 0; i < 10; i++) onTurnEnd(c); // loops 21..30, since=13 > 10
+		expect(shouldAudit(c, 10, 10)).toBe(true);
 	});
 
-	test("edge: exactly 5 loops after user msg still skipped, 6th audits", () => {
-		const c = freshCounter();
-		onUserMessage(c); // lastUserMsgAt = 0
-		for (let i = 0; i < 10; i++) onTurnEnd(c); // loop 10, sinceUser=10 → audit
-		expect(shouldAudit(c, 10, 5)).toBe(true);
-		// simulate user msg at loop 5: trigger at 10 has since=5 → skip
+	test("edge: exactly 10 loops after user msg still skipped", () => {
+		// user msg at loop 5: trigger at 10 has since=5 → skip
 		const c2 = replayCounter(branch("user", ...Array(5).fill("assistant"), "user", ...Array(5).fill("assistant")));
 		expect(c2.totalLoops).toBe(10);
 		expect(loopsSinceUserMsg(c2)).toBe(5);
-		expect(shouldAudit(c2, 10, 5)).toBe(false);
+		expect(shouldAudit(c2, 10, 10)).toBe(false);
+		// since=10 exactly → still skipped
+		const c3 = replayCounter(branch("user", ...Array(10).fill("assistant"), "user", ...Array(10).fill("assistant")));
+		expect(c3.totalLoops).toBe(20);
+		expect(loopsSinceUserMsg(c3)).toBe(10);
+		expect(shouldAudit(c3, 10, 10)).toBe(false);
 	});
 
 	test("aborted turn never reaches branch → not counted", () => {

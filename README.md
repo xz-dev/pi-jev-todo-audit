@@ -17,25 +17,32 @@ Restart your Pi session. Requires a TypeSafe API key for the `jev` model.
 ```text
 turn_end → loop count++ (replayed from branch, survives restart/compaction)
     │
-    └─ every 10th loop ──> skip if ≤5 loops since last user message
-                                │
-                                v
-                   replay board + digest recent activity
+    ├─ every 10th loop ──> skip if ≤10 loops since last user message
+    │                             │
+    │   pi.events "pi:semantic-hook:v1" / user-ready  (terminal stop, bypasses
+    │   cooldown; absent producer = no-op)            │
+    │                             v                  │
+    └──────────────>  replay board + digest recent activity  <──────┘
                                 │
                    POST api.typesafe.ai/v1/systemone (model: jev)
-                   5-6 Choice questions in one request
+                   4 fixed + N per-task lifecycle Choice questions
                                 │
               ┌─────────────────┼──────────────────────┐
               v                 v                      v
           aligned         not_aligned             any used answer
            silent         confidence ok           confidence < 0.5
           (unless                                  │
-          stale/coarse)                            v
-                            │                notify user, no injection
+          stale/coarse/                            v
+          per-task fix)                      notify user, no injection
+                            │
                             v
               inject corrective message
               (steer → next turn boundary)
 ```
+
+Each unfinished visible task gets its own `task_status_<id>` lifecycle question — still ongoing / actually completed / cancelled / deliberately deferred / blocked / future / unclear — judged and confidence-gated **independently**, so one uncertain task never suppresses or contaminates its siblings. Multiple `in_progress` tasks are valid parallel work, never an error by themselves.
+
+When [pi-continue-watchdog](https://github.com/xz-dev/pi-continue-watchdog) publishes `user-ready` on the shared `pi:semantic-hook:v1` bus (autonomous terminal idle: `AI_UNLOCK`, `ERROR_UNLOCK`, `EXHAUSTED`, `DECISION_FAILED`), the extension runs one bounded board check that bypasses the periodic cooldown. If no visible task is unfinished it stays silent; otherwise it audits and only injects when the verdict identifies actionable authorized work — blocked, future, or deferred tasks do not blindly continue. Human aborts/manual unlocks don't reach this hook. Duplicate same-epoch events are coalesced.
 
 The injected message names the stale task id, the matching board task (or instructs the agent to create one), and — when jev reports drift — orders the agent to stop and resume board order. When the board has no `in_progress` task (empty, all pending, or all done), a sixth question `board_warranted` asks whether the work even merits a board — trivial/idle work stays silent instead of nagging the agent to create tasks.
 
@@ -65,7 +72,7 @@ Or export `TYPESAFE_API_KEY` (env wins over the file). Every other field is opti
 	"apiKeyEnvVar": "TYPESAFE_API_KEY",
 	"enabled": true,
 	"interval": 10,
-	"cooldownLoops": 5,
+	"cooldownLoops": 10,
 	"confidenceThreshold": 0.5,
 	"model": "jev-latest",
 	"apiUrl": "https://api.typesafe.ai/v1/systemone",
@@ -82,7 +89,7 @@ Or export `TYPESAFE_API_KEY` (env wins over the file). Every other field is opti
 | `apiKeyEnvVar` | Name of the env var checked first for the key. | `"TYPESAFE_API_KEY"` |
 | `enabled` | Master switch; `false` loads nothing. | `true` |
 | `interval` | Audit every Nth completed loop. | `10` |
-| `cooldownLoops` | Skip a trigger when this many or fewer loops passed since the last user message. Skipped means skipped — not deferred. | `5` |
+| `cooldownLoops` | Skip a trigger when this many or fewer loops passed since the last user message. Skipped means skipped — not deferred. Default equals one full audit interval. | `10` |
 | `confidenceThreshold` | Minimum jev confidence to inject a correction; below it the extension notifies instead. | `0.5` |
 | `model` | TypeSafe model id. | `"jev-latest"` |
 | `apiUrl` | TypeSafe System One endpoint. | `https://api.typesafe.ai/v1/systemone` |
@@ -95,7 +102,7 @@ A missing or malformed file falls back to defaults. The extension reads the glob
 
 ## How it counts
 
-A *loop* is one finalized assistant message on the session branch — aborted turns never persist, so they never count. The counter and last-user-message position are replayed from the branch on `session_start`, `session_compact`, and `session_tree`, so the cadence survives `/reload`, process restarts, and branch switches. A user message (including a steer) resets the cooldown: the next 5 loops belong to the new instruction, not the old board.
+A *loop* is one finalized assistant message on the session branch — aborted turns never persist, so they never count. The counter and last-user-message position are replayed from the branch on `session_start`, `session_compact`, and `session_tree`, so the cadence survives `/reload`, process restarts, and branch switches. A user message (including a steer) resets the cooldown: the next 10 loops belong to the new instruction, not the old board.
 
 ## Requirements
 

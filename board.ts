@@ -119,6 +119,11 @@ export function inProgressTasks(board: BoardSnapshot): BoardTask[] {
 	return visibleTasks(board).filter((t) => t.status === "in_progress");
 }
 
+/** Visible tasks that are not finished: pending or in_progress. */
+export function unfinishedTasks(board: BoardSnapshot): BoardTask[] {
+	return visibleTasks(board).filter((t) => t.status === "pending" || t.status === "in_progress");
+}
+
 /**
  * Task ids that have been in_progress for more than `staleSpans` audit
  * intervals. `currentLoops` is the counter's totalLoops; `interval` is the

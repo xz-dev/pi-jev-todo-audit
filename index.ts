@@ -10,10 +10,29 @@
 import type { ExtensionAPI, ExtensionCommandContext } from "@earendil-works/pi-coding-agent";
 import { existsSync } from "node:fs";
 import { agentConfigPath, legacyConfigPath, loadConfig, projectConfigPath, resolveApiKey, type AuditConfig } from "./config.js";
-import { replayBoardWithAges, staleTaskIds } from "./board.js";
+import { replayBoardWithAges, staleTaskIds, unfinishedTasks } from "./board.js";
 import { freshCounter, onTurnEnd, onUserMessage, replayCounter, shouldAudit, type LoopCounter } from "./counter.js";
-import { buildAuditRequest, runAudit } from "./typesafe.js";
+import { buildAuditRequest, runAudit, type TerminalStopInfo } from "./typesafe.js";
 import { decide } from "./verdict.js";
+
+/** Neutral bus channel shared with pi-continue-watchdog — plain data, no imports. */
+const SEMANTIC_HOOK_CHANNEL = "pi:semantic-hook:v1";
+const USER_READY_HOOK = "user-ready";
+const VALID_STOP_KINDS = new Set(["AI_UNLOCK", "ERROR_UNLOCK", "EXHAUSTED", "DECISION_FAILED"]);
+
+/** Narrow a `pi:semantic-hook:v1` payload to a valid user-ready envelope. */
+function parseUserReady(data: unknown): TerminalStopInfo | undefined {
+	if (!data || typeof data !== "object") return undefined;
+	const e = data as { version?: unknown; name?: unknown; values?: unknown };
+	if (e.version !== 1 || e.name !== USER_READY_HOOK) return undefined;
+	const v = e.values as Record<string, unknown> | undefined;
+	const kind = v?.STOP_KIND;
+	if (typeof kind !== "string" || !VALID_STOP_KINDS.has(kind)) return undefined;
+	const out: TerminalStopInfo = { stopKind: kind };
+	if (typeof v?.REASON_TYPE === "string" && v.REASON_TYPE.trim()) out.reasonType = v.REASON_TYPE;
+	if (typeof v?.REASON === "string" && v.REASON.trim()) out.reason = v.REASON;
+	return out;
+}
 
 type Ctx = { sessionManager: { getSessionId(): string; getBranch(): Iterable<unknown> }; cwd?: string; isProjectTrusted?: () => boolean };
 const sid = (ctx: Ctx) => ctx.sessionManager.getSessionId() ?? "";
@@ -62,9 +81,20 @@ export default function (pi: ExtensionAPI, cfgOverride?: AuditConfig) {
 	const counterFor = (id: string) => counters.get(id) ?? freshCounter();
 	let inFlight = false;
 	let projectMerged = false;
+	/** Latest ctx seen on session_start — used by the semantic-hook listener. */
+	let lastCtx: (Ctx & { ui?: { notify?: (m: string, l?: "error" | "warning" | "info") => void } }) | undefined;
+	/** Envelope identity + stop-epoch dedup for terminal-stop audits. */
+	const seenEnvelopes = new WeakSet<object>();
+	let lastStopKey = "";
+	/** Single-level queue: newest distinct stop epoch seen while an audit ran. */
+	let pendingStop: { key: string; stop: TerminalStopInfo } | undefined;
 
 	/** Shared audit body: replay board → call jev → act on verdict. */
-	async function auditNow(ctx: Ctx & { ui?: { notify?: (m: string, l?: "error" | "warning" | "info") => void } }, label: string) {
+	async function auditNow(
+		ctx: Ctx & { ui?: { notify?: (m: string, l?: "error" | "warning" | "info") => void } },
+		label: string,
+		opts: { terminalStop?: TerminalStopInfo } = {},
+	) {
 		if (inFlight) return;
 		const apiKey = resolveApiKey(cfg);
 		if (!apiKey) {
@@ -75,7 +105,9 @@ export default function (pi: ExtensionAPI, cfgOverride?: AuditConfig) {
 		inFlight = true;
 		try {
 			const board = replayBoardWithAges(ctx.sessionManager.getBranch());
-			const req = buildAuditRequest(board, recentActivity(ctx, cfg.activityBudgetChars), cfg.model);
+			// Terminal-stop short-circuit: nothing unfinished → nothing to check.
+			if (opts.terminalStop && unfinishedTasks(board).length === 0) return;
+			const req = buildAuditRequest(board, recentActivity(ctx, cfg.activityBudgetChars), cfg.model, opts.terminalStop);
 			const res = await runAudit(req, { apiUrl: cfg.apiUrl, apiKey, timeoutMs: cfg.timeoutMs });
 
 			if (!res.ok) {
@@ -84,7 +116,7 @@ export default function (pi: ExtensionAPI, cfgOverride?: AuditConfig) {
 			}
 
 			const staleIds = staleTaskIds(board, c.totalLoops, cfg.interval, cfg.staleAuditSpans);
-			const action = decide(res.answers, board, cfg.confidenceThreshold, c.totalLoops, staleIds);
+			const action = decide(res.answers, board, cfg.confidenceThreshold, c.totalLoops, staleIds, { terminalStop: !!opts.terminalStop });
 			if (action.kind === "notify") {
 				ctx.ui?.notify?.(action.text, "info");
 			} else if (action.kind === "inject") {
@@ -104,10 +136,20 @@ export default function (pi: ExtensionAPI, cfgOverride?: AuditConfig) {
 			ctx.ui?.notify?.(`[jev audit ${label}] error: ${err instanceof Error ? err.message : String(err)}`, "warning");
 		} finally {
 			inFlight = false;
+			// A distinct stop epoch arrived while we were auditing → one follow-up.
+			if (pendingStop && lastCtx) {
+				const { key, stop } = pendingStop;
+				pendingStop = undefined;
+				lastStopKey = key;
+				void auditNow(lastCtx, "terminal-stop", { terminalStop: stop });
+			}
 		}
 	}
 
 	pi.on("session_start", async (_e, ctx) => {
+		lastCtx = ctx;
+		lastStopKey = "";
+		pendingStop = undefined;
 		if (!projectMerged) {
 			projectMerged = true;
 			const trusted = ctx.isProjectTrusted?.() ?? false;
@@ -133,6 +175,10 @@ export default function (pi: ExtensionAPI, cfgOverride?: AuditConfig) {
 	});
 	pi.on("session_shutdown", async (_e, ctx) => {
 		counters.delete(sid(ctx));
+		if (lastCtx && sid(lastCtx) === sid(ctx)) {
+			lastCtx = undefined;
+			pendingStop = undefined;
+		}
 	});
 
 	// A finalized user message (prompt or steer) resets the cooldown window.
@@ -146,6 +192,33 @@ export default function (pi: ExtensionAPI, cfgOverride?: AuditConfig) {
 		onTurnEnd(c);
 		if (!shouldAudit(c, cfg.interval, cfg.cooldownLoops) || inFlight) return;
 		await auditNow(ctx, `@ loop ${c.totalLoops}`);
+	});
+
+	// Optional terminal-stop check: consume user-ready from the neutral bus.
+	// The producer (pi-continue-watchdog) may be absent — the listener is a
+	// no-op then. Handler is sync-safe: audit is fired async, errors contained.
+	pi.events.on(SEMANTIC_HOOK_CHANNEL, (data: unknown) => {
+		try {
+			const stop = parseUserReady(data);
+			if (!stop || !lastCtx) return;
+			// Dedup: same envelope object or same stop epoch (kind+reason).
+			if (typeof data === "object" && data !== null) {
+				if (seenEnvelopes.has(data)) return;
+				seenEnvelopes.add(data);
+			}
+			const key = `${sid(lastCtx)}|${stop.stopKind}|${stop.reasonType ?? ""}|${stop.reason ?? ""}`;
+			if (key === lastStopKey || key === pendingStop?.key) return;
+			if (inFlight) {
+				// Queue newest distinct epoch; single-level, no unbounded retries.
+				pendingStop = { key, stop };
+				return;
+			}
+			lastStopKey = key;
+			// Fire-and-forget: auditNow isolates its own errors.
+			void auditNow(lastCtx, "terminal-stop", { terminalStop: stop });
+		} catch {
+			// Malformed payloads must never disturb the agent lifecycle.
+		}
 	});
 
 	pi.registerCommand("jev-audit", {

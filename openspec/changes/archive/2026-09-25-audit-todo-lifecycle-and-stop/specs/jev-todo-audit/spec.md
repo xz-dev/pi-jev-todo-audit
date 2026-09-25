@@ -1,37 +1,4 @@
-# jev-todo-audit Specification
-
-## Purpose
-Periodically audits the agent's todo board (rpiv-todo) against actual conversation activity using the jev model (TypeSafe Choice primitive), and nudges the agent back on track when the two disagree. It also performs a bounded board check when the agent autonomously reaches a terminal stop, reconciling lifecycle state per task rather than treating the board as one aggregate verdict.
-
-## Requirements
-
-### Requirement: Loop counting from session branch
-
-The extension SHALL count completed agent loops as the number of finalized assistant messages on the current session branch, starting from the first loop of the session. The count SHALL be reconstructed from the session branch on session start, compaction, and session-tree changes, so it survives restarts, reloads, and compaction. The runtime in-memory counter SHALL be authoritative between reconstructions.
-
-#### Scenario: Count survives restart
-- **WHEN** the session is reloaded or the process restarted
-- **THEN** the loop count equals the number of assistant messages on the branch, and auditing continues from that count
-
-#### Scenario: Aborted turns do not count
-- **WHEN** an assistant message is aborted before finalization (never persisted to the branch)
-- **THEN** the loop count is not incremented for it
-
-#### Scenario: Branch switch follows the branch
-- **WHEN** the user switches to a different session branch
-- **THEN** the loop count is recomputed from that branch's assistant messages
-
-### Requirement: Audit every 10th loop
-
-The extension SHALL trigger a jev audit at every loop count that is a positive multiple of the configured interval (default 10). A trigger point that is skipped by the cooldown rule SHALL NOT be deferred or retried; the next multiple is the next trigger point.
-
-#### Scenario: Tenth loop triggers
-- **WHEN** the loop count reaches 10
-- **THEN** a jev audit is initiated
-
-#### Scenario: First audit timing
-- **WHEN** the session begins and the user's first prompt runs at least 6 loops
-- **THEN** the first audit fires at loop 10, not earlier
+## MODIFIED Requirements
 
 ### Requirement: User-message cooldown
 
@@ -69,7 +36,7 @@ When the board has no `in_progress` task — either empty or with all tasks `pen
 
 #### Scenario: Granularity question always present
 - **WHEN** an audit fires with any board state
-- **THEN** the `granularity` question is present with options `single_verifiable_outcome`, `bundles_multiple_outcomes`, `ambiguous_done_criteria`, `not_applicable`
+- **THEN** the `granularity` question is present with options `single_verifiable_outcome`, `bundles_multiple_outcomes`, `ambiguous_done_criteria`, and `not_applicable`
 
 #### Scenario: Empty board still audited
 - **WHEN** an audit fires and no visible tasks exist
@@ -123,18 +90,18 @@ When any corrective action is injected, the message SHALL identify affected task
 
 #### Scenario: Misaligned verdict injects correction
 - **WHEN** jev answers that the displayed in_progress task is actually completed and the current work matches no board task
-- **THEN** a corrective message is injected naming the affected task ID and the required board updates, and it reaches the agent at the next turn boundary
+- **THEN** a corrective message is injected naming the affected task ID and the required board update, and it reaches the agent at the next turn boundary
 
 #### Scenario: No in_progress task while agent works
-- **WHEN** jev answers `no_in_progress_task` (board has none marked) and the agent is actively working
-- **THEN** a corrective message is injected telling the agent to claim the current work (set the matching task in_progress, or create it when nothing matches)
+- **WHEN** jev answers `no_in_progress_task` and the agent is actively working
+- **THEN** a corrective message is injected telling the agent to claim the current work by setting a matching task in_progress or creating one when nothing matches
 
 #### Scenario: Empty board and work is trivial or idle
 - **WHEN** jev answers `no_in_progress_task` and `board_warranted` is `trivial` or `idle`
 - **THEN** no message is injected and no notification is sent
 
 #### Scenario: All-done board and work is trivial or idle
-- **WHEN** the board's visible tasks are all `completed`/`pending` and jev answers `no_in_progress_task` + `board_warranted` is `trivial` or `idle`
+- **WHEN** the board's visible tasks are all `completed`/`pending` and jev answers `no_in_progress_task` plus `board_warranted=trivial` or `idle`
 - **THEN** no message is injected and no notification is sent
 
 #### Scenario: Empty board and work is warranted
@@ -150,11 +117,11 @@ When any corrective action is injected, the message SHALL identify affected task
 - **THEN** the injected message instructs the agent to stop the off-plan work and resume the next board task
 
 #### Scenario: Low confidence defers to the user
-- **WHEN** the alignment verdict's confidence is below the threshold
-- **THEN** no corrective message is injected and a user notification describes the uncertain verdict
+- **WHEN** an alignment or task lifecycle verdict used for a correction has confidence below the threshold
+- **THEN** no corrective message is injected for that task and a user notification describes the uncertain verdict
 
 #### Scenario: Stale in_progress task gets split nudge
-- **WHEN** task #4 has been in_progress for more than 3 × interval completed loops (e.g. >30 loops at interval 10) and the alignment verdict is `aligned`
+- **WHEN** task #4 has been in_progress for more than 3 × interval completed loops and the alignment verdict is `aligned`
 - **THEN** a corrective message is injected whose steps instruct splitting #4 into single-verifiable-outcome tasks
 
 #### Scenario: Granularity verdict bundles outcomes
@@ -254,6 +221,8 @@ The `apiKey` and `apiKeyEnvVar` fields SHALL be read only from the global layer;
 #### Scenario: Disabled extension is inert
 - **WHEN** configuration sets the extension to disabled
 - **THEN** no periodic or terminal-stop audits fire and no counter state is maintained
+
+## ADDED Requirements
 
 ### Requirement: Terminal-stop board check
 

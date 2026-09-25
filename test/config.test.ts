@@ -26,7 +26,7 @@ describe("config", () => {
 		const cfg = loadConfig(p);
 		expect(cfg.interval).toBe(20);
 		expect(cfg.enabled).toBe(false);
-		expect(cfg.cooldownLoops).toBe(5);
+		expect(cfg.cooldownLoops).toBe(10);
 		rmSync(dir, { recursive: true });
 	});
 

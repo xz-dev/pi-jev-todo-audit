@@ -15,7 +15,7 @@ describe("typesafe request", () => {
 	test("non-empty board → 5 questions, no board_warranted", () => {
 		const req = buildAuditRequest(board, "edited parser.ts", "jev-latest");
 		expect(req.model).toBe("jev-latest");
-		expect(Object.keys(req.questions).sort()).toEqual(["alignment", "current_match", "drift", "granularity", "stale_status"]);
+		expect(Object.keys(req.questions).sort()).toEqual(["alignment", "current_match", "drift", "granularity", "task_status_3", "task_status_5"]);
 		for (const q of Object.values(req.questions)) expect(q.type).toBe("choice");
 	});
 
@@ -60,6 +60,36 @@ describe("typesafe request", () => {
 		const bw = req.questions.board_warranted.criteria as Record<string, string>;
 		expect(Object.keys(bw).sort()).toEqual(["idle", "trivial", "warranted"]);
 	});
+
+	test("per-task lifecycle question per unfinished task", () => {
+		const req = buildAuditRequest(board, "x", "jev-latest");
+		const q5 = req.questions.task_status_5;
+		const q3 = req.questions.task_status_3;
+		expect(q5).toBeDefined();
+		expect(q3).toBeDefined();
+		expect(q5.instructions).toContain("#5");
+		expect(Object.keys(q5.criteria).sort()).toEqual([
+			"actually_completed", "blocked", "cancelled", "deliberately_deferred", "future", "still_ongoing", "unclear",
+		]);
+		// deleted task #9 gets no question
+		expect(req.questions.task_status_9).toBeUndefined();
+	});
+
+	test("terminalStop info serializes into state", () => {
+		const req = buildAuditRequest(board, "x", "jev-latest", {
+			stopKind: "AI_UNLOCK",
+			reasonType: "JOB_DONE",
+			reason: "work done",
+		});
+		expect(req.state).toContain("STOP_KIND: AI_UNLOCK");
+		expect(req.state).toContain("REASON_TYPE: JOB_DONE");
+		expect(req.state).toContain("REASON: work done");
+	});
+
+	test("no terminalStop → no stop block in state", () => {
+		const req = buildAuditRequest(board, "x", "jev-latest");
+		expect(req.state).not.toContain("STOP_KIND");
+	});
 });
 
 describe("typesafe client", () => {
@@ -97,5 +127,25 @@ describe("typesafe client", () => {
 		const fetchFn = mock(async () => new Response("{}", { status: 200 }));
 		const res = await runAudit(req, { ...opts, fetchFn: fetchFn });
 		expect(res.ok).toBe(false);
+	});
+
+	test("task_status_* answers fold into lifecycle map; garbage keys dropped", async () => {
+		const fetchFn = mock(async () => new Response(JSON.stringify({
+			answers: {
+				alignment: { choice: "aligned", confidence: 0.9 },
+				task_status_5: { choice: "actually_completed", confidence: 0.9 },
+				task_status_7: { choice: "still_ongoing", confidence: 0.8 },
+				bogus_key: { choice: "x" },
+				junk: "not-an-object",
+			},
+		}), { status: 200 }));
+		const res = await runAudit(req, { ...opts, fetchFn: fetchFn });
+		expect(res.ok).toBe(true);
+		if (res.ok) {
+			expect(res.answers.lifecycle?.task_status_5?.choice).toBe("actually_completed");
+			expect(res.answers.lifecycle?.task_status_7?.choice).toBe("still_ongoing");
+			expect((res.answers as Record<string, unknown>).bogus_key).toBeUndefined();
+			expect(res.answers.alignment?.choice).toBe("aligned");
+		}
 	});
 });

@@ -46,7 +46,7 @@ export interface AuditConfig {
 
 export const DEFAULT_CONFIG: AuditConfig = {
 	interval: 10,
-	cooldownLoops: 5,
+	cooldownLoops: 10,
 	confidenceThreshold: 0.5,
 	model: "jev-latest",
 	apiKeyEnvVar: "TYPESAFE_API_KEY",
