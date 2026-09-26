@@ -367,6 +367,106 @@ describe("verdict", () => {
 		if (r.kind === "inject") expect(r.text).toContain("terminal-stop");
 	});
 
+	test("terminal-stop: still_ongoing task → CONTINUE step, not silent", () => {
+		// Agent autonomously stopped mid-task: jev says the in_progress task is
+		// still the real work → push the agent to continue it, not just note it.
+		const b: BoardSnapshot = {
+			tasks: [{ id: 5, subject: "half-done feature", status: "in_progress" }],
+			nextId: 6,
+		};
+		const a: AuditAnswers = {
+			alignment: ans("aligned", 0.9),
+			lifecycle: { task_status_5: ans("still_ongoing", 0.9) },
+		};
+		const r = decide(a, b, 0.5, 10, [], { terminalStop: true });
+		expect(r.kind).toBe("inject");
+		if (r.kind === "inject") {
+			expect(r.text).toContain("CONTINUE working on #5");
+			expect(r.text).not.toContain("delete #5");
+		}
+	});
+
+	test("terminal-stop: pending still_ongoing task → set in_progress + continue", () => {
+		const b: BoardSnapshot = {
+			tasks: [{ id: 5, subject: "queued next", status: "pending" }],
+			nextId: 6,
+		};
+		const a: AuditAnswers = {
+			alignment: ans("no_in_progress_task", 0.9),
+			lifecycle: { task_status_5: ans("still_ongoing", 0.9) },
+		};
+		const r = decide(a, b, 0.5, 10, [], { terminalStop: true });
+		expect(r.kind).toBe("inject");
+		if (r.kind === "inject") {
+			expect(r.text).toContain("set #5");
+			expect(r.text).toContain("continue");
+			expect(r.text).not.toContain("create todo task(s)");
+		}
+	});
+
+	test("terminal-stop: still_ongoing beats board_warranted=idle (actionable work wins)", () => {
+		// still_ongoing ≠ future/deferred — jev says real work remains, so the
+		// warrant-idle silence must NOT swallow the continuation push.
+		const b: BoardSnapshot = {
+			tasks: [{ id: 5, subject: "queued next", status: "pending" }],
+			nextId: 6,
+		};
+		const a: AuditAnswers = {
+			alignment: ans("no_in_progress_task", 0.9),
+			board_warranted: ans("idle", 0.9),
+			lifecycle: { task_status_5: ans("still_ongoing", 0.9) },
+		};
+		const r = decide(a, b, 0.5, 10, [], { terminalStop: true });
+		expect(r.kind).toBe("inject");
+		if (r.kind === "inject") expect(r.text).toContain("#5");
+	});
+
+	test("terminal-stop: mixed still_ongoing + blocked → continue the ongoing, park the blocked", () => {
+		const b: BoardSnapshot = {
+			tasks: [
+				{ id: 5, subject: "half-done", status: "in_progress" },
+				{ id: 7, subject: "needs creds", status: "pending" },
+			],
+			nextId: 8,
+		};
+		const a: AuditAnswers = {
+			alignment: ans("aligned", 0.9),
+			lifecycle: {
+				task_status_5: ans("still_ongoing", 0.9),
+				task_status_7: ans("blocked", 0.9),
+			},
+		};
+		const r = decide(a, b, 0.5, 10, [], { terminalStop: true });
+		expect(r.kind).toBe("inject");
+		if (r.kind === "inject") {
+			expect(r.text).toContain("CONTINUE working on #5");
+			expect(r.text).toContain("leave #7");
+			expect(r.text).toContain("blocked");
+		}
+	});
+
+	test("terminal-stop: low-conf still_ongoing → notify, no continuation push", () => {
+		const b: BoardSnapshot = {
+			tasks: [{ id: 5, subject: "half-done", status: "in_progress" }],
+			nextId: 6,
+		};
+		const a: AuditAnswers = {
+			alignment: ans("aligned", 0.9),
+			lifecycle: { task_status_5: ans("still_ongoing", 0.3) },
+		};
+		const r = decide(a, b, 0.5, 10, [], { terminalStop: true });
+		expect(r.kind).toBe("notify");
+		if (r.kind === "notify") expect(r.text).toContain("#5");
+	});
+
+	test("periodic audit: still_ongoing never becomes an action (unchanged)", () => {
+		const a: AuditAnswers = {
+			alignment: ans("aligned", 0.9),
+			lifecycle: { task_status_5: ans("still_ongoing", 0.9) },
+		};
+		expect(decide(a, board, 0.5, 10).kind).toBe("silent");
+	});
+
 	test("terminal-stop: all tasks blocked → no blind continuation demand", () => {
 		const blocked: BoardSnapshot = {
 			tasks: [{ id: 5, subject: "needs creds", status: "pending" }],

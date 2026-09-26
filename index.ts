@@ -121,10 +121,12 @@ export default function (pi: ExtensionAPI, cfgOverride?: AuditConfig) {
 				ctx.ui?.notify?.(action.text, "info");
 			} else if (action.kind === "inject") {
 				// steer > followUp: lands at the next turn boundary of the running
-				// loop instead of waiting for the run to settle.
+				// loop instead of waiting for the run to settle. Terminal-stop
+				// injects also triggerTurn — the agent already stopped, so steer
+				// alone would queue silently; we actually push it back to work.
 				pi.sendMessage(
 					{ customType: "jev-todo-audit", content: action.text, display: true },
-					{ deliverAs: "steer" },
+					opts.terminalStop ? { deliverAs: "steer", triggerTurn: true } : { deliverAs: "steer" },
 				);
 				if (cfg.notifyOnAligned === false) {
 					ctx.ui?.notify?.(`[jev audit ${label}] correction injected`, "info");

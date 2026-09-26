@@ -73,7 +73,7 @@ interface TaskVerdict {
  * Per-task lifecycle results, split into actionable vs uncertain.
  * Destructive/state-changing outcomes are confidence-gated individually.
  */
-function classifyLifecycle(answers: AuditAnswers, board: BoardSnapshot, threshold: number): {
+function classifyLifecycle(answers: AuditAnswers, board: BoardSnapshot, threshold: number, stop = false): {
 	actions: TaskVerdict[];
 	uncertain: TaskVerdict[];
 	ongoing: TaskVerdict[];
@@ -86,8 +86,15 @@ function classifyLifecycle(answers: AuditAnswers, board: BoardSnapshot, threshol
 		if (!a) continue;
 		switch (a.choice) {
 			case "still_ongoing":
+				// Terminal stop flips semantics: unfinished + still-ongoing =
+				// actionable continuation (confidence-gated); periodic audits
+				// keep it as non-destructive ongoing regardless of confidence.
+				if (stop) {
+					if (conf(a) >= threshold) actions.push({ task: t, answer: a });
+					else uncertain.push({ task: t, answer: a });
+				} else ongoing.push({ task: t, answer: a });
+				break;
 			case "future":
-				// Non-destructive verdicts: leave the task alone regardless of confidence.
 				ongoing.push({ task: t, answer: a });
 				break;
 			case "actually_completed":
@@ -105,7 +112,11 @@ function classifyLifecycle(answers: AuditAnswers, board: BoardSnapshot, threshol
 	return { actions, uncertain, ongoing };
 }
 
-/** Render the corrective step for one actionable lifecycle verdict. */
+/**
+ * Render the corrective step for one actionable lifecycle verdict.
+ * `still_ongoing` only reaches `actions` on terminal-stop audits
+ * (classifyLifecycle gates it) — so here it always means "continue".
+ */
 function lifecycleStep(v: TaskVerdict): string {
 	const label = `#${v.task.id} "${v.task.subject}"`;
 	switch (v.answer.choice) {
@@ -119,6 +130,11 @@ function lifecycleStep(v: TaskVerdict): string {
 			return v.task.status === "in_progress"
 				? `set ${label} back to pending and record why it is blocked (user input, approval, or external blocker)`
 				: `leave ${label} pending and record why it is blocked (user input, approval, or external blocker)`;
+		case "still_ongoing":
+			// Only reachable via terminal-stop actions — push the agent back.
+			return v.task.status === "in_progress"
+				? `CONTINUE working on ${label} — it is unfinished and actionable now`
+				: `set ${label} in_progress and continue it — it is unfinished and actionable now`;
 		default:
 			return `reconcile ${label}`;
 	}
@@ -135,7 +151,7 @@ export function decide(
 	const align = answers.alignment;
 	const stop = opts.terminalStop === true;
 	const trigger = stop ? "terminal-stop" : `@ loop ${loop}`;
-	const { actions, uncertain, ongoing } = classifyLifecycle(answers, board, threshold);
+	const { actions, uncertain, ongoing } = classifyLifecycle(answers, board, threshold, stop);
 
 	// Confidence of the aggregate answers — each gates its own derived steps.
 	const alignOk = !!align && conf(align) >= threshold;
@@ -172,7 +188,7 @@ export function decide(
 			}
 			return { kind: "silent" };
 		}
-		const steps = [...actions.map(lifecycleStep)];
+		const steps = actions.map(lifecycleStep);
 		if (splits.length > 0) steps.push(splitStep(splits, board));
 		const note = uncertainNote(uncertain);
 		if (note) steps.push(note);

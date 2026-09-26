@@ -204,6 +204,22 @@ describe("index wiring", () => {
 		expect(auditCalls.length).toBe(before + 2);
 	});
 
+	test("user-ready terminal-stop inject uses triggerTurn to wake the agent", async () => {
+		const { pi, handlers, sent, bus } = makePi();
+		makeExtension(pi, { ...cfgMod.DEFAULT_CONFIG, apiKeyEnvVar: "JEV_AUDIT_TEST_KEY" });
+		const branch: unknown[] = [
+			{ type: "message", message: { role: "user", content: "do work" } },
+			todoResult([{ id: 5, subject: "Board task", status: "in_progress" }]),
+		];
+		const ctx = makeCtx(branch);
+		await emit(handlers, "session_start", {}, ctx);
+		bus.emit("pi:semantic-hook:v1", { version: 1, name: "user-ready", values: { STOP_KIND: "AI_UNLOCK", REASON_TYPE: "JOB_DONE", REASON: "done" } });
+		await new Promise((r) => setTimeout(r, 0));
+		expect(sent.length).toBeGreaterThan(0);
+		// Stopped agent: steer alone would queue silently — must triggerTurn.
+		expect(sent[sent.length - 1].options).toEqual({ deliverAs: "steer", triggerTurn: true });
+	});
+
 	test("malformed / foreign hook payloads are ignored safely", async () => {
 		const { pi, handlers, bus } = makePi();
 		makeExtension(pi, { ...cfgMod.DEFAULT_CONFIG, apiKeyEnvVar: "JEV_AUDIT_TEST_KEY" });
