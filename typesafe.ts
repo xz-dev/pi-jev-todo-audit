@@ -17,6 +17,53 @@ export interface ChoiceAnswer {
 	confidence?: number;
 }
 
+/**
+ * Retryable-error classifier, mirrors pi-ai's isRetryableAssistantError list
+ * for raw fetch calls: transient HTTP statuses + transport failures.
+ * pi-ai is a transitive dep, so the pattern stays vendored here.
+ * Keep verbatim: node_modules/.../pi-ai/dist/utils/retry.js
+ */
+const RETRYABLE_ERROR_PATTERN = new RegExp(
+	[
+		"overloaded", "rate.?limit", "too many requests", "429", "500", "502", "503", "504", "524",
+		"service.?unavailable", "server.?error", "internal.?error", "provider.?returned.?error",
+		"exceeded request buffer limit while retrying upstream",
+		"network.?error", "connection.?error", "connection.?refused", "connection.?lost",
+		"other side closed", "fetch failed", "getaddrinfo", "ENOTFOUND", "EAI_AGAIN",
+		"upstream.?connect", "reset before headers", "socket hang up", "socket connection was closed",
+		"timed? out", "timeout", "terminated",
+		"websocket.?closed", "websocket.?error",
+		"ended without", "stream ended before message_stop", "stream ended before a terminal response event",
+		"http2 request did not get a response", "retry delay",
+		"you can retry your request", "try your request again", "please retry your request",
+		"ResourceExhausted",
+	].join("|"),
+	"i",
+);
+
+/** Quota/billing limit wording — deterministic, never retried. Mirrors pi-ai's non-retryable list. */
+const NON_RETRYABLE_ERROR_PATTERN = new RegExp(
+	[
+		"GoUsageLimitError", "FreeUsageLimitError", "Monthly usage limit reached", "available balance",
+		"insufficient_quota", "out of budget", "quota exceeded", "billing",
+	].join("|"),
+	"i",
+);
+
+const isRetryableError = (msg: string) => !NON_RETRYABLE_ERROR_PATTERN.test(msg) && RETRYABLE_ERROR_PATTERN.test(msg);
+
+/** Backoff sleep; resolves false when aborted so callers stop the loop. Listener removed on resolve. */
+const sleep = (ms: number, signal?: AbortSignal) =>
+	new Promise<boolean>((resolve) => {
+		if (signal?.aborted) return resolve(false);
+		const onAbort = () => { clearTimeout(t); resolve(false); };
+		const t = setTimeout(() => {
+			signal?.removeEventListener("abort", onAbort);
+			resolve(true);
+		}, ms);
+		signal?.addEventListener("abort", onAbort, { once: true });
+	});
+
 /** Key for a task's independent lifecycle question/answer. */
 export const lifecycleKey = (taskId: number) => `task_status_${taskId}`;
 
@@ -172,9 +219,28 @@ function normalizeAnswers(raw: unknown): AuditAnswers | undefined {
 
 export async function runAudit(
 	req: AuditRequest,
-	opts: { apiUrl: string; apiKey: string; timeoutMs: number; fetchFn?: (url: string, init?: RequestInit) => Promise<Response> },
+	opts: { apiUrl: string; apiKey: string; timeoutMs: number; maxRetries?: number; baseDelayMs?: number; signal?: AbortSignal; fetchFn?: (url: string, init?: RequestInit) => Promise<Response> },
 ): Promise<AuditResult> {
 	const fetchFn = opts.fetchFn ?? fetch;
+	// Mirrors pi-agent settings.retry: bounded attempts, baseDelayMs * 2^(attempt-1).
+	const maxRetries = opts.maxRetries ?? 0;
+	const baseDelayMs = opts.baseDelayMs ?? 2_000;
+	let attempt = 0;
+	for (;;) {
+		const res = await runOnce(req, fetchFn, opts);
+		if (res.ok || opts.signal?.aborted || attempt >= maxRetries || !isRetryableError(res.error)) return res;
+		attempt++;
+		if (!(await sleep(baseDelayMs * 2 ** (attempt - 1), opts.signal))) {
+			return { ok: false, error: "aborted" };
+		}
+	}
+}
+
+async function runOnce(
+	req: AuditRequest,
+	fetchFn: (url: string, init?: RequestInit) => Promise<Response>,
+	opts: { apiUrl: string; apiKey: string; timeoutMs: number; signal?: AbortSignal },
+): Promise<AuditResult> {
 	try {
 		const res = await fetchFn(opts.apiUrl, {
 			method: "POST",
@@ -183,7 +249,7 @@ export async function runAudit(
 				authorization: `Bearer ${opts.apiKey}`,
 			},
 			body: JSON.stringify(req),
-			signal: AbortSignal.timeout(opts.timeoutMs),
+			signal: opts.signal ? AbortSignal.any([opts.signal, AbortSignal.timeout(opts.timeoutMs)]) : AbortSignal.timeout(opts.timeoutMs),
 		});
 		if (!res.ok) {
 			const body = await res.text().catch(() => "");

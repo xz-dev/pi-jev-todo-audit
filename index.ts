@@ -8,6 +8,7 @@
  */
 
 import type { ExtensionAPI, ExtensionCommandContext } from "@earendil-works/pi-coding-agent";
+import { SettingsManager } from "@earendil-works/pi-coding-agent";
 import { existsSync } from "node:fs";
 import { agentConfigPath, legacyConfigPath, loadConfig, projectConfigPath, resolveApiKey, type AuditConfig } from "./config.js";
 import { replayBoardWithAges, staleTaskIds, unfinishedTasks } from "./board.js";
@@ -34,8 +35,21 @@ function parseUserReady(data: unknown): TerminalStopInfo | undefined {
 	return out;
 }
 
-type Ctx = { sessionManager: { getSessionId(): string; getBranch(): Iterable<unknown> }; cwd?: string; isProjectTrusted?: () => boolean };
+type Ctx = { sessionManager: { getSessionId(): string; getBranch(): Iterable<unknown> }; cwd?: string; isProjectTrusted?: () => boolean; signal?: AbortSignal };
 const sid = (ctx: Ctx) => ctx.sessionManager.getSessionId() ?? "";
+
+/** Same retry settings the agent loop uses (settings.json `retry` block). */
+function retrySettingsFor(ctx: Ctx): { maxRetries: number; baseDelayMs: number } {
+	const fallback = { maxRetries: 0, baseDelayMs: 2_000 };
+	try {
+		const s = SettingsManager.create(ctx.cwd ?? process.cwd(), undefined, {
+			projectTrusted: ctx.isProjectTrusted?.() ?? false,
+		}).getRetrySettings();
+		return s.enabled ? { maxRetries: s.maxRetries, baseDelayMs: s.baseDelayMs } : { ...fallback, baseDelayMs: s.baseDelayMs };
+	} catch {
+		return fallback;
+	}
+}
 
 interface BranchMsg {
 	role?: string;
@@ -88,6 +102,8 @@ export default function (pi: ExtensionAPI, cfgOverride?: AuditConfig) {
 	let lastStopKey = "";
 	/** Single-level queue: newest distinct stop epoch seen while an audit ran. */
 	let pendingStop: { key: string; stop: TerminalStopInfo } | undefined;
+	/** Aborts the in-flight audit's retry backoff + fetch when the session ends/switches. */
+	let auditAbort: AbortController | undefined;
 
 	/** Shared audit body: replay board → call jev → act on verdict. */
 	async function auditNow(
@@ -103,12 +119,27 @@ export default function (pi: ExtensionAPI, cfgOverride?: AuditConfig) {
 		}
 		const c = counterFor(sid(ctx));
 		inFlight = true;
+		const ac = new AbortController();
+		// Compose user/agent abort (ctx.signal) with the session-lifecycle abort.
+		// Handler must be removable — once:true only fires on abort, completed
+		// audits would otherwise leak a listener per call.
+		const onCtxAbort = () => ac.abort();
+		if (ctx.signal) {
+			if (ctx.signal.aborted) ac.abort();
+			else ctx.signal.addEventListener("abort", onCtxAbort, { once: true });
+		}
+		auditAbort = ac;
+		const mySid = sid(ctx);
 		try {
 			const board = replayBoardWithAges(ctx.sessionManager.getBranch());
 			// Terminal-stop short-circuit: nothing unfinished → nothing to check.
 			if (opts.terminalStop && unfinishedTasks(board).length === 0) return;
 			const req = buildAuditRequest(board, recentActivity(ctx, cfg.activityBudgetChars), cfg.model, opts.terminalStop);
-			const res = await runAudit(req, { apiUrl: cfg.apiUrl, apiKey, timeoutMs: cfg.timeoutMs });
+			const res = await runAudit(req, { apiUrl: cfg.apiUrl, apiKey, timeoutMs: cfg.timeoutMs, signal: ac.signal, ...retrySettingsFor(ctx) });
+
+			// Stale-session guard: after await, this audit's session may be gone.
+			// Abort signal covers session_shutdown/session_tree; lastCtx drift covers it too.
+			if (ac.signal.aborted || sid(lastCtx ?? ctx) !== mySid) return;
 
 			if (!res.ok) {
 				ctx.ui?.notify?.(`[jev audit ${label}] failed: ${res.error}`, "warning");
@@ -120,6 +151,10 @@ export default function (pi: ExtensionAPI, cfgOverride?: AuditConfig) {
 			if (action.kind === "notify") {
 				ctx.ui?.notify?.(action.text, "info");
 			} else if (action.kind === "inject") {
+				// Re-check session identity right before the side effect — the only
+				// await between the earlier guard and here is none, but shutdown can
+				// fire between microtasks; keep the belt on.
+				if (ac.signal.aborted || sid(lastCtx ?? ctx) !== mySid) return;
 				// steer > followUp: lands at the next turn boundary of the running
 				// loop instead of waiting for the run to settle. Terminal-stop
 				// injects also triggerTurn — the agent already stopped, so steer
@@ -135,11 +170,15 @@ export default function (pi: ExtensionAPI, cfgOverride?: AuditConfig) {
 				ctx.ui?.notify?.(`[jev audit ${label}] board aligned ✓`, "info");
 			}
 		} catch (err) {
-			ctx.ui?.notify?.(`[jev audit ${label}] error: ${err instanceof Error ? err.message : String(err)}`, "warning");
+			if (!ac.signal.aborted) {
+				ctx.ui?.notify?.(`[jev audit ${label}] error: ${err instanceof Error ? err.message : String(err)}`, "warning");
+			}
 		} finally {
+			ctx.signal?.removeEventListener("abort", onCtxAbort);
 			inFlight = false;
+			if (auditAbort === ac) auditAbort = undefined;
 			// A distinct stop epoch arrived while we were auditing → one follow-up.
-			if (pendingStop && lastCtx) {
+			if (!ac.signal.aborted && pendingStop && lastCtx) {
 				const { key, stop } = pendingStop;
 				pendingStop = undefined;
 				lastStopKey = key;
@@ -174,9 +213,12 @@ export default function (pi: ExtensionAPI, cfgOverride?: AuditConfig) {
 	});
 	pi.on("session_tree", async (_e, ctx) => {
 		counters.set(sid(ctx), replayCounter(ctx.sessionManager.getBranch()));
+		auditAbort?.abort();
+		pendingStop = undefined;
 	});
 	pi.on("session_shutdown", async (_e, ctx) => {
 		counters.delete(sid(ctx));
+		auditAbort?.abort();
 		if (lastCtx && sid(lastCtx) === sid(ctx)) {
 			lastCtx = undefined;
 			pendingStop = undefined;

@@ -93,7 +93,7 @@ Or export `TYPESAFE_API_KEY` (env wins over the file). Every other field is opti
 | `confidenceThreshold` | Minimum jev confidence to inject a correction; below it the extension notifies instead. | `0.5` |
 | `model` | TypeSafe model id. | `"jev-latest"` |
 | `apiUrl` | TypeSafe System One endpoint. | `https://api.typesafe.ai/v1/systemone` |
-| `timeoutMs` | Audit request timeout; failures skip quietly and retry at the next trigger. | `30000` |
+| `timeoutMs` | Audit request timeout. Transient failures (network, 429/5xx) retry with exponential backoff using your pi `settings.retry` config (`enabled`, `maxRetries`, `baseDelayMs`); final failure waits for the next trigger. | `30000` |
 | `activityBudgetChars` | Max chars of recent transcript fed to jev as state. | `4000` |
 | `notifyOnAligned` | Also notify on aligned audits. | `false` |
 | `staleAuditSpans` | Audits a task may sit in_progress before the split nudge fires. | `3` |
