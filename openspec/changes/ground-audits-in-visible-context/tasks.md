@@ -32,7 +32,7 @@
 
 - [x] 6.1 Update README with source-backed granularity criteria, relevance selection and two context views, supplement/privacy boundaries, verified provider limits, legacy-budget deprecation, and advisory-only limitations. Verify documentation against the actual request/delivery code and keep server-admission and counting limitations tied to the evidence from 1.1.
 - [x] 6.2 Run the focused acceptance checks, `bun test`, `npm run typecheck`, and strict OpenSpec validation; verify that periodic cooldown/manual/optional terminal triggers, failure isolation, and config precedence remain intact. Record relevant red/green evidence and any unexecuted live-model checks without treating mocked decisions as semantic accuracy proof.
-- [ ] 6.3 Present the acceptance evidence and remaining limits for user review. Verify that context fidelity, engineering decisions, wait/no-repeat cases, and provider-limit admission each have an observable demonstration; do not enable live-model replay, publish, or declare product acceptance without the appropriate user decision. Evidence is recorded below; final user acceptance is pending.
+- [x] 6.3 Present the acceptance evidence and remaining limits for user review. Verify that context fidelity, engineering decisions, wait/no-repeat cases, and provider-limit admission each have an observable demonstration; do not enable live-model replay, publish, or declare product acceptance without the appropriate user decision. Evidence is recorded below; the user reviewed the implementation and trial results and accepted the delivery on 2026-09-27.
 
 ## Verification record — 2026-09-27
 
