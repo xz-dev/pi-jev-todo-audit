@@ -19,6 +19,7 @@ for (const body of [
 	{ error: { message: "Input token count exceeds the maximum context limit" } },
 	{ message: "State tokens exceeds the allowed context length" },
 	{ detail: "Maximum context length is 32000 tokens; requested 40000 tokens" },
+	{ detail: { error_type: "max_tokens_exceeded" } },
 ]) test(`explicit overflow can be recognized: ${JSON.stringify(body)}`, () => { expect(isContextOverflow(422, JSON.stringify(body))).toBe(true); });
 
 for (const [status, body] of [
@@ -62,6 +63,17 @@ test("second overflow never causes a third context attempt, despite transient re
 		calls++; return new Response(JSON.stringify({ code: "context_length_exceeded" }), { status: 400 });
 	} });
 	expect(calls).toBe(2); expect(res.result.ok).toBe(false);
+});
+
+test("live-observed max_tokens_exceeded body triggers one recovery retry", async () => {
+	const requests: AuditRequest[] = [];
+	const res = await auditWithContext(board, context(), "jev-latest", { ...options, fetchFn: async (_url, init) => {
+		requests.push(JSON.parse(init!.body as string));
+		return requests.length === 1
+			? new Response(JSON.stringify({ detail: { error_type: "max_tokens_exceeded" } }), { status: 400 })
+			: ok();
+	} });
+	expect(requests).toHaveLength(2); expect(res.result.ok).toBe(true); expect(res.context.reduced).toBe(true);
 });
 
 test("protected-only packet is not cropped or retried", async () => {

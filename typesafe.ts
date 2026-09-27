@@ -116,12 +116,13 @@ export function isContextOverflow(status: number, body: string): boolean {
 	if (status !== 400 && status !== 422) return false;
 	let payload: unknown;
 	try { payload = JSON.parse(body); } catch { payload = { message: body }; }
-	const e = object(payload), inner = object(e.error);
+	const e = object(payload), inner = object(e.error), detail = object(e.detail);
 	// Do not scan echoed request state, validation input, or arbitrary nested data.
-	const code = inner.code ?? e.code;
-	const message = typeof e.error === "string" ? e.error : inner.message ?? e.message ?? (typeof e.detail === "string" ? e.detail : "");
+	// Observed live contract: {"detail":{"error_type":"max_tokens_exceeded"}}.
+	const code = inner.code ?? e.code ?? detail.code ?? detail.error_type;
+	const message = typeof e.error === "string" ? e.error : inner.message ?? e.message ?? (typeof e.detail === "string" ? e.detail : detail.message ?? "");
 	if (/quota|billing|rate.?limit|per[- ](?:minute|second|hour|day)|balance|authentication|unauthorized/i.test(`${code ?? ""} ${message}`)) return false;
-	if (code === "context_length_exceeded" || code === "context_window_exceeded") return true;
+	if (code === "context_length_exceeded" || code === "context_window_exceeded" || code === "max_tokens_exceeded") return true;
 	return typeof message === "string" && [
 		/\b(?:maximum|max) context (?:length|window) (?:is |of )?\d[\s\S]*\b(?:exceed|requested|resulted)/i,
 		/\b(?:input|request|state|combined|total) (?:token count|tokens|context length)[\s\S]*\bexceeds? (?:the )?(?:maximum|model|allowed|limit)/i,
