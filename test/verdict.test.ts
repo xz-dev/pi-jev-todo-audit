@@ -1,546 +1,185 @@
 import { describe, expect, test } from "bun:test";
-import { decide } from "../verdict.js";
+import { decide, type DecideOptions, type VerdictAction } from "../verdict.js";
+import { collectContext } from "../context.js";
 import type { BoardSnapshot } from "../board.js";
-import type { AuditAnswers } from "../typesafe.js";
+import type { AuditAnswers, ChoiceAnswer } from "../typesafe.js";
 
-const board: BoardSnapshot = {
-	tasks: [
-		{ id: 5, subject: "Add repository layer", status: "in_progress" },
-		{ id: 7, subject: "Wire endpoint", status: "pending" },
-	],
-	nextId: 8,
-};
+const board: BoardSnapshot = { tasks: [
+	{ id: 5, subject: "Add repository layer", status: "in_progress" },
+	{ id: 7, subject: "Wire endpoint", status: "pending" },
+], nextId: 8 };
+const a = (choice: string, confidence = 0.9): ChoiceAnswer => ({ choice, confidence });
+const context = collectContext([
+	{ id: "user", type: "message", message: { role: "user", content: "Implement #5 and #7. The separable authorized checkpoints are documented and not already tracked." } },
+	{ id: "check5", type: "message", message: { role: "toolResult", toolName: "unknown_check", content: "#5 entire acceptance suite passed", isError: false } },
+	{ id: "check7", type: "message", message: { role: "toolResult", toolName: "unknown_check", content: "#7 entire acceptance suite passed", isError: false } },
+]);
+function answers(patch: Partial<AuditAnswers> = {}): AuditAnswers {
+	return { alignment: a("aligned"), current_match: a("5"), drift: a("on_track"), interaction: a("working"), work_evidence: a("user"),
+		lifecycle: { task_status_5: a("still_ongoing"), task_status_7: a("still_ongoing") },
+		evidence: { task_evidence_5: a("check5"), task_evidence_7: a("check7") }, ...patch };
+}
+const run = (patch: Partial<AuditAnswers> = {}, opts: DecideOptions = {}, b = board) => decide(answers(patch), b, 0.5, 80, [5], { context, ...opts });
+function text(result: VerdictAction): string { expect(result.kind).toBe("inject"); return result.kind === "inject" ? result.text : ""; }
 
-const ans = (choice: string, confidence = 0.9) => ({ choice, confidence, probabilities: { [choice]: confidence } });
-
-describe("verdict", () => {
-	test("aligned + confident → silent", () => {
-		const a: AuditAnswers = { alignment: ans("aligned", 0.9) };
-		expect(decide(a, board, 0.5, 10).kind).toBe("silent");
+describe("evidence-grounded verdict", () => {
+	test("aligned parallel work is silent, age is not a split verdict", () => { expect(run().kind).toBe("silent"); });
+	test("no aggregate answer does not suppress a supported sibling correction", () => {
+		const out = text(run({ alignment: undefined, lifecycle: { task_status_5: a("actually_completed"), task_status_7: a("unclear") } }));
+		expect(out).toContain('mark #5 "Add repository layer" completed'); expect(out).not.toContain("mark #7"); expect(out).toContain("Evidence [check5]");
 	});
-
-	test("aligned + low confidence → notify (no inject)", () => {
-		const a: AuditAnswers = { alignment: ans("aligned", 0.2) };
-		const r = decide(a, board, 0.5, 10);
-		expect(r.kind).toBe("notify");
+	test("low-confidence aggregate does not suppress valid per-task completion", () => {
+		expect(text(run({ alignment: a("not_aligned", 0.1), lifecycle: { task_status_5: a("actually_completed") } }))).toContain("mark #5");
 	});
-
-	test("not_aligned → inject with task ids + actions", () => {
-		const a: AuditAnswers = {
-			alignment: ans("not_aligned", 0.9),
-			lifecycle: { task_status_5: ans("actually_completed", 0.9) },
-			current_match: ans("7", 0.9),
-			drift: ans("on_track", 0.9),
-		};
-		const r = decide(a, board, 0.5, 10);
-		expect(r.kind).toBe("inject");
-		if (r.kind === "inject") {
-			expect(r.text).toContain("#5");
-			expect(r.text).toContain("#7");
-			expect(r.text).toContain("in_progress");
-			expect(r.text).toContain("completed");
+	test("blocked current match cannot also be claimed or split", () => {
+		const out = text(run({ alignment: a("not_aligned"), current_match: a("5"),
+			lifecycle: { task_status_5: a("blocked") }, reconciliation: { task_board_5: a("needs_reconciliation") },
+			granularity: { task_granularity_5: a("split_independent_outcomes") } }));
+		expect(out).toContain('set #5 "Add repository layer" pending');
+		expect(out).not.toContain('set #5 "Add repository layer" in_progress'); expect(out).not.toContain("split #5"); expect(out).not.toContain("CONTINUE");
+	});
+	for (const life of ["actually_completed", "cancelled", "deliberately_deferred", "blocked", "future", "unclear"]) {
+		test(`${life} excludes claim/continue/split for the same task`, () => {
+			const out = run({ alignment: a("not_aligned"), lifecycle: { task_status_5: a(life) },
+				reconciliation: { task_board_5: a("needs_reconciliation") }, granularity: { task_granularity_5: a("split_verifiable_checkpoints") } }, { terminalStop: true });
+			if (out.kind === "inject") { expect(out.text).not.toContain("split #5"); expect(out.text).not.toContain("CONTINUE"); expect(out.text).not.toContain('set #5 "Add repository layer" in_progress'); }
+		});
+	}
+	test("cancelled task is individually deleted", () => {
+		const out = text(run({ lifecycle: { task_status_5: a("cancelled"), task_status_7: a("still_ongoing") }, evidence: { task_evidence_5: a("user") } }));
+		expect(out).toContain("delete #5"); expect(out).not.toContain("delete #7");
+	});
+	test("recorded blocking/deferred/future states do not wake waiting agent", () => {
+		for (const life of ["blocked", "deliberately_deferred", "future", "still_ongoing"]) {
+			const out = run({ interaction: a("waiting_user"), lifecycle: { task_status_5: a(life), task_status_7: a("future") }, reconciliation: { task_board_5: a("accurate") } }, { terminalStop: true });
+			expect(out.kind).toBe("silent");
 		}
 	});
-
-	test("not on board → create instruction", () => {
-		const a: AuditAnswers = {
-			alignment: ans("not_aligned", 0.9),
-			lifecycle: { task_status_5: ans("still_ongoing", 0.9) },
-			current_match: ans("not_on_board", 0.9),
-			drift: ans("on_track", 0.9),
-		};
-		const r = decide(a, board, 0.5, 10);
-		if (r.kind === "inject") expect(r.text).toContain("create todo task(s)");
-		else expect.unreachable();
+	test("one missing blocker annotation permits only a board-only turn", () => {
+		const result = run({ interaction: a("waiting_user"), lifecycle: { task_status_5: a("blocked") }, reconciliation: { task_board_5: a("needs_reconciliation") } }, { terminalStop: true });
+		const out = text(result); expect(out).toContain("BOARD ONLY"); expect(out).toContain("return control"); expect(out).not.toContain("CONTINUE");
 	});
-
-	test("drifted → stop + resume order", () => {
-		const a: AuditAnswers = {
-			alignment: ans("not_aligned", 0.9),
-			lifecycle: { task_status_5: ans("deliberately_deferred", 0.9) },
-			current_match: ans("7", 0.9),
-			drift: ans("drifted", 0.9),
-		};
-		const r = decide(a, board, 0.5, 10);
-		if (r.kind === "inject") {
-			expect(r.text).toContain("drifted");
-			expect(r.text).toContain("STOP");
-		} else expect.unreachable();
+	test("ongoing is not actionable even when matched and warranted", () => {
+		expect(run({ board_warranted: a("warranted") }, { terminalStop: true }).kind).toBe("silent");
 	});
-
-	test("low-confidence lifecycle verdict is safe: notify, no inject", () => {
-		const a: AuditAnswers = {
-			alignment: ans("not_aligned", 0.9),
-			lifecycle: { task_status_5: ans("actually_completed", 0.3) },
-			current_match: ans("7", 0.9),
-			drift: ans("on_track", 0.9),
-		};
-		const r = decide(a, board, 0.5, 10);
-		// #5's lifecycle answer is below threshold → no destructive action for #5.
-		// The aggregate verdict can still inject a scoped correction for #7.
-		if (r.kind === "inject") {
-			expect(r.text).not.toContain("mark #5");
-			expect(r.text).toContain("not touched: #5");
-		} else {
-			expect(r.kind).toBe("notify");
+	test("explicit authorized actionable task can wake, pending task can be claimed", () => {
+		for (const status of ["pending", "in_progress"] as const) {
+			const result = run({ lifecycle: { task_status_5: a("actionable_now") }, board_warranted: a("warranted") }, { terminalStop: true }, { tasks: [{ ...board.tasks[0], status }], nextId: 6 });
+			expect(text(result)).toContain("CONTINUE"); if (result.kind === "inject") expect(result.mayWake).toBe(true);
 		}
 	});
-
-	test("low-confidence drift does NOT block injection (gating only applies to driving answers)", () => {
-		const a: AuditAnswers = {
-			alignment: ans("not_aligned", 0.9),
-			lifecycle: { task_status_5: ans("actually_completed", 0.9) },
-			current_match: ans("7", 0.9),
-			drift: ans("drifted", 0.3), // low conf — ignored entirely
-		};
-		const r = decide(a, board, 0.5, 10);
-		expect(r.kind).toBe("inject");
-		if (r.kind === "inject") expect(r.text).not.toContain("STOP");
+	for (const interaction of ["waiting_user", "waiting_external", "idle", "unclear"]) {
+		test(`actionable_now cannot override ${interaction}`, () => {
+			expect(run({ interaction: a(interaction), lifecycle: { task_status_5: a("actionable_now") } }, { terminalStop: true }).kind).not.toBe("inject");
+		});
+	}
+	test("unresolved or missing dependency prevents execution", () => {
+		const b: BoardSnapshot = { ...board, tasks: [{ ...board.tasks[0], blockedBy: [99] }] };
+		expect(run({ lifecycle: { task_status_5: a("actionable_now") } }, { terminalStop: true }, b).kind).not.toBe("inject");
 	});
-
-	test("confident drift adds STOP line", () => {
-		const a: AuditAnswers = {
-			alignment: ans("not_aligned", 0.9),
-			lifecycle: { task_status_5: ans("actually_completed", 0.9) },
-			current_match: ans("7", 0.9),
-			drift: ans("drifted", 0.9),
-		};
-		const r = decide(a, board, 0.5, 10);
-		if (r.kind === "inject") expect(r.text).toContain("STOP");
-		else expect.unreachable();
+	test("per-active-task granularity affects only its own task", () => {
+		const b = { ...board, tasks: board.tasks.map((t) => ({ ...t, status: "in_progress" as const })) };
+		const out = text(run({ granularity: { task_granularity_5: a("split_independent_outcomes"), task_granularity_7: a("appropriate") }, evidence: { task_evidence_5: a("user") } }, {}, b));
+		expect(out).toContain("split #5"); expect(out).not.toContain("split #7");
 	});
-
-	test("no_in_progress_task + match → inject 'claim it'", () => {
-		const b: BoardSnapshot = { tasks: [{ id: 1, subject: "s1", status: "pending" }], nextId: 2 };
-		const a: AuditAnswers = {
-			alignment: ans("no_in_progress_task", 0.99),
-			current_match: ans("1", 0.9),
-			drift: ans("on_track", 0.9),
-		};
-		const r = decide(a, b, 0.5, 10);
-		expect(r.kind).toBe("inject");
-		if (r.kind === "inject") expect(r.text).toContain("set #1");
+	test("one overall goal can have supported checkpoints", () => {
+		expect(text(run({ granularity: { task_granularity_5: a("split_verifiable_checkpoints") } }))).toContain("verifiable checkpoints");
 	});
-
-	test("no_in_progress_task + no match → inject 'create + claim'", () => {
-		const b: BoardSnapshot = { tasks: [{ id: 1, subject: "s1", status: "pending" }], nextId: 2 };
-		const a: AuditAnswers = {
-			alignment: ans("no_in_progress_task", 0.99),
-			current_match: ans("not_on_board", 0.9),
-		};
-		const r = decide(a, b, 0.5, 10);
-		if (r.kind === "inject") expect(r.text).toContain("create todo task(s)");
-		else expect.unreachable();
+	for (const choice of ["appropriate", "not_applicable", "blocked", "insufficient_evidence"]) {
+		test(`${choice} does not split even an old task`, () => { expect(run({ granularity: { task_granularity_5: a(choice) } }).kind).not.toBe("inject"); });
+	}
+	for (const choice of ["clarify_done_criteria", "clarify_next_action"]) {
+		test(`${choice} asks clarification, not subdivision or terminal restart`, () => {
+			const patch = { granularity: { task_granularity_5: a(choice) } };
+			const out = text(run(patch)); expect(out).toContain("clarify"); expect(out).not.toContain("split #5");
+			expect(run(patch, { terminalStop: true }).kind).not.toBe("inject");
+		});
+	}
+	test("partial global context prevents splitting, not independent completion", () => {
+		const partial = { ...context, globalComplete: false, reduced: true };
+		expect(run({ granularity: { task_granularity_5: a("split_independent_outcomes") } }, { context: partial }).kind).not.toBe("inject");
+		expect(text(run({ lifecycle: { task_status_5: a("actually_completed") } }, { context: partial }))).toContain("mark #5");
 	});
-
-	test("empty board + warranted=trivial → silent", () => {
-		const empty: BoardSnapshot = { tasks: [], nextId: 1 };
-		const a: AuditAnswers = {
-			alignment: ans("no_in_progress_task", 0.9),
-			board_warranted: ans("trivial", 0.9),
-		};
-		expect(decide(a, empty, 0.5, 10).kind).toBe("silent");
+	test("omitted optional history does not veto explicitly authorized current work", () => {
+		const partial = collectContext([{ id: "now", type: "message", message: { role: "user", content: "For #5, permission is granted: run the parser acceptance check now. No dependency remains." } }]);
+		partial.globalComplete = false;
+		partial.reduced = true;
+		partial.omissions.push({ id: "old-background", reason: "provider hard-limit recovery" });
+		const result = run({ lifecycle: { task_status_5: a("actionable_now") },
+			work_evidence: a("now"), evidence: { task_evidence_5: a("now") },
+			granularity: { task_granularity_5: a("insufficient_evidence") },
+		}, { context: partial, terminalStop: true });
+		expect(text(result)).toContain("CONTINUE");
 	});
-
-	test("empty board + warranted=idle → silent", () => {
-		const empty: BoardSnapshot = { tasks: [], nextId: 1 };
-		const a: AuditAnswers = {
-			alignment: ans("no_in_progress_task", 0.9),
-			board_warranted: ans("idle", 0.9),
+	test("missing required authorization still prevents continuation in a partial packet", () => {
+		const partial = { ...context, globalComplete: false, reduced: true,
+			records: context.records.filter((r) => r.id !== "user"),
+			omissions: [{ id: "user", reason: "required authorization unavailable" }],
 		};
-		expect(decide(a, empty, 0.5, 10).kind).toBe("silent");
+		const result = run({ lifecycle: { task_status_5: a("actionable_now") },
+			work_evidence: a("user"), evidence: { task_evidence_5: a("check5") },
+		}, { context: partial, terminalStop: true });
+		expect(result.kind).not.toBe("inject");
 	});
-
-	test("empty board + warranted=warranted → inject 'create'", () => {
-		const empty: BoardSnapshot = { tasks: [], nextId: 1 };
-		const a: AuditAnswers = {
-			alignment: ans("no_in_progress_task", 0.9),
-			board_warranted: ans("warranted", 0.9),
-			current_match: ans("not_on_board", 0.9),
-		};
-		const r = decide(a, empty, 0.5, 10);
-		expect(r.kind).toBe("inject");
-		if (r.kind === "inject") expect(r.text).toContain("create todo task(s)");
+	test("legacy aggregate granularity is ignored", () => {
+		const legacy = { granularity: a("bundles_multiple_outcomes") } as unknown as Partial<AuditAnswers>;
+		expect(run(legacy).kind).toBe("silent");
 	});
-
-	test("empty board + low-confidence board_warranted → notify", () => {
-		const empty: BoardSnapshot = { tasks: [], nextId: 1 };
-		const a: AuditAnswers = {
-			alignment: ans("no_in_progress_task", 0.9),
-			board_warranted: ans("warranted", 0.2),
-			current_match: ans("not_on_board", 0.9),
-		};
-		expect(decide(a, empty, 0.5, 10).kind).toBe("notify");
+	for (const confidence of [NaN, Infinity, -1, 1.01, 0.2]) {
+		test(`invalid/low confidence ${confidence} has no corrective authority`, () => {
+			expect(run({ lifecycle: { task_status_5: a("actually_completed", confidence) } }).kind).not.toBe("inject");
+		});
+	}
+	for (const id of ["missing", "insufficient_evidence"]) {
+		test(`${id} anchor is not evidence`, () => { expect(run({ lifecycle: { task_status_5: a("actually_completed") }, evidence: { task_evidence_5: a(id) } }).kind).not.toBe("inject"); });
+	}
+	test("latest unavailable user evidence cannot be replaced with older authority", () => {
+		const c = collectContext([{ id: "old", type: "message", message: { role: "user", content: "Task accepted" } },
+			{ id: "new", type: "message", message: { role: "user", content: [{ type: "image", data: "unknown decision" }] } }]);
+		expect(run({ lifecycle: { task_status_5: a("actually_completed") }, evidence: { task_evidence_5: a("old") } }, { context: c }).kind).not.toBe("inject");
 	});
-
-	test("non-empty board + no_in_progress_task → inject even without board_warranted field", () => {
-		// board_warranted omitted from request → answer missing → keep existing inject
-		const b: BoardSnapshot = { tasks: [{ id: 1, subject: "s1", status: "pending" }], nextId: 2 };
-		const a: AuditAnswers = {
-			alignment: ans("no_in_progress_task", 0.9),
-			current_match: ans("1", 0.9),
-		};
-		const r = decide(a, b, 0.5, 10);
-		expect(r.kind).toBe("inject");
-		if (r.kind === "inject") expect(r.text).toContain("set #1");
+	test("unavailable task requirements withhold only that task's correction", () => {
+		const c = { ...context, records: [...context.records, { id: "task:5", kind: "supplement", text: "[REDACTED]", group: "task:5", view: "task" as const, protected: true, complete: false }] };
+		const out = text(run({ lifecycle: { task_status_5: a("actually_completed"), task_status_7: a("actually_completed") } }, { context: c }));
+		expect(out).not.toContain("mark #5"); expect(out).toContain("mark #7");
 	});
-
-	test("all-done board + trivial → silent", () => {
-		const doneBoard: BoardSnapshot = {
-			tasks: [{ id: 1, subject: "s1", status: "completed" }, { id: 2, subject: "s2", status: "completed" }],
-			nextId: 3,
-		};
-		const a: AuditAnswers = {
-			alignment: ans("no_in_progress_task", 0.9),
-			board_warranted: ans("trivial", 0.9),
-		};
-		expect(decide(a, doneBoard, 0.5, 10).kind).toBe("silent");
-	});
-
-	test("all-done board + warranted → inject 'create'", () => {
-		const doneBoard: BoardSnapshot = {
-			tasks: [{ id: 1, subject: "s1", status: "completed" }],
-			nextId: 2,
-		};
-		const a: AuditAnswers = {
-			alignment: ans("no_in_progress_task", 0.9),
-			board_warranted: ans("warranted", 0.9),
-			current_match: ans("not_on_board", 0.9),
-		};
-		const r = decide(a, doneBoard, 0.5, 10);
-		expect(r.kind).toBe("inject");
-		if (r.kind === "inject") expect(r.text).toContain("create todo task(s)");
-	});
-
-	test("aligned + stale in_progress → inject with split", () => {
-		const a: AuditAnswers = { alignment: ans("aligned", 0.9) };
-		const r = decide(a, board, 0.5, 40, [5]);
-		expect(r.kind).toBe("inject");
-		if (r.kind === "inject") {
-			expect(r.text).toContain("split");
-			expect(r.text).toContain("#5");
-			expect(r.text).toContain("single verifiable outcome");
+	test("missing context fails closed", () => { expect(run({ lifecycle: { task_status_5: a("actually_completed") } }, { context: undefined }).kind).not.toBe("inject"); });
+	for (const change of [{ advice: true }, { complete: false }, { isError: true }, { kind: "assistant" }, { kind: "summary" }]) {
+		test(`unusable completion source ${JSON.stringify(change)}`, () => {
+			const altered = { ...context, records: context.records.map((r) => r.id === "check5" ? { ...r, ...change } : r) };
+			expect(run({ lifecycle: { task_status_5: a("actually_completed") } }, { context: altered }).kind).not.toBe("inject");
+		});
+	}
+	test("unknown/missing lifecycle cannot be overridden by current_match", () => {
+		for (const life of [undefined, a("unexpected")]) {
+			const lifecycle: Record<string, ChoiceAnswer> = life ? { task_status_5: life } : {};
+			expect(run({ alignment: a("not_aligned"), lifecycle }).kind).not.toBe("inject");
 		}
 	});
-
-	test("aligned + no stale → silent (unchanged)", () => {
-		const a: AuditAnswers = { alignment: ans("aligned", 0.9) };
-		expect(decide(a, board, 0.5, 40, []).kind).toBe("silent");
-		expect(decide(a, board, 0.5, 40).kind).toBe("silent");
-	});
-
-	test("granularity bundles_multiple_outcomes → split in inject", () => {
-		const a: AuditAnswers = {
-			alignment: ans("aligned", 0.9),
-			granularity: ans("bundles_multiple_outcomes", 0.9),
-		};
-		const r = decide(a, board, 0.5, 10, []);
-		expect(r.kind).toBe("inject");
-		if (r.kind === "inject") expect(r.text).toContain("split");
-	});
-
-	test("granularity ambiguous_done_criteria → split", () => {
-		const a: AuditAnswers = {
-			alignment: ans("aligned", 0.9),
-			granularity: ans("ambiguous_done_criteria", 0.9),
-		};
-		expect(decide(a, board, 0.5, 10, []).kind).toBe("inject");
-	});
-
-	test("granularity single_verifiable_outcome / not_applicable → no split", () => {
-		for (const c of ["single_verifiable_outcome", "not_applicable"]) {
-			const a: AuditAnswers = {
-				alignment: ans("aligned", 0.9),
-				granularity: ans(c, 0.9),
-			};
-			expect(decide(a, board, 0.5, 10, []).kind).toBe("silent");
+	test("warrant gates pending/empty/all-done boards", () => {
+		for (const warrant of ["idle", "trivial"]) for (const tasks of [[], [{ id: 5, subject: "done", status: "completed" as const }]]) {
+			expect(run({ alignment: a("no_in_progress_task"), current_match: a(NOT_ON_BOARD), board_warranted: a(warrant) }, {}, { tasks, nextId: 6 }).kind).toBe("silent");
 		}
+		expect(run({ alignment: a("no_in_progress_task"), current_match: a(NOT_ON_BOARD), board_warranted: a("warranted", 0.1) }, {}, { tasks: [], nextId: 1 }).kind).not.toBe("inject");
+		expect(text(run({ alignment: a("no_in_progress_task"), current_match: a(NOT_ON_BOARD), board_warranted: a("warranted") }, {}, { tasks: [], nextId: 1 }))).toContain("create and claim");
 	});
-
-	test("low-confidence granularity → no split on that basis", () => {
-		const a: AuditAnswers = {
-			alignment: ans("aligned", 0.9),
-			granularity: ans("bundles_multiple_outcomes", 0.3),
-		};
-		expect(decide(a, board, 0.5, 10, []).kind).toBe("silent");
+	test("claim requires supported actionable matching task; drift needs its own confidence", () => {
+		const patch = { alignment: a("not_aligned"), current_match: a("7"), lifecycle: { task_status_7: a("actionable_now") } };
+		expect(text(run(patch))).toContain('set #7 "Wire endpoint" in_progress');
+		expect(text(run({ ...patch, drift: a("drifted") }))).toContain("STOP");
+		expect(text(run({ ...patch, drift: a("drifted", 0.1) }))).not.toContain("STOP");
 	});
-
-	test("not_aligned + stale → both alignment steps AND split step", () => {
-		const a: AuditAnswers = {
-			alignment: ans("not_aligned", 0.9),
-			lifecycle: { task_status_5: ans("actually_completed", 0.9) },
-			current_match: ans("7", 0.9),
-			drift: ans("on_track", 0.9),
-			granularity: ans("bundles_multiple_outcomes", 0.9),
-		};
-		const r = decide(a, board, 0.5, 10, [5]);
-		expect(r.kind).toBe("inject");
-		if (r.kind === "inject") {
-			expect(r.text).toContain("mark #5");
-			expect(r.text).toContain("split");
-		}
-	});
-
-	test("parallel in_progress: #5 completed + #7 ongoing → only #5 action", () => {
-		const parallel: BoardSnapshot = {
-			tasks: [
-				{ id: 5, subject: "repo layer", status: "in_progress" },
-				{ id: 7, subject: "endpoint", status: "in_progress" },
-			],
-			nextId: 8,
-		};
-		const a: AuditAnswers = {
-			alignment: ans("aligned", 0.9),
-			lifecycle: {
-				task_status_5: ans("actually_completed", 0.9),
-				task_status_7: ans("still_ongoing", 0.9),
-			},
-		};
-		const r = decide(a, parallel, 0.5, 10);
-		expect(r.kind).toBe("inject");
-		if (r.kind === "inject") {
-			expect(r.text).toContain("mark #5");
-			expect(r.text).not.toContain("mark #7");
-			expect(r.text).not.toContain("delete #7");
-		}
-	});
-
-	test("parallel in_progress all ongoing → silent, no error", () => {
-		const parallel: BoardSnapshot = {
-			tasks: [
-				{ id: 5, subject: "a", status: "in_progress" },
-				{ id: 7, subject: "b", status: "in_progress" },
-			],
-			nextId: 8,
-		};
-		const a: AuditAnswers = {
-			alignment: ans("aligned", 0.9),
-			lifecycle: {
-				task_status_5: ans("still_ongoing", 0.9),
-				task_status_7: ans("still_ongoing", 0.9),
-			},
-		};
-		expect(decide(a, parallel, 0.5, 10).kind).toBe("silent");
-	});
-
-	test("cancelled task → delete step naming only that task", () => {
-		const parallel: BoardSnapshot = {
-			tasks: [
-				{ id: 5, subject: "dead work", status: "in_progress" },
-				{ id: 7, subject: "live", status: "in_progress" },
-			],
-			nextId: 8,
-		};
-		const a: AuditAnswers = {
-			alignment: ans("aligned", 0.9),
-			lifecycle: {
-				task_status_5: ans("cancelled", 0.9),
-				task_status_7: ans("still_ongoing", 0.9),
-			},
-		};
-		const r = decide(a, parallel, 0.5, 10);
-		if (r.kind === "inject") {
-			expect(r.text).toContain("delete #5");
-			expect(r.text).not.toContain("delete #7");
-		} else expect.unreachable();
-	});
-
-	test("unclear lifecycle → no destructive step for that task", () => {
-		const a: AuditAnswers = {
-			alignment: ans("aligned", 0.9),
-			lifecycle: { task_status_5: ans("unclear", 0.6) },
-		};
-		const r = decide(a, board, 0.5, 10);
-		// unclear → notify mentioning #5, never a delete/complete step
-		expect(r.kind).toBe("notify");
-		if (r.kind === "notify") expect(r.text).toContain("#5");
-	});
-
-	test("terminal-stop: unfinished actionable task → inject names task", () => {
-		const a: AuditAnswers = {
-			alignment: ans("not_aligned", 0.9),
-			lifecycle: { task_status_5: ans("still_ongoing", 0.9), task_status_7: ans("actually_completed", 0.9) },
-			current_match: ans("not_on_board", 0.9),
-		};
-		const r = decide(a, board, 0.5, 10, [], { terminalStop: true });
-		expect(r.kind).toBe("inject");
-		if (r.kind === "inject") expect(r.text).toContain("terminal-stop");
-	});
-
-	test("terminal-stop: still_ongoing task → CONTINUE step, not silent", () => {
-		// Agent autonomously stopped mid-task: jev says the in_progress task is
-		// still the real work → push the agent to continue it, not just note it.
-		const b: BoardSnapshot = {
-			tasks: [{ id: 5, subject: "half-done feature", status: "in_progress" }],
-			nextId: 6,
-		};
-		const a: AuditAnswers = {
-			alignment: ans("aligned", 0.9),
-			lifecycle: { task_status_5: ans("still_ongoing", 0.9) },
-		};
-		const r = decide(a, b, 0.5, 10, [], { terminalStop: true });
-		expect(r.kind).toBe("inject");
-		if (r.kind === "inject") {
-			expect(r.text).toContain("CONTINUE working on #5");
-			expect(r.text).not.toContain("delete #5");
-		}
-	});
-
-	test("terminal-stop: pending still_ongoing task → set in_progress + continue", () => {
-		const b: BoardSnapshot = {
-			tasks: [{ id: 5, subject: "queued next", status: "pending" }],
-			nextId: 6,
-		};
-		const a: AuditAnswers = {
-			alignment: ans("no_in_progress_task", 0.9),
-			lifecycle: { task_status_5: ans("still_ongoing", 0.9) },
-		};
-		const r = decide(a, b, 0.5, 10, [], { terminalStop: true });
-		expect(r.kind).toBe("inject");
-		if (r.kind === "inject") {
-			expect(r.text).toContain("set #5");
-			expect(r.text).toContain("continue");
-			expect(r.text).not.toContain("create todo task(s)");
-		}
-	});
-
-	test("terminal-stop: still_ongoing beats board_warranted=idle (actionable work wins)", () => {
-		// still_ongoing ≠ future/deferred — jev says real work remains, so the
-		// warrant-idle silence must NOT swallow the continuation push.
-		const b: BoardSnapshot = {
-			tasks: [{ id: 5, subject: "queued next", status: "pending" }],
-			nextId: 6,
-		};
-		const a: AuditAnswers = {
-			alignment: ans("no_in_progress_task", 0.9),
-			board_warranted: ans("idle", 0.9),
-			lifecycle: { task_status_5: ans("still_ongoing", 0.9) },
-		};
-		const r = decide(a, b, 0.5, 10, [], { terminalStop: true });
-		expect(r.kind).toBe("inject");
-		if (r.kind === "inject") expect(r.text).toContain("#5");
-	});
-
-	test("terminal-stop: mixed still_ongoing + blocked → continue the ongoing, park the blocked", () => {
-		const b: BoardSnapshot = {
-			tasks: [
-				{ id: 5, subject: "half-done", status: "in_progress" },
-				{ id: 7, subject: "needs creds", status: "pending" },
-			],
-			nextId: 8,
-		};
-		const a: AuditAnswers = {
-			alignment: ans("aligned", 0.9),
-			lifecycle: {
-				task_status_5: ans("still_ongoing", 0.9),
-				task_status_7: ans("blocked", 0.9),
-			},
-		};
-		const r = decide(a, b, 0.5, 10, [], { terminalStop: true });
-		expect(r.kind).toBe("inject");
-		if (r.kind === "inject") {
-			expect(r.text).toContain("CONTINUE working on #5");
-			expect(r.text).toContain("leave #7");
-			expect(r.text).toContain("blocked");
-		}
-	});
-
-	test("terminal-stop: low-conf still_ongoing → notify, no continuation push", () => {
-		const b: BoardSnapshot = {
-			tasks: [{ id: 5, subject: "half-done", status: "in_progress" }],
-			nextId: 6,
-		};
-		const a: AuditAnswers = {
-			alignment: ans("aligned", 0.9),
-			lifecycle: { task_status_5: ans("still_ongoing", 0.3) },
-		};
-		const r = decide(a, b, 0.5, 10, [], { terminalStop: true });
-		expect(r.kind).toBe("notify");
-		if (r.kind === "notify") expect(r.text).toContain("#5");
-	});
-
-	test("periodic audit: still_ongoing never becomes an action (unchanged)", () => {
-		const a: AuditAnswers = {
-			alignment: ans("aligned", 0.9),
-			lifecycle: { task_status_5: ans("still_ongoing", 0.9) },
-		};
-		expect(decide(a, board, 0.5, 10).kind).toBe("silent");
-	});
-
-	test("terminal-stop: all tasks blocked → no blind continuation demand", () => {
-		const blocked: BoardSnapshot = {
-			tasks: [{ id: 5, subject: "needs creds", status: "pending" }],
-			nextId: 6,
-		};
-		const a: AuditAnswers = {
-			alignment: ans("no_in_progress_task", 0.9),
-			board_warranted: ans("idle", 0.9),
-			lifecycle: { task_status_5: ans("blocked", 0.9) },
-		};
-		const r = decide(a, blocked, 0.5, 10, [], { terminalStop: true });
-		// blocked lifecycle is actionable (records reason) but must not demand new work
-		if (r.kind === "inject") {
-			expect(r.text).not.toContain("create todo task");
-			expect(r.text).toContain("blocked");
-		} else {
-			expect(r.kind).toBe("silent");
-		}
-	});
-
-	test("low-confidence aggregate answers contribute no steps (independent gating)", () => {
-		// F2 repro: low-conf alignment + low-conf match + high-conf lifecycle
-		// → only the lifecycle step; no set #7, no create.
-		const a: AuditAnswers = {
-			alignment: ans("not_aligned", 0.3),
-			current_match: ans("7", 0.3),
-			lifecycle: { task_status_5: ans("actually_completed", 0.9) },
-		};
-		const r = decide(a, board, 0.5, 10);
-		expect(r.kind).toBe("inject");
-		if (r.kind === "inject") {
-			expect(r.text).toContain("mark #5");
-			expect(r.text).not.toContain("set #7");
-			expect(r.text).not.toContain("create todo task");
-		}
-	});
-
-	test("no alignment answer + actionable lifecycle → per-task inject", () => {
-		const a: AuditAnswers = {
-			lifecycle: { task_status_5: ans("actually_completed", 0.9) },
-		};
-		const r = decide(a, board, 0.5, 10);
-		expect(r.kind).toBe("inject");
-		if (r.kind === "inject") expect(r.text).toContain("mark #5");
-	});
-
-	test("no alignment + only uncertain lifecycle → notify", () => {
-		const a: AuditAnswers = {
-			lifecycle: { task_status_5: ans("actually_completed", 0.3) },
-		};
-		expect(decide(a, board, 0.5, 10).kind).toBe("notify");
-	});
-
-	test("no alignment + nothing → audit skipped notify", () => {
-		expect(decide({}, board, 0.5, 10).kind).toBe("notify");
-	});
-
-	test("blocked lifecycle on in_progress task → set back to pending", () => {
-		const a: AuditAnswers = {
-			alignment: ans("aligned", 0.9),
-			lifecycle: { task_status_5: ans("blocked", 0.9) },
-		};
-		const r = decide(a, board, 0.5, 10);
-		if (r.kind === "inject") expect(r.text).toContain("set #5");
-		else expect.unreachable();
-	});
-
-	test("blocked lifecycle on pending task → leave pending", () => {
-		const pb: BoardSnapshot = { tasks: [{ id: 7, subject: "queued", status: "pending" }], nextId: 8 };
-		const a: AuditAnswers = {
-			lifecycle: { task_status_7: ans("blocked", 0.9) },
-		};
-		const r = decide(a, pb, 0.5, 10);
-		if (r.kind === "inject") expect(r.text).toContain("leave #7");
-		else expect.unreachable();
+	test("unchanged issue suppressed; blocker bookkeeping does not re-arm it", () => {
+		const patch = { lifecycle: { task_status_5: a("blocked") }, reconciliation: { task_board_5: a("needs_reconciliation") } };
+		const first = run(patch); expect(first.kind).toBe("inject"); if (first.kind !== "inject") return;
+		const suppressed = new Set(first.corrections.map((c) => c.key));
+		expect(run(patch, { suppressed }).kind).toBe("silent");
+		const recorded = { ...board, tasks: [{ ...board.tasks[0], status: "pending" as const, description: "Awaiting user approval" }, board.tasks[1]] };
+		expect(run(patch, { suppressed }, recorded).kind).toBe("silent");
+		const newDecision = { ...context, records: context.records.map((r) => r.id === "user" ? { ...r, text: "New approval decision" } : r) };
+		expect(run(patch, { suppressed, context: newDecision }).kind).toBe("inject");
 	});
 });
+
+// This suite supplies judgments. It does not measure live jev semantic accuracy.
+import { NOT_ON_BOARD } from "../typesafe.js";

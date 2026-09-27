@@ -11,9 +11,10 @@ import type { ExtensionAPI, ExtensionCommandContext } from "@earendil-works/pi-c
 import { SettingsManager } from "@earendil-works/pi-coding-agent";
 import { existsSync } from "node:fs";
 import { agentConfigPath, legacyConfigPath, loadConfig, projectConfigPath, resolveApiKey, type AuditConfig } from "./config.js";
-import { replayBoardWithAges, staleTaskIds, unfinishedTasks } from "./board.js";
+import { replayBoardWithAges, staleTaskIds, unfinishedTasks, visibleTasks, inProgressTasks as inProgressBoardTasks } from "./board.js";
+import { collectContext, digest, object, redact } from "./context.js";
 import { freshCounter, onTurnEnd, onUserMessage, replayCounter, shouldAudit, type LoopCounter } from "./counter.js";
-import { buildAuditRequest, runAudit, type TerminalStopInfo } from "./typesafe.js";
+import { auditWithContext, type TerminalStopInfo } from "./typesafe.js";
 import { decide } from "./verdict.js";
 
 /** Neutral bus channel shared with pi-continue-watchdog — plain data, no imports. */
@@ -35,7 +36,7 @@ function parseUserReady(data: unknown): TerminalStopInfo | undefined {
 	return out;
 }
 
-type Ctx = { sessionManager: { getSessionId(): string; getBranch(): Iterable<unknown> }; cwd?: string; isProjectTrusted?: () => boolean; signal?: AbortSignal };
+type Ctx = { sessionManager: { getSessionId(): string; getBranch(): Iterable<unknown>; buildContextEntries?: () => Iterable<unknown> }; cwd?: string; isProjectTrusted?: () => boolean; signal?: AbortSignal };
 const sid = (ctx: Ctx) => ctx.sessionManager.getSessionId() ?? "";
 
 /** Same retry settings the agent loop uses (settings.json `retry` block). */
@@ -51,39 +52,6 @@ function retrySettingsFor(ctx: Ctx): { maxRetries: number; baseDelayMs: number }
 	}
 }
 
-interface BranchMsg {
-	role?: string;
-	content?: unknown;
-	toolCalls?: unknown[];
-}
-
-/** Compact digest of recent assistant text + tool calls for jev's `state`. */
-function recentActivity(ctx: Ctx, budget: number): string {
-	const parts: string[] = [];
-	for (const entry of ctx.sessionManager.getBranch()) {
-		const e = entry as { type?: string; message?: BranchMsg };
-		if (e.type !== "message" || !e.message) continue;
-		const m = e.message;
-		if (m.role === "assistant") {
-			const text = Array.isArray(m.content)
-				? (m.content as { type?: string; text?: string }[]).filter((c) => c.type === "text").map((c) => c.text).join(" ")
-				: typeof m.content === "string" ? m.content : "";
-			const tools = Array.isArray(m.toolCalls)
-				? (m.toolCalls as { name?: string }[]).map((t) => t.name).filter(Boolean).join(", ")
-				: "";
-			const line = [text.trim(), tools && `[tools: ${tools}]`].filter(Boolean).join(" ");
-			if (line) parts.push(line);
-		} else if (m.role === "user") {
-			const text = Array.isArray(m.content)
-				? (m.content as { type?: string; text?: string }[]).filter((c) => c.type === "text").map((c) => c.text).join(" ")
-				: typeof m.content === "string" ? m.content : "";
-			if (text.trim()) parts.push(`USER: ${text.trim()}`);
-		}
-	}
-	let out = parts.slice(-20).join("\n");
-	if (out.length > budget) out = `…${out.slice(out.length - budget)}`;
-	return out;
-}
 
 export default function (pi: ExtensionAPI, cfgOverride?: AuditConfig) {
 	// Global layer resolved eagerly; project layer merges on first session_start
@@ -97,9 +65,36 @@ export default function (pi: ExtensionAPI, cfgOverride?: AuditConfig) {
 	let projectMerged = false;
 	/** Latest ctx seen on session_start — used by the semantic-hook listener. */
 	let lastCtx: (Ctx & { ui?: { notify?: (m: string, l?: "error" | "warning" | "info") => void } }) | undefined;
-	/** Envelope identity + stop-epoch dedup for terminal-stop audits. */
-	const seenEnvelopes = new WeakSet<object>();
+	const sentKeys = new Set<string>();
+	const noticeKeys = new Set<string>();
+	let warnedBudget = false;
 	let lastStopKey = "";
+	const contextFor = (ctx: Ctx, board = replayBoardWithAges(ctx.sessionManager.getBranch())) => collectContext(
+		ctx.sessionManager.buildContextEntries?.() ?? ctx.sessionManager.getBranch(),
+		visibleTasks(board).map((task) => ({ id: `task:${task.id}`, value: task })),
+		!!ctx.sessionManager.buildContextEntries,
+		[resolveApiKey(cfg) ?? ""],
+	);
+	const evidenceVersionFor = (ctx: Ctx) => digest([...ctx.sessionManager.getBranch()].flatMap((raw) => {
+		const e = object(raw), m = e.type === "custom_message" ? e : object(e.message);
+		const visibleCustom = m.customType && m.display !== false && m.customType !== "jev-todo-audit";
+		if (m.role === "user" || (m.role === "toolResult" && m.toolName !== "todo") ||
+			(m.role === "bashExecution" && !m.excludeFromContext) || visibleCustom)
+			return [[e.id, m.role, m.customType, m.content, m.command, m.output, m.exitCode, m.isError]];
+		return [];
+	}));
+	const boundaryFor = (ctx: Ctx) => {
+		const branch = [...ctx.sessionManager.getBranch()];
+		return digest({ session: sid(ctx), board: replayBoardWithAges(branch).tasks,
+			entries: branch.map((raw) => { const e = object(raw); return [e.id, e.type, e.message?.role === "user" ? e.message.content : undefined]; }) });
+	};
+	const restoreKeys = (ctx: Ctx) => {
+		for (const raw of ctx.sessionManager.getBranch()) {
+			const e = object(raw), m = e.type === "custom_message" ? e : object(e.message);
+			if (m.customType !== "jev-todo-audit") continue;
+			for (const key of Array.isArray(m.details?.auditKeys) ? m.details.auditKeys : []) if (typeof key === "string") sentKeys.add(key);
+		}
+	};
 	/** Single-level queue: newest distinct stop epoch seen while an audit ran. */
 	let pendingStop: { key: string; stop: TerminalStopInfo } | undefined;
 	/** Aborts the in-flight audit's retry backoff + fetch when the session ends/switches. */
@@ -111,7 +106,7 @@ export default function (pi: ExtensionAPI, cfgOverride?: AuditConfig) {
 		label: string,
 		opts: { terminalStop?: TerminalStopInfo } = {},
 	) {
-		if (inFlight) return;
+		if (!cfg.enabled || inFlight) return;
 		const apiKey = resolveApiKey(cfg);
 		if (!apiKey) {
 			ctx.ui?.notify?.(`[jev audit] no API key: set ${cfg.apiKeyEnvVar} or apiKey in ${agentConfigPath()}`, "warning");
@@ -134,51 +129,59 @@ export default function (pi: ExtensionAPI, cfgOverride?: AuditConfig) {
 			const board = replayBoardWithAges(ctx.sessionManager.getBranch());
 			// Terminal-stop short-circuit: nothing unfinished → nothing to check.
 			if (opts.terminalStop && unfinishedTasks(board).length === 0) return;
-			const req = buildAuditRequest(board, recentActivity(ctx, cfg.activityBudgetChars), cfg.model, opts.terminalStop);
-			const res = await runAudit(req, { apiUrl: cfg.apiUrl, apiKey, timeoutMs: cfg.timeoutMs, signal: ac.signal, ...retrySettingsFor(ctx) });
-
-			// Stale-session guard: after await, this audit's session may be gone.
-			// Abort signal covers session_shutdown/session_tree; lastCtx drift covers it too.
-			if (ac.signal.aborted || sid(lastCtx ?? ctx) !== mySid) return;
+			const boundary = boundaryFor(ctx);
+			const evidenceVersion = evidenceVersionFor(ctx);
+			const initialContext = contextFor(ctx, board);
+			const staleIds = staleTaskIds(board, c.totalLoops, cfg.interval, cfg.staleAuditSpans);
+			// Diagnostic age, not a split decision or a task-size threshold.
+			for (const task of inProgressBoardTasks(board)) {
+				const record = initialContext.records.find((r) => r.id === `task:${task.id}`);
+				if (record) record.text += `\nAge review: ${c.totalLoops - (board.inProgressSince.get(task.id) ?? c.totalLoops)} loops; review flag=${staleIds.includes(task.id)}. Age alone does not justify splitting.`;
+			}
+			const { result: res, context } = await auditWithContext(board, initialContext, cfg.model,
+				{ apiUrl: cfg.apiUrl, apiKey, timeoutMs: cfg.timeoutMs, signal: ac.signal, ...retrySettingsFor(ctx) }, opts.terminalStop);
+			if (ac.signal.aborted || sid(lastCtx ?? ctx) !== mySid || boundaryFor(ctx) !== boundary) return;
 
 			if (!res.ok) {
-				ctx.ui?.notify?.(`[jev audit ${label}] failed: ${res.error}`, "warning");
+				ctx.ui?.notify?.(`[jev audit ${label}] failed: ${redact(res.error, [apiKey])}`, "warning");
 				return;
 			}
 
-			const staleIds = staleTaskIds(board, c.totalLoops, cfg.interval, cfg.staleAuditSpans);
-			const action = decide(res.answers, board, cfg.confidenceThreshold, c.totalLoops, staleIds, { terminalStop: !!opts.terminalStop });
+			restoreKeys(ctx);
+			const action = decide(res.answers, board, cfg.confidenceThreshold, c.totalLoops, staleIds,
+				{ terminalStop: !!opts.terminalStop, context, suppressed: sentKeys, scopeKey: mySid, evidenceVersion });
 			if (action.kind === "notify") {
-				ctx.ui?.notify?.(action.text, "info");
+				const key = digest([mySid, evidenceVersion, action.text]);
+				if (!noticeKeys.has(key)) { ctx.ui?.notify?.(action.text, "info"); noticeKeys.add(key); }
 			} else if (action.kind === "inject") {
 				// Re-check session identity right before the side effect — the only
 				// await between the earlier guard and here is none, but shutdown can
 				// fire between microtasks; keep the belt on.
 				if (ac.signal.aborted || sid(lastCtx ?? ctx) !== mySid) return;
-				// steer > followUp: lands at the next turn boundary of the running
-				// loop instead of waiting for the run to settle. Terminal-stop
-				// injects also triggerTurn — the agent already stopped, so steer
-				// alone would queue silently; we actually push it back to work.
+				const auditKeys = action.corrections.map((item) => item.key);
 				pi.sendMessage(
-					{ customType: "jev-todo-audit", content: action.text, display: true },
-					opts.terminalStop ? { deliverAs: "steer", triggerTurn: true } : { deliverAs: "steer" },
+					{ customType: "jev-todo-audit", content: action.text, display: true, details: { auditKeys } },
+					opts.terminalStop && action.mayWake ? { deliverAs: "steer", triggerTurn: true } : { deliverAs: "steer" },
 				);
+				for (const key of auditKeys) sentKeys.add(key);
 				if (cfg.notifyOnAligned === false) {
 					ctx.ui?.notify?.(`[jev audit ${label}] correction injected`, "info");
 				}
-			} else if (cfg.notifyOnAligned) {
+			} else if (cfg.notifyOnAligned && res.answers.alignment?.choice === "aligned" &&
+				(res.answers.alignment.confidence ?? 0) >= cfg.confidenceThreshold) {
 				ctx.ui?.notify?.(`[jev audit ${label}] board aligned ✓`, "info");
 			}
 		} catch (err) {
 			if (!ac.signal.aborted) {
-				ctx.ui?.notify?.(`[jev audit ${label}] error: ${err instanceof Error ? err.message : String(err)}`, "warning");
+				ctx.ui?.notify?.(`[jev audit ${label}] error: ${redact(err instanceof Error ? err.message : String(err), [apiKey])}`, "warning");
 			}
 		} finally {
 			ctx.signal?.removeEventListener("abort", onCtxAbort);
 			inFlight = false;
 			if (auditAbort === ac) auditAbort = undefined;
-			// A distinct stop epoch arrived while we were auditing → one follow-up.
-			if (!ac.signal.aborted && pendingStop && lastCtx) {
+			// Lifecycle handlers clear obsolete pending work. A *new* stop queued
+			// after user invalidation must survive cancellation of the older audit.
+			if (pendingStop && lastCtx && sid(lastCtx) === mySid && !lastCtx.signal?.aborted) {
 				const { key, stop } = pendingStop;
 				pendingStop = undefined;
 				lastStopKey = key;
@@ -189,6 +192,9 @@ export default function (pi: ExtensionAPI, cfgOverride?: AuditConfig) {
 
 	pi.on("session_start", async (_e, ctx) => {
 		lastCtx = ctx;
+		auditAbort?.abort();
+		sentKeys.clear();
+		noticeKeys.clear();
 		lastStopKey = "";
 		pendingStop = undefined;
 		if (!projectMerged) {
@@ -202,6 +208,12 @@ export default function (pi: ExtensionAPI, cfgOverride?: AuditConfig) {
 				ctx.ui?.notify?.(`[jev-todo-audit] config moved — copy ${legacyConfigPath()} to ${agentConfigPath()}`, "warning");
 			}
 		}
+		if (!cfg.enabled) return;
+		if (cfg.activityBudgetChars !== undefined && !warnedBudget) {
+			warnedBudget = true;
+			ctx.ui?.notify?.("[jev-todo-audit] activityBudgetChars is deprecated and ignored; only provider context admission limits evidence size.", "warning");
+		}
+		restoreKeys(ctx);
 		counters.set(sid(ctx), replayCounter(ctx.sessionManager.getBranch()));
 		// Background audit is useless without a key — warn once at session start.
 		if (!resolveApiKey(cfg)) {
@@ -209,9 +221,18 @@ export default function (pi: ExtensionAPI, cfgOverride?: AuditConfig) {
 		}
 	});
 	pi.on("session_compact", async (_e, ctx) => {
+		if (!cfg.enabled) return;
+		auditAbort?.abort();
+		lastCtx = ctx;
+		lastStopKey = "";
 		counters.set(sid(ctx), replayCounter(ctx.sessionManager.getBranch()));
 	});
 	pi.on("session_tree", async (_e, ctx) => {
+		if (!cfg.enabled) return;
+		lastCtx = ctx;
+		lastStopKey = "";
+		sentKeys.clear();
+		restoreKeys(ctx);
 		counters.set(sid(ctx), replayCounter(ctx.sessionManager.getBranch()));
 		auditAbort?.abort();
 		pendingStop = undefined;
@@ -227,11 +248,15 @@ export default function (pi: ExtensionAPI, cfgOverride?: AuditConfig) {
 
 	// A finalized user message (prompt or steer) resets the cooldown window.
 	pi.on("message_end", async (event, ctx) => {
-		if (event.message.role !== "user") return;
+		if (!cfg.enabled || event.message.role !== "user") return;
+		auditAbort?.abort();
+		lastStopKey = "";
+		pendingStop = undefined;
 		onUserMessage(counterFor(sid(ctx)));
 	});
 
 	pi.on("turn_end", async (_e, ctx) => {
+		if (!cfg.enabled) return;
 		const c = counterFor(sid(ctx));
 		onTurnEnd(c);
 		if (!shouldAudit(c, cfg.interval, cfg.cooldownLoops) || inFlight) return;
@@ -244,13 +269,10 @@ export default function (pi: ExtensionAPI, cfgOverride?: AuditConfig) {
 	pi.events.on(SEMANTIC_HOOK_CHANNEL, (data: unknown) => {
 		try {
 			const stop = parseUserReady(data);
-			if (!stop || !lastCtx) return;
-			// Dedup: same envelope object or same stop epoch (kind+reason).
-			if (typeof data === "object" && data !== null) {
-				if (seenEnvelopes.has(data)) return;
-				seenEnvelopes.add(data);
-			}
-			const key = `${sid(lastCtx)}|${stop.stopKind}|${stop.reasonType ?? ""}|${stop.reason ?? ""}`;
+			if (!cfg.enabled || !stop || !lastCtx) return;
+			// Wording/epoch is not new evidence. New user/work/board state is.
+			const board = replayBoardWithAges(lastCtx.sessionManager.getBranch());
+			const key = digest([sid(lastCtx), board.tasks, evidenceVersionFor(lastCtx)]);
 			if (key === lastStopKey || key === pendingStop?.key) return;
 			if (inFlight) {
 				// Queue newest distinct epoch; single-level, no unbounded retries.

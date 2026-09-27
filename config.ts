@@ -38,8 +38,8 @@ export interface AuditConfig {
 	apiUrl: string;
 	/** Request timeout in ms. */
 	timeoutMs: number;
-	/** Max chars of recent activity fed to jev as state. */
-	activityBudgetChars: number;
+	/** Deprecated: parsed for compatibility, never used as an evidence budget. */
+	activityBudgetChars?: number;
 	/** Audits an in_progress task may span before being flagged stale. */
 	staleAuditSpans: number;
 }
@@ -54,7 +54,7 @@ export const DEFAULT_CONFIG: AuditConfig = {
 	notifyOnAligned: false,
 	apiUrl: "https://api.typesafe.ai/v1/systemone",
 	timeoutMs: 30_000,
-	activityBudgetChars: 4_000,
+	activityBudgetChars: undefined,
 	staleAuditSpans: 3,
 };
 
@@ -130,7 +130,7 @@ function applyLayer(cfg: AuditConfig, o: Record<string, unknown>): AuditConfig {
 		notifyOnAligned: typeof o.notifyOnAligned === "boolean" ? o.notifyOnAligned : cfg.notifyOnAligned,
 		apiUrl: str(o.apiUrl) ?? cfg.apiUrl,
 		timeoutMs: num(o.timeoutMs, cfg.timeoutMs, 1_000),
-		activityBudgetChars: num(o.activityBudgetChars, cfg.activityBudgetChars, 500),
+		activityBudgetChars: typeof o.activityBudgetChars === "number" ? o.activityBudgetChars : cfg.activityBudgetChars,
 		staleAuditSpans: num(o.staleAuditSpans, cfg.staleAuditSpans, 1),
 	};
 }

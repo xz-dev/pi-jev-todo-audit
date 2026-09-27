@@ -12,10 +12,10 @@ const board: BoardSnapshot = {
 };
 
 describe("typesafe request", () => {
-	test("non-empty board → 5 questions, no board_warranted", () => {
+	test("batched questions have per-task lifecycle, evidence and active-task granularity", () => {
 		const req = buildAuditRequest(board, "edited parser.ts", "jev-latest");
 		expect(req.model).toBe("jev-latest");
-		expect(Object.keys(req.questions).sort()).toEqual(["alignment", "current_match", "drift", "granularity", "task_status_3", "task_status_5"]);
+		expect(Object.keys(req.questions).sort()).toEqual(["alignment", "current_match", "drift", "interaction", "task_board_3", "task_board_5", "task_evidence_3", "task_evidence_5", "task_granularity_3", "task_status_3", "task_status_5", "work_evidence"]);
 		for (const q of Object.values(req.questions)) expect(q.type).toBe("choice");
 	});
 
@@ -56,7 +56,7 @@ describe("typesafe request", () => {
 		const crit = req.questions.current_match.criteria as Record<string, string>;
 		expect(Object.keys(crit)).toEqual([NOT_ON_BOARD]);
 		expect(req.questions.board_warranted).toBeDefined();
-		expect(req.questions.granularity).toBeDefined();
+		expect(req.questions.granularity).toBeUndefined();
 		const bw = req.questions.board_warranted.criteria as Record<string, string>;
 		expect(Object.keys(bw).sort()).toEqual(["idle", "trivial", "warranted"]);
 	});
@@ -69,7 +69,7 @@ describe("typesafe request", () => {
 		expect(q3).toBeDefined();
 		expect(q5.instructions).toContain("#5");
 		expect(Object.keys(q5.criteria).sort()).toEqual([
-			"actually_completed", "blocked", "cancelled", "deliberately_deferred", "future", "still_ongoing", "unclear",
+			"actionable_now", "actually_completed", "blocked", "cancelled", "deliberately_deferred", "future", "still_ongoing", "unclear",
 		]);
 		// deleted task #9 gets no question
 		expect(req.questions.task_status_9).toBeUndefined();
@@ -94,7 +94,7 @@ describe("typesafe request", () => {
 
 describe("typesafe client", () => {
 	const req: AuditRequest = buildAuditRequest(board, "x", "jev-latest");
-	const opts = { apiUrl: "https://x.test/v1/systemone", apiKey: "k", timeoutMs: 1000 };
+	const opts = { apiUrl: "https://x.test/v1/systemone", apiKey: "test-opaque-credential", timeoutMs: 1000 };
 
 	test("ok response → parsed answers", async () => {
 		const fetchFn = mock(async () => new Response(JSON.stringify({
@@ -106,7 +106,7 @@ describe("typesafe client", () => {
 		const call = (fetchFn as any).mock.calls[0];
 		expect(call[0]).toBe(opts.apiUrl);
 		expect(JSON.parse(call[1].body as string).model).toBe("jev-latest");
-		expect((call[1].headers as Record<string, string>).authorization).toBe("Bearer k");
+		expect((call[1].headers as Record<string, string>).authorization).toBe("Bearer test-opaque-credential");
 	});
 
 	test("HTTP error → ok:false, no throw", async () => {
@@ -285,7 +285,7 @@ describe("typesafe client", () => {
 		expect(res.ok).toBe(true);
 		if (res.ok) {
 			expect(res.answers.lifecycle?.task_status_5?.choice).toBe("actually_completed");
-			expect(res.answers.lifecycle?.task_status_7?.choice).toBe("still_ongoing");
+			expect(res.answers.lifecycle?.task_status_7).toBeUndefined();
 			expect((res.answers as Record<string, unknown>).bogus_key).toBeUndefined();
 			expect(res.answers.alignment?.choice).toBe("aligned");
 		}

@@ -1,289 +1,118 @@
-/**
- * Map jev's Choice answers to an action: stay silent, inject a corrective
- * message into the conversation, or notify the user when confidence is low.
- *
- * Lifecycle verdicts are per task: `lifecycle["task_status_<id>"]` is judged
- * and confidence-gated independently, so one uncertain task never suppresses
- * or contaminates its siblings. Parallel in_progress is valid by default.
- * Aggregate answers (alignment/current_match/drift/warrant) are gated the
- * same way — a low-confidence answer never emits a state-changing step.
- */
+/** Deterministic safety gates around advisory model judgments, not a second classifier. */
+import { inProgressTasks, unfinishedTasks, type BoardSnapshot, type BoardTask } from "./board.js";
+import { digest, redact, workVersion, type AuditContext, type EvidenceRecord } from "./context.js";
+import { evidenceKey, granularityKey, lifecycleKey, reconciliationKey, NOT_ON_BOARD, type AuditAnswers, type ChoiceAnswer } from "./typesafe.js";
 
-import type { BoardSnapshot, BoardTask } from "./board.js";
-import { inProgressTasks, unfinishedTasks } from "./board.js";
-import type { AuditAnswers, ChoiceAnswer } from "./typesafe.js";
-import { lifecycleKey, NOT_ON_BOARD } from "./typesafe.js";
-
+export interface Correction { key: string; text: string; bookkeeping: boolean; execution: boolean }
 export type VerdictAction =
 	| { kind: "silent" }
-	| { kind: "inject"; text: string }
+	| { kind: "inject"; text: string; corrections: Correction[]; mayWake: boolean }
 	| { kind: "notify"; text: string };
-
-/** Extra options for terminal-stop audits. */
 export interface DecideOptions {
-	/** True when this verdict comes from a `user-ready` terminal-stop check. */
 	terminalStop?: boolean;
+	context?: AuditContext;
+	suppressed?: ReadonlySet<string>;
+	evidenceVersion?: string;
+	scopeKey?: string;
 }
-
-function conf(a: ChoiceAnswer | undefined): number {
-	return a?.confidence ?? 0;
-}
-
-function taskLabel(board: BoardSnapshot, id: number): string {
-	const t = board.tasks.find((t) => t.id === id);
-	return t ? `#${id} "${t.subject}"` : `#${id}`;
-}
-
-/** Numbered corrective steps after a one-line headline. */
-function injectText(trigger: string, headline: string, steps: string[]): string {
-	return [`[jev audit ${trigger}] ${headline}`,
-		"Fix the board now via the todo tool:", ...steps.map((s, i) => `${i + 1}. ${s}`)].join("\n");
-}
-
-/** Note (not a step) listing tasks whose verdict was too uncertain to act on. */
-function uncertainNote(uncertain: TaskVerdict[]): string | undefined {
-	return uncertain.length > 0
-		? `(not touched: ${uncertain.map((v) => `#${v.task.id}`).join(", ")} — verdict uncertain)`
-		: undefined;
-}
-
-/** Which in_progress task ids need splitting, from staleness + granularity. */
-function splitTargets(answers: AuditAnswers, board: BoardSnapshot, threshold: number, staleIds: number[]): number[] {
-	const ids = new Set<number>(staleIds);
-	const g = answers.granularity;
-	const coarse = g && (g.choice === "bundles_multiple_outcomes" || g.choice === "ambiguous_done_criteria") && conf(g) >= threshold;
-	if (coarse) {
-		// granularity answers describe the worst offender; flag all in_progress.
-		for (const t of inProgressTasks(board)) ids.add(t.id);
-	}
-	return [...ids].sort((a, b) => a - b);
-}
-
-function splitStep(ids: number[], board: BoardSnapshot): string {
-	const labels = ids.map((id) => taskLabel(board, id)).join(", ");
-	return `split ${labels} into smaller tasks — each with a single verifiable outcome (test passes, file exists, command exits 0)`;
-}
-
-interface TaskVerdict {
-	task: BoardTask;
-	answer: ChoiceAnswer;
-}
-
-/**
- * Per-task lifecycle results, split into actionable vs uncertain.
- * Destructive/state-changing outcomes are confidence-gated individually.
- */
-function classifyLifecycle(answers: AuditAnswers, board: BoardSnapshot, threshold: number, stop = false): {
-	actions: TaskVerdict[];
-	uncertain: TaskVerdict[];
-	ongoing: TaskVerdict[];
-} {
-	const actions: TaskVerdict[] = [];
-	const uncertain: TaskVerdict[] = [];
-	const ongoing: TaskVerdict[] = [];
-	for (const t of unfinishedTasks(board)) {
-		const a = answers.lifecycle?.[lifecycleKey(t.id)];
-		if (!a) continue;
-		switch (a.choice) {
-			case "still_ongoing":
-				// Terminal stop flips semantics: unfinished + still-ongoing =
-				// actionable continuation (confidence-gated); periodic audits
-				// keep it as non-destructive ongoing regardless of confidence.
-				if (stop) {
-					if (conf(a) >= threshold) actions.push({ task: t, answer: a });
-					else uncertain.push({ task: t, answer: a });
-				} else ongoing.push({ task: t, answer: a });
-				break;
-			case "future":
-				ongoing.push({ task: t, answer: a });
-				break;
-			case "actually_completed":
-			case "cancelled":
-			case "deliberately_deferred":
-			case "blocked":
-				if (conf(a) >= threshold) actions.push({ task: t, answer: a });
-				else uncertain.push({ task: t, answer: a });
-				break;
-			default:
-				// unclear / unknown / missing → notify-level uncertainty
-				uncertain.push({ task: t, answer: a });
+export function decide(answers: AuditAnswers, board: BoardSnapshot, threshold: number, loop: number, _staleIds: number[] = [], opts: DecideOptions = {}): VerdictAction {
+	const strong = (a?: ChoiceAnswer): a is ChoiceAnswer => !!a && typeof a.confidence === "number" && Number.isFinite(a.confidence) && a.confidence >= threshold && a.confidence <= 1 && a.confidence >= 0;
+	const source = (a?: ChoiceAnswer): EvidenceRecord | undefined => strong(a)
+		? opts.context?.records.find((r) => r.id === a.choice && r.complete && !r.advice && r.kind !== "tool_call") : undefined;
+	const context = opts.context;
+	const workSource = source(answers.work_evidence);
+	const globallyUsable = !!context?.globalComplete && !context.reduced && !context.records.some((r) =>
+		(r.kind === "user" || r.kind === "summary") && !r.complete);
+	const ready = strong(answers.interaction) && answers.interaction.choice === "working" && !!workSource && !["assistant", "supplement"].includes(workSource.kind);
+	const matched = strong(answers.current_match) ? answers.current_match.choice : undefined;
+	const alignment = strong(answers.alignment) ? answers.alignment.choice : undefined;
+	const warrant = strong(answers.board_warranted) ? answers.board_warranted.choice : undefined;
+	const warrantAllows = inProgressTasks(board).length > 0 || warrant === "warranted";
+	const corrections: Correction[] = [];
+	const uncertain: number[] = [];
+	const unresolvedUserInput = !!context?.userBoundary && !context.records.some((r) =>
+		r.id === context.userBoundary && r.kind === "user" && r.complete);
+	if (unresolvedUserInput) return { kind: "notify", text: "[jev audit] latest user evidence is unavailable or redacted — no correction authorized" };
+	let suppressed = false;
+	const evidenceVersion = opts.evidenceVersion ?? (context ? workVersion(context, new Set(["todo"])) : "unavailable");
+	const add = (task: BoardTask | undefined, action: string, text: string, evidence: EvidenceRecord, bookkeeping = false, execution = false) => {
+		// Recording the requested blocker is reconciliation, not new authorization.
+		const taskIdentity = action === "block" || action === "defer"
+			? task && { id: task.id, subject: task.subject, owner: task.owner, blockedBy: task.blockedBy }
+			: task;
+		const key = digest({ scope: opts.scopeKey, task: taskIdentity, action, evidenceVersion });
+		if (opts.suppressed?.has(key)) { suppressed = true; return; }
+		// Display-only excerpt; the model saw the entire selected source, without this cap.
+		const excerpt = evidence.text.length > 300 ? `${evidence.text.slice(0, 300)}… [excerpt]` : evidence.text;
+		corrections.push({ key, text: `${redact(text)}\n   Evidence [${evidence.id}] (${evidence.kind}): ${redact(excerpt)}`, bookkeeping, execution });
+	};
+	for (const task of unfinishedTasks(board)) {
+		const life = answers.lifecycle?.[lifecycleKey(task.id)];
+		const anchor = source(answers.evidence?.[evidenceKey(task.id)]);
+		const label = `#${task.id} "${task.subject}"`;
+		if (context?.records.some((r) => r.id === `task:${task.id}` && !r.complete)) { uncertain.push(task.id); continue; }
+		if (!strong(life) || life.choice === "unclear") { uncertain.push(task.id); continue; }
+		if (life.choice === "actually_completed" || life.choice === "cancelled") {
+			const credible = anchor && (life.choice === "actually_completed"
+				? !["assistant", "summary", "supplement"].includes(anchor.kind) && !anchor.isError
+				: !["assistant", "supplement"].includes(anchor.kind));
+			if (!credible) { uncertain.push(task.id); continue; }
+			add(task, life.choice, life.choice === "actually_completed" ? `mark ${label} completed — supplied evidence establishes its completion scope` : `delete ${label} — supplied evidence establishes cancellation`, anchor, true);
+			continue;
 		}
-	}
-	return { actions, uncertain, ongoing };
-}
-
-/**
- * Render the corrective step for one actionable lifecycle verdict.
- * `still_ongoing` only reaches `actions` on terminal-stop audits
- * (classifyLifecycle gates it) — so here it always means "continue".
- */
-function lifecycleStep(v: TaskVerdict): string {
-	const label = `#${v.task.id} "${v.task.subject}"`;
-	switch (v.answer.choice) {
-		case "actually_completed":
-			return `mark ${label} completed — the work is done`;
-		case "cancelled":
-			return `delete ${label} — the work was cancelled (todo delete; the board keeps a deleted tombstone)`;
-		case "deliberately_deferred":
-			return `set ${label} back to pending and record the deferral reason in its description/metadata`;
-		case "blocked":
-			return v.task.status === "in_progress"
-				? `set ${label} back to pending and record why it is blocked (user input, approval, or external blocker)`
-				: `leave ${label} pending and record why it is blocked (user input, approval, or external blocker)`;
-		case "still_ongoing":
-			// Only reachable via terminal-stop actions — push the agent back.
-			return v.task.status === "in_progress"
-				? `CONTINUE working on ${label} — it is unfinished and actionable now`
-				: `set ${label} in_progress and continue it — it is unfinished and actionable now`;
-		default:
-			return `reconcile ${label}`;
-	}
-}
-
-export function decide(
-	answers: AuditAnswers,
-	board: BoardSnapshot,
-	threshold: number,
-	loop: number,
-	staleIds: number[] = [],
-	opts: DecideOptions = {},
-): VerdictAction {
-	const align = answers.alignment;
-	const stop = opts.terminalStop === true;
-	const trigger = stop ? "terminal-stop" : `@ loop ${loop}`;
-	const { actions, uncertain, ongoing } = classifyLifecycle(answers, board, threshold, stop);
-
-	// Confidence of the aggregate answers — each gates its own derived steps.
-	const alignOk = !!align && conf(align) >= threshold;
-	const matchOk = !!answers.current_match && conf(answers.current_match) >= threshold;
-	const drifted = answers.drift?.choice === "drifted" && conf(answers.drift) >= threshold;
-
-	// No alignment answer at all: lifecycle evidence can still drive a
-	// per-task correction; without either, the audit is unusable.
-	if (!align) {
-		if (actions.length === 0 && uncertain.length === 0) {
-			return { kind: "notify", text: `[jev audit] missing alignment answer — audit skipped` };
-		}
-		if (actions.length === 0) {
-			const labels = uncertain.map((v) => `#${v.task.id}`).join(", ");
-			return { kind: "notify", text: `[jev audit ${trigger}] lifecycle verdict uncertain for ${labels} — left alone` };
-		}
-		const steps = actions.map(lifecycleStep);
-		const note = uncertainNote(uncertain);
-		if (note) steps.push(note);
-		return { kind: "inject", text: injectText(trigger, "Per-task board reconciliation.", steps) };
-	}
-
-	if (align.choice === "aligned") {
-		if (!alignOk) {
-			return { kind: "notify", text: `[jev audit ${trigger}] alignment uncertain (confidence ${conf(align).toFixed(2)}) — left alone` };
-		}
-		// Per-task lifecycle findings still apply on an aligned board: the
-		// aggregate match is right, but a sibling task may be stale/finished.
-		const splits = splitTargets(answers, board, threshold, staleIds);
-		if (actions.length === 0 && splits.length === 0) {
-			if (uncertain.length > 0) {
-				const labels = uncertain.map((v) => `#${v.task.id}`).join(", ");
-				return { kind: "notify", text: `[jev audit ${trigger}] board aligned; lifecycle uncertain for ${labels} — left alone` };
+		if (life.choice === "blocked" || life.choice === "deliberately_deferred") {
+			const representation = answers.reconciliation?.[reconciliationKey(task.id)];
+			if (strong(representation) && representation.choice === "needs_reconciliation") {
+				if (!anchor) { uncertain.push(task.id); continue; }
+				add(task, life.choice === "blocked" ? "block" : "defer", `${task.status === "pending" ? "leave" : "set"} ${label} pending and record the evidenced ${life.choice === "blocked" ? "blocker" : "deferral"} in its description/metadata; do not execute it`, anchor, true);
 			}
-			return { kind: "silent" };
+			continue;
 		}
-		const steps = actions.map(lifecycleStep);
-		if (splits.length > 0) steps.push(splitStep(splits, board));
-		const note = uncertainNote(uncertain);
-		if (note) steps.push(note);
-		return {
-			kind: "inject",
-			text: injectText(trigger,
-				`Board aligned, but ${splits.length > 0 ? "task(s) too coarse to steer by" : "task lifecycle needs reconciliation"}.`,
-				steps),
-		};
-	}
-
-	// No in_progress task on the board: nothing to compare against. If the
-	// agent is working anyway, the fix is "claim what you're doing", not
-	// resolving a stale task. Per-task lifecycle answers still apply to
-	// pending tasks (obsolete/deferred/blocked).
-	if (align.choice === "no_in_progress_task") {
-		const warrant = answers.board_warranted;
-		if (warrant && (warrant.choice === "trivial" || warrant.choice === "idle")) {
-			// Terminal-stop nuance: on an unfinished board, still surface
-			// actionable lifecycle verdicts even when the immediate work is trivial.
-			if (actions.length === 0) return { kind: "silent" };
+		if (!["still_ongoing", "actionable_now"].includes(life.choice)) continue;
+		const dependencyBlocked = task.blockedBy?.some((id) => board.tasks.find((t) => t.id === id)?.status !== "completed");
+		if (dependencyBlocked) continue;
+		const granularity = answers.granularity?.[granularityKey(task.id)];
+		if (task.status === "in_progress" && strong(granularity) &&
+			["split_independent_outcomes", "split_verifiable_checkpoints", "clarify_done_criteria", "clarify_next_action"].includes(granularity.choice)) {
+			if (!anchor || !globallyUsable || !ready) { uncertain.push(task.id); continue; }
+			const instruction = {
+				split_independent_outcomes: `split ${label} only along the evidenced independent outcomes, preserving authorized scope and avoiding already tracked work`,
+				split_verifiable_checkpoints: `split ${label} into the evidenced verifiable checkpoints while preserving its overall goal; do not duplicate existing tasks`,
+				clarify_done_criteria: `clarify the completion criteria for ${label}; do not assume subdivision is needed`,
+				clarify_next_action: `clarify the concrete next action for ${label}; do not treat uncertainty as excessive size`,
+			}[granularity.choice]!;
+			add(task, granularity.choice, instruction, anchor);
+			continue;
 		}
-		const used = [align, answers.current_match, warrant].filter(Boolean) as ChoiceAnswer[];
-		if (used.some((a) => conf(a) < threshold) && actions.length === 0) {
-			return { kind: "notify", text: `[jev audit ${trigger}] board has no in_progress but agent is working — verdict uncertain (conf ${conf(align).toFixed(2)})` };
+		// A known blocker contradicts readiness. Uncertainty about subdivision
+		// does not invalidate independently evidenced execution authorization.
+		if (strong(granularity) && granularity.choice === "blocked") continue;
+		if (life.choice !== "actionable_now" || !ready || !anchor || !warrantAllows) continue;
+		if (opts.terminalStop) {
+			add(task, "continue", task.status === "pending" ? `set ${label} in_progress and CONTINUE its authorized next action` : `CONTINUE the authorized next action for ${label}`, anchor, false, true);
+		} else if ((alignment === "not_aligned" || alignment === "no_in_progress_task") && matched === String(task.id)) {
+			if (strong(answers.drift) && answers.drift.choice === "drifted")
+				add(task, "return", `STOP the evidenced off-plan activity and return to the authorized next action for ${label}`, workSource!, false, true);
+			else if (task.status === "pending") add(task, "claim", `set ${label} in_progress with an accurate activeForm`, anchor, false, true);
 		}
-		const steps: string[] = actions.map(lifecycleStep);
-		// Match/create steps are confidence-gated independently: an uncertain
-		// match contributes no claim instruction.
-		if (matchOk && answers.current_match!.choice !== NOT_ON_BOARD) {
-			steps.push(`set ${taskLabel(board, Number(answers.current_match!.choice))} in_progress with an accurate activeForm`);
-		} else if (!(stop && actions.length > 0) && alignOk) {
-			steps.push("create todo task(s) for your current work and mark it in_progress");
-		}
-		if (drifted) steps.push("STOP the off-plan work and resume the next pending board task");
-		const note = uncertainNote(uncertain);
-		if (note) steps.push(note);
-		if (steps.length === 0) {
-			return { kind: "notify", text: `[jev audit ${trigger}] board has no in_progress — verdict too uncertain to act on` };
-		}
-		return {
-			kind: "inject",
-			text: injectText(trigger, "No task marked in_progress but you are actively working.", steps),
-		};
 	}
-
-	// not_aligned / unclear: aggregate gate + per-task lifecycle corrections.
-	const used = [align, answers.current_match].filter(Boolean) as ChoiceAnswer[];
-	const low = used.find((a) => conf(a) < threshold);
-	if (low && actions.length === 0) {
-		return {
-			kind: "notify",
-			text: `[jev audit ${trigger}] verdict "${align.choice}" but confidence ${conf(low).toFixed(2)} < ${threshold} — no correction injected`,
-		};
+	if (!opts.terminalStop && ready && warrantAllows && matched === NOT_ON_BOARD &&
+		(alignment === "not_aligned" || alignment === "no_in_progress_task")) {
+		add(undefined, "create", "create and claim a task for the evidenced authorized current work; do not invent follow-ups", workSource!, false, true);
 	}
-
-	const match = answers.current_match?.choice;
-	const splits = splitTargets(answers, board, threshold, staleIds);
-	const inProg = inProgressTasks(board);
-	const inProgLabel = inProg.map((t) => `#${t.id} "${t.subject}"`).join(", ") || "(none)";
-
-	const lines: string[] = [
-		`[jev audit ${trigger}] Todo board ↔ actual work mismatch.`,
-		`- Board shows in_progress: ${inProgLabel}`,
-		`- Per-task verdicts: ${[
-			...actions.map((v) => `${taskLabel(board, v.task.id)} → ${v.answer.choice}`),
-			...ongoing.map((v) => `${taskLabel(board, v.task.id)} → ${v.answer.choice}`),
-		].join(", ") || "none"}`,
-		`- Current work matches: ${match && match !== NOT_ON_BOARD ? `#${match}` : "nothing on the board"}`,
-	];
-	if (drifted) lines.push("- Direction: drifted off the board's plan");
-
-	const steps: string[] = actions.map(lifecycleStep);
-
-	// No per-task verdict for an in_progress task that aggregate verdict calls
-	// wrong → conservative fallback: ask to recheck, never auto-mutate.
-	const judged = new Set([...actions, ...ongoing, ...uncertain].map((v) => v.task.id));
-	const unjudged = inProg.filter((t) => !judged.has(t.id));
-	if (align.choice === "not_aligned" && unjudged.length > 0 && actions.length === 0 && alignOk) {
-		steps.push(`recheck ${unjudged.map((t) => `#${t.id}`).join(", ")} — is it still what you are doing?`);
+	const trigger = opts.terminalStop ? "terminal-stop" : `@ loop ${loop}`;
+	if (corrections.length) {
+		const mayWake = corrections.some((c) => c.bookkeeping || c.execution);
+		if (opts.terminalStop && !mayWake) return { kind: "notify", text: "[jev audit] task-level planning advice available; no restart authorized by split/clarification alone" };
+		const boardOnly = opts.terminalStop && !corrections.some((c) => c.execution);
+		return { kind: "inject", corrections, mayWake, text: [
+			`[jev audit ${trigger}] Evidence-grounded board reconciliation.`,
+			boardOnly ? "BOARD ONLY: reconcile the listed facts via todo, then return control to the user. This is NOT permission to execute tasks or bypass a wait." : "Reconcile only the following supported changes via the todo tool:",
+			...corrections.map((c, i) => `${i + 1}. ${c.text}`),
+			...(uncertain.length ? [`(not touched: ${uncertain.map((id) => `#${id}`).join(", ")} — evidence uncertain)`] : []),
+		].join("\n") };
 	}
-
-	// Aggregate match/create steps gated on their own confidence.
-	if (matchOk && match && match !== NOT_ON_BOARD) steps.push(`set ${taskLabel(board, Number(match))} in_progress with an accurate activeForm`);
-	else if (match && match !== NOT_ON_BOARD) steps.push(`recheck #${match} — the match verdict was too uncertain to claim it`);
-	else if (!stop && alignOk) steps.push("create todo task(s) for the work you are actually doing, plus planned follow-ups, and set the current one in_progress");
-
-	if (splits.length > 0) steps.push(splitStep(splits, board));
-	if (drifted) steps.push("STOP the off-plan work and resume the next pending board task");
-	const note = uncertainNote(uncertain);
-	if (note) steps.push(note);
-
-	if (steps.length === 0) {
-		return { kind: "notify", text: `[jev audit ${trigger}] board ↔ work mismatch but no confident verdict — nothing injected` };
-	}
-	lines.push("Fix the board now via the todo tool:", ...steps.map((s, i) => `${i + 1}. ${s}`));
-	return { kind: "inject", text: lines.join("\n") };
+	if (suppressed || ((warrant === "idle" || warrant === "trivial") && !inProgressTasks(board).length)) return { kind: "silent" };
+	if (uncertain.length) return { kind: "notify", text: `[jev audit] insufficient evidence for ${uncertain.map((id) => `#${id}`).join(", ")} — no correction` };
+	return { kind: "silent" };
 }
