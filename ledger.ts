@@ -34,20 +34,27 @@ export interface AuditDiagnostics {
 	/** Envelopes split before sending by the capacity estimate: not provider attempts, no usage. */
 	presplits?: number;
 	attempts: { n: number; outcome: Attempt["outcome"]; status?: number; model?: string; stateBytes?: number; questionBytes?: number; longestQuestionBytes?: number; inputTokens: number | "unknown"; outputTokens: number | "unknown"; costUsd?: number }[];
-	/** `costUsd` only on channels that report a charge; unknown if any attempt there lacks one. */
-	usage: { inputTokens: number | "unknown"; outputTokens: number | "unknown"; costUsd?: number | "unknown" };
+	/**
+	 * Sums of what the provider reported. `unreported` counts attempts lacking each figure: when present the sum is
+	 * a lower bound, never a complete total. `costUsd` only on channels that report a charge.
+	 */
+	usage: { inputTokens: number; outputTokens: number; costUsd?: number; unreported?: { inputTokens?: number; outputTokens?: number; costUsd?: number } };
 }
 
 /** Pure: builds diagnostics from observed attempts without sending anything. */
 export function diagnose(audit: string, label: string, reuse: { hits: number; joined: number; sent: number }, range: AuditDiagnostics["range"],
 	outcome: AuditDiagnostics["outcome"], attempts: Attempt[], capacity?: { channel: string; presplits: number }): AuditDiagnostics {
 	const known = (v: number | undefined): number | "unknown" => v ?? "unknown";
-	const sum = (k: "inputTokens" | "outputTokens" | "costUsd") => attempts.every((a) => a[k] !== undefined) ? attempts.reduce((s, a) => s + a[k]!, 0) : "unknown" as const;
+	type Figure = "inputTokens" | "outputTokens" | "costUsd";
+	const sum = (k: Figure) => attempts.reduce((s, a) => s + (a[k] ?? 0), 0);
 	const charged = attempts.some((a) => a.costUsd !== undefined);
+	const figures: Figure[] = charged ? ["inputTokens", "outputTokens", "costUsd"] : ["inputTokens", "outputTokens"];
+	const unreported = Object.fromEntries(figures.map((k) => [k, attempts.filter((a) => a[k] === undefined).length]).filter(([, n]) => n));
 	return { audit, label, hits: reuse.hits + reuse.joined, misses: reuse.sent, range, outcome, ...capacity,
 		attempts: attempts.map((a, i) => ({ n: i + 1, outcome: a.outcome, status: a.status, model: a.model, stateBytes: a.stateBytes, questionBytes: a.questionBytes, longestQuestionBytes: a.longestQuestionBytes,
 			inputTokens: known(a.inputTokens), outputTokens: known(a.outputTokens), ...(a.costUsd === undefined ? {} : { costUsd: a.costUsd }) })),
-		usage: { inputTokens: sum("inputTokens"), outputTokens: sum("outputTokens"), ...(charged ? { costUsd: sum("costUsd") } : {}) } };
+		usage: { inputTokens: sum("inputTokens"), outputTokens: sum("outputTokens"), ...(charged ? { costUsd: sum("costUsd") } : {}),
+			...(Object.keys(unreported).length ? { unreported } : {}) } };
 }
 
 const validAnswer = (v: unknown): v is ChoiceAnswer => {

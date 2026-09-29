@@ -47,7 +47,7 @@ test("answers persist as non-context custom entries and survive reload without n
 	expect(diag.attempts).toHaveLength(1);
 	expect(diag.attempts[0]).toMatchObject({ outcome: "answered", model: "jev-1.13", inputTokens: 50, outputTokens: "unknown" });
 	expect(diag.attempts[0].stateBytes).toBeGreaterThan(0); expect(diag.attempts[0].questionBytes).toBeGreaterThan(0);
-	expect(diag.usage).toEqual({ inputTokens: 50, outputTokens: "unknown" }); // missing usage is explicit, never zero
+	expect(diag.usage).toEqual({ inputTokens: 50, outputTokens: 0, unreported: { outputTokens: 1 } }); // the gap is explicit, never a silent zero
 	// Own bookkeeping is not evidence and does not invalidate the input identity.
 	expect(collectContext(branch).omissions.some((o) => o.reason === "private extension state")).toBe(true);
 	await h.manual(); expect(requests).toHaveLength(1);
@@ -120,7 +120,11 @@ test("recovered overflow diagnostics separate the rejected attempt, successful p
 	expect(diag.outcome).toBe("recovered");
 	expect(diag.attempts[0]).toMatchObject({ outcome: "overflow", status: 400, inputTokens: "unknown" });
 	expect(diag.attempts.slice(1).every((a: any) => a.outcome === "answered")).toBe(true); expect(diag.attempts.length).toBeGreaterThan(2);
-	expect(diag.usage.inputTokens).toBe("unknown"); // one attempt lacks usage, so no complete total is claimed
+	// Answered parts keep their reported tokens; the rejected attempt is counted as unreported, so the sum is a lower bound.
+	const reported = diag.attempts.filter((a: any) => typeof a.inputTokens === "number").reduce((s: number, a: any) => s + a.inputTokens, 0);
+	expect(reported).toBeGreaterThan(0);
+	expect(diag.usage.inputTokens).toBe(reported);
+	expect(diag.usage.unreported.inputTokens).toBe(diag.attempts.filter((a: any) => a.inputTokens === "unknown").length);
 });
 
 test("a receipt's oversized list survives reload; malformed lists are dropped", () => {

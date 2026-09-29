@@ -41,10 +41,10 @@ test("OpenRouter's single published 32K context bounds both dimensions", () => {
 	expect(predictOverflow(p, { stateBytes: 50_000, questionBytes: 10_000, longestQuestionBytes: 2_000 }, limits)).toBe(false);
 });
 
-test("diagnostics total the provider charge only when every attempt reports one", () => {
+test("diagnostics total the reported charge and count attempts that reported none", () => {
 	const a = (costUsd?: number): Attempt => ({ outcome: "answered", inputTokens: 10, outputTokens: 1, ...(costUsd === undefined ? {} : { costUsd }) });
 	const r = { hits: 0, joined: 0, sent: 1 }, range = { from: null, to: null };
-	expect(diagnose("x", "l", r, range, "completed", [a(0.25), a(0.5)]).usage.costUsd).toBe(0.75);
-	expect(diagnose("x", "l", r, range, "completed", [a(0.25), a()]).usage.costUsd).toBe("unknown");
-	expect("costUsd" in diagnose("x", "l", r, range, "completed", [a(), a()]).usage).toBe(false); // channel reports no charge (TypeSafe direct)
+	expect(diagnose("x", "l", r, range, "completed", [a(0.25), a(0.5)]).usage).toEqual({ inputTokens: 20, outputTokens: 2, costUsd: 0.75 });
+	expect(diagnose("x", "l", r, range, "completed", [a(0.25), a()]).usage).toEqual({ inputTokens: 20, outputTokens: 2, costUsd: 0.25, unreported: { costUsd: 1 } });
+	expect(diagnose("x", "l", r, range, "completed", [a(), a()]).usage).toEqual({ inputTokens: 20, outputTokens: 2 }); // channel reports no charge (TypeSafe direct)
 });
