@@ -363,7 +363,7 @@ Selection and processing receipts SHALL distinguish already-reviewed ranges, exe
 
 Every necessary provider attempt SHALL obey the configured model's verified state-plus-longest-question and state-plus-all-questions limits. The extension SHALL prefer an authoritative preflight counting contract when available and otherwise use server admission without claiming an exact local fit guarantee. A nominal 30k content chunk SHALL NOT be assumed safe independently of cumulative state, task information, questions, options and serialization overhead. Character/byte counts SHALL NOT be asserted as token counts.
 
-Only an explicit context/token-overflow rejection SHALL authorize overflow-driven subdivision. Rather than merely discard optional historical records once and abandon an otherwise processable review, the extension SHALL divide unresolved projected context into smaller ordered parts and/or divide independent unresolved questions into smaller batches. Completed context/question evaluations SHALL be reused. New substantive text SHALL NOT be silently omitted to make a request fit. Provider-limit recovery SHALL not restore excluded raw execution detail.
+Overflow-driven subdivision SHALL be authorized only by an explicit context/token-overflow rejection or by a per-channel predicted overflow. A predicted overflow SHALL be derived before sending from the actual unanswered envelope, using a bytes-to-tokens ratio calibrated from provider-reported usage on the same endpoint and requested model (a conservative prior until usage exists), checked separately against that channel's published or configured request-wide and state-plus-longest-question limits, or from a recorded actual rejection on the same channel that the envelope equals or exceeds in both dimensions. Predictions SHALL NOT waste admitted capacity by applying a stricter combined limit than the channel publishes. A predicted overflow SHALL NOT count as a provider attempt or be recorded as a rejected envelope, and SHALL NOT alone declare a unit irreducible: a single record/fragment with a single question SHALL still be submitted so server admission decides. Rather than merely discard optional historical records once and abandon an otherwise processable review, the extension SHALL divide unresolved projected context into smaller ordered parts and/or divide independent unresolved questions into smaller batches. Completed context/question evaluations SHALL be reused. New substantive text SHALL NOT be silently omitted to make a request fit. Provider-limit recovery SHALL not restore excluded raw execution detail.
 
 Subdivision SHALL make measurable structural progress toward smaller request contents, SHALL operate over finite input pieces, and SHALL not repeatedly submit an unchanged known-rejected envelope. When a text record must cross request boundaries, fragment identity/order and incomplete-record coverage SHALL remain explicit. When fixed required state or a single question cannot fit even without additional context, processing for the affected scope SHALL stop with an actionable diagnostic or request for a concise main-agent report; it SHALL not loop or claim complete coverage. Independent completed scopes SHALL remain available.
 
@@ -388,6 +388,22 @@ Existing bounded transient-network retries SHALL remain separate. Authentication
 #### Scenario: Token accounting is unverified
 - **WHEN** no authoritative tokenizer/counting contract is available
 - **THEN** admission and strictly progressing subdivision are used without claiming that a character estimate or fixed 30k body proves fit
+
+#### Scenario: A predictably oversized envelope is split before sending
+- **WHEN** the calibrated estimate of the unanswered envelope exceeds a published limit of its channel, or the envelope is at least as large as a recorded rejection on that channel in both dimensions
+- **THEN** it is subdivided through the same structural path without a provider request, and no rejection is recorded for it
+
+#### Scenario: Channel capacity is used rather than a stricter guess
+- **WHEN** state plus the longest question fits its channel limit and state plus all questions fits the request-wide limit
+- **THEN** the envelope is sent whole even if its total exceeds the smaller per-question limit
+
+#### Scenario: A prediction does not declare a unit irreducible
+- **WHEN** one record or fragment with one question is still predicted too large
+- **THEN** it is sent once and only an actual rejection can end processing for that scope
+
+#### Scenario: Learning survives reload
+- **WHEN** the extension reloads on the same branch after admitted and rejected attempts were recorded
+- **THEN** the channel's calibrated ratio and recorded rejections are restored from the existing non-context diagnostics without re-sending anything
 
 #### Scenario: A validation error is not an overflow
 - **WHEN** a request fails for invalid question syntax or an unfamiliar error
@@ -596,6 +612,10 @@ Comparisons SHALL use matching event sequences and endpoint/model settings and r
 #### Scenario: An overflow is recovered
 - **WHEN** a request is rejected and subsequent smaller parts complete the review
 - **THEN** diagnostics distinguish the rejected attempt, successful parts and final success instead of reporting the initial 400 as the final audit failure
+
+#### Scenario: A split is predicted rather than rejected
+- **WHEN** an envelope is subdivided before sending
+- **THEN** diagnostics count the pre-split separately from actual provider attempts and overflow rejections, and attribute no usage to it
 
 #### Scenario: A failure lacks usage
 - **WHEN** a provider attempt has no usable token observation
