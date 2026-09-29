@@ -115,6 +115,8 @@ describe("board", () => {
 			tasks: [task(1, "in_progress"), task(2, "in_progress"), task(3, "pending")],
 			nextId: 4,
 			inProgressSince: new Map([[1, 0], [2, 25]]),
+			firstActive: new Map(),
+			revisions: [],
 		};
 		// currentLoops 40: #1 age 40 (stale), #2 age 15 (not), #3 not in_progress
 		expect(staleTaskIds(b, 40, 10, 3)).toEqual([1]);
@@ -123,4 +125,50 @@ describe("board", () => {
 		// boundary: age exactly 30 → not stale (needs >)
 		expect(staleTaskIds(b, 30, 10, 3)).toEqual([]);
 	});
+	test("revisions record only actual snapshot changes; reads, no-ops and failed updates add none", () => {
+		const assistant = { type: "message", message: { role: "assistant", content: "x" } };
+		const failed = { type: "message", message: { role: "toolResult", toolName: "todo", isError: true, details: { tasks: [task(1, "completed")], nextId: 2 } } };
+		const b = replayBoardWithAges([
+			{ id: "s1", ...snapshotMsg([task(1, "in_progress")]) }, assistant,
+			{ id: "read", ...snapshotMsg([task(1, "in_progress")]) }, failed, assistant,
+			{ id: "s2", ...snapshotMsg([task(1, "in_progress", { description: "blocker note" })]) }, assistant,
+			{ id: "s3", ...snapshotMsg([task(1, "in_progress", { description: "blocker note" }), task(2, "pending")]) },
+		]);
+		expect(b.revisions).toEqual([{ source: "s1", turn: 0, changed: [1] }, { source: "s2", turn: 2, changed: [1] }, { source: "s3", turn: 3, changed: [2] }]);
+		expect(b.tasks[0].status).toBe("in_progress"); // failed update is not state
+	});
+
+	test("first-active origin survives updates, pending/resume; a new task never inherits it", () => {
+		const assistant = { type: "message", message: { role: "assistant", content: "x" } };
+		const turns = (n: number) => Array.from({ length: n }, () => assistant);
+		const b = replayBoardWithAges([
+			snapshotMsg([task(1, "pending")]), ...turns(12),
+			{ id: "start", ...snapshotMsg([task(1, "in_progress")]) }, ...turns(8),
+			snapshotMsg([task(1, "in_progress", { description: "refined" })]), ...turns(4),
+			snapshotMsg([task(1, "pending", { description: "waiting approval" })]), ...turns(3),
+			snapshotMsg([task(1, "in_progress", { description: "resumed" }), task(2, "in_progress")]), ...turns(8),
+		]);
+		expect(b.firstActive.get(1)).toEqual({ turn: 12, source: "start" });
+		expect(b.inProgressSince.get(1)).toBe(27); // age diagnostic still tracks the latest stint
+		expect(b.firstActive.get(2)?.turn).toBe(27);
+		const done = replayBoardWithAges([snapshotMsg([task(1, "in_progress")]), assistant, snapshotMsg([task(1, "completed")])]);
+		expect(done.firstActive.has(1)).toBe(false);
+	});
+});
+
+test("task trajectory serializes at most the latest few segments while keeping the first-active origin", () => {
+	const snap = (tasks: BoardTask[], id: string) => ({ id, type: "message", message: { role: "toolResult", toolName: "todo", details: { action: "list", params: {}, tasks, nextId: 10 } } });
+	const say = (n: number) => ({ id: `a${n}`, type: "message", message: { role: "assistant", content: `x${n}` } });
+	const branch: unknown[] = [snap([{ id: 5, subject: "Parser", status: "in_progress", description: "v0" }], "e0")];
+	for (let i = 1; i <= 30; i++) branch.push(say(i), snap([{ id: 5, subject: "Parser", status: "in_progress", description: `v${i}` }], `e${i}`));
+	const board = replayBoardWithAges(branch);
+	expect(board.firstActive.get(5)).toEqual({ turn: 0, source: "e0" });
+	const revisions = board.revisions.filter((r) => r.changed.includes(5));
+	expect(revisions.length).toBe(31);
+	// index.ts serializes only the last 5 segments plus the count; check that bound here.
+	const revisionCount = revisions.length;
+	const segments = revisions.slice(-5).map((r) => ({ turn: r.turn, source: r.source }));
+	expect(segments).toHaveLength(5);
+	expect(segments[0].turn).toBe(segments.at(-1)!.turn - 4);
+	expect(revisionCount).toBeGreaterThan(segments.length);
 });

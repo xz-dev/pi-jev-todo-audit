@@ -4,6 +4,8 @@ import { digest, redact, workVersion, type AuditContext, type EvidenceRecord } f
 import { evidenceKey, granularityKey, lifecycleKey, reconciliationKey, NOT_ON_BOARD, type AuditAnswers, type ChoiceAnswer } from "./typesafe.js";
 
 export interface Correction { key: string; text: string; bookkeeping: boolean; execution: boolean }
+/** Compact tool/shell events: name, call and status only. They show activity, never task completion. */
+const MACRO_EVENTS = ["tool_call", "tool_result", "shell"];
 export type VerdictAction =
 	| { kind: "silent" }
 	| { kind: "inject"; text: string; corrections: Correction[]; mayWake: boolean }
@@ -53,11 +55,15 @@ export function decide(answers: AuditAnswers, board: BoardSnapshot, threshold: n
 		if (context?.records.some((r) => r.id === `task:${task.id}` && !r.complete)) { uncertain.push(task.id); continue; }
 		if (!strong(life) || life.choice === "unclear") { uncertain.push(task.id); continue; }
 		if (life.choice === "actually_completed" || life.choice === "cancelled") {
-			const credible = anchor && (life.choice === "actually_completed"
-				? !["assistant", "summary", "supplement"].includes(anchor.kind) && !anchor.isError
+			// Macro contract: a bare returned tool/shell event never establishes completion; a main-agent report can (as a report).
+			// Cancellation changes scope, so it still needs a non-assistant decision.
+			const credible = anchor && !anchor.isError && !MACRO_EVENTS.includes(anchor.kind) && (life.choice === "actually_completed"
+				? !["summary", "supplement"].includes(anchor.kind)
 				: !["assistant", "supplement"].includes(anchor.kind));
 			if (!credible) { uncertain.push(task.id); continue; }
-			add(task, life.choice, life.choice === "actually_completed" ? `mark ${label} completed — supplied evidence establishes its completion scope` : `delete ${label} — supplied evidence establishes cancellation`, anchor, true);
+			add(task, life.choice, life.choice === "actually_completed"
+				? `mark ${label} completed — the supplied ${anchor.kind === "assistant" ? "main-agent report" : "record"} states its completion scope (reported, not independently verified)`
+				: `delete ${label} — the supplied decision establishes cancellation`, anchor, true);
 			continue;
 		}
 		if (life.choice === "blocked" || life.choice === "deliberately_deferred") {
@@ -87,8 +93,12 @@ export function decide(answers: AuditAnswers, board: BoardSnapshot, threshold: n
 		// A known blocker contradicts readiness. Uncertainty about subdivision
 		// does not invalidate independently evidenced execution authorization.
 		if (strong(granularity) && granularity.choice === "blocked") continue;
+		// Fail closed per missing answer: CONTINUE wakes execution, so when the granularity
+		// question applies (in_progress tasks) its verdict must be present — an incomplete
+		// final piece must not wake the agent. Pending tasks are never asked for granularity.
 		if (life.choice !== "actionable_now" || !ready || !anchor || !warrantAllows) continue;
 		if (opts.terminalStop) {
+			if (task.status === "in_progress" && !strong(granularity)) { uncertain.push(task.id); continue; }
 			add(task, "continue", task.status === "pending" ? `set ${label} in_progress and CONTINUE its authorized next action` : `CONTINUE the authorized next action for ${label}`, anchor, false, true);
 		} else if ((alignment === "not_aligned" || alignment === "no_in_progress_task") && matched === String(task.id)) {
 			if (strong(answers.drift) && answers.drift.choice === "drifted")
@@ -106,10 +116,11 @@ export function decide(answers: AuditAnswers, board: BoardSnapshot, threshold: n
 		if (opts.terminalStop && !mayWake) return { kind: "notify", text: "[jev audit] task-level planning advice available; no restart authorized by split/clarification alone" };
 		const boardOnly = opts.terminalStop && !corrections.some((c) => c.execution);
 		return { kind: "inject", corrections, mayWake, text: [
-			`[jev audit ${trigger}] Evidence-grounded board reconciliation.`,
+			`[jev audit ${trigger}] Leader review of the supplied reports and board (macro level; not independent verification of execution).`,
 			boardOnly ? "BOARD ONLY: reconcile the listed facts via todo, then return control to the user. This is NOT permission to execute tasks or bypass a wait." : "Reconcile only the following supported changes via the todo tool:",
 			...corrections.map((c, i) => `${i + 1}. ${c.text}`),
 			...(uncertain.length ? [`(not touched: ${uncertain.map((id) => `#${id}`).join(", ")} — evidence uncertain)`] : []),
+			"If a point is mistaken or already covered, reply briefly with the reason; the next review takes your explanation into account.",
 		].join("\n") };
 	}
 	if (suppressed || ((warrant === "idle" || warrant === "trivial") && !inProgressTasks(board).length)) return { kind: "silent" };

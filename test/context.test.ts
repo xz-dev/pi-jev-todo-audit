@@ -1,5 +1,5 @@
 import { expect, test } from "bun:test";
-import { collectContext, reduceContext, safeJson, type AuditContext } from "../context.js";
+import { collectContext, safeJson, type AuditContext } from "../context.js";
 import { buildAuditRequest } from "../typesafe.js";
 
 const user = (id: string, content: string) => ({ id, type: "message", message: { role: "user", content } });
@@ -12,42 +12,45 @@ const board = { tasks: [{ id: 5, subject: "Parser", description: "src/parser.ts 
 const collect = (entries: unknown[]) => collectContext(entries, board.tasks.map((value) => ({ id: `task:${value.id}`, value })));
 const state = (context: AuditContext) => buildAuditRequest(board, context, "jev-latest").state;
 
-test("a relevant earlier result without artifact/task names survives later user refusal and unrelated docs", () => {
+test("tools are projected to name, call identity/order and status; arguments and bodies never leave", () => {
 	const context = collect([
 		user("goal", "Implement src/parser.ts; do not deploy without permission."),
-		...pair("check", { command: "run the agreed acceptance check" }, "FAIL: malformed input was accepted", true),
+		...pair("check", { command: "ARG_SECRET run the agreed acceptance check" }, "BODY_FAIL malformed input was accepted", true),
 		...pair("docs", { url: "https://unrelated.example/guide.html" }, "UNRELATED_HISTORICAL_DUMP".repeat(1000)),
 		assistant("claim", "Everything passed. Shall this be deployed?"),
 		user("refusal", "No. Do not deploy; the earlier check failed."),
-		...pair("latest", { command: "report status" }, "Waiting for the requested decision."),
+		{ id: "sh", type: "message", message: { role: "bashExecution", command: "CMD_SECRET npm test", output: "OUTPUT_BODY", exitCode: 1 } },
+		{ id: "sh2", type: "message", message: { role: "bashExecution", command: "sleep", output: "", cancelled: true } },
+		assistant("pending-call", [{ type: "toolCall", id: "later", name: "never_returns", arguments: { x: "PENDING_ARG" } }]),
 	]);
 	const sent = state(context);
-	expect(sent).toContain("FAIL: malformed input was accepted");
-	expect(sent).toContain("Everything passed");
-	expect(sent).toContain("No. Do not deploy");
-	expect(sent).not.toContain("UNRELATED_HISTORICAL_DUMP");
+	for (const hidden of ["ARG_SECRET", "BODY_FAIL", "UNRELATED_HISTORICAL_DUMP", "CMD_SECRET", "OUTPUT_BODY", "PENDING_ARG", "guide.html"]) expect(sent).not.toContain(hidden);
+	for (const kept of ["Everything passed", "No. Do not deploy", "unfamiliar_probe", "never_returns"]) expect(sent).toContain(kept);
+	const status = (id: string) => JSON.parse(context.records.find((r) => r.id === id)!.text).status;
+	expect(status("check")).toBe("error"); expect(status("docs")).toBe("returned"); expect(status("sh")).toBe("error");
+	expect(status("sh2")).toBe("cancelled"); expect(status("pending-call:call:later")).toBe("pending");
+	expect(context.omissions.some((o) => o.id === "pending-call:call:later" && o.reason === "tool result unavailable")).toBe(true);
 	expect(context.records.findIndex((r) => r.id === "check")).toBeLessThan(context.records.findIndex((r) => r.id === "refusal"));
-	expect(context.omissions.some((o) => o.id === "docs")).toBe(true);
+	// A result is linked to its earlier call by identity without replaying arguments.
+	expect(context.records.find((r) => r.id === "check")!.group).toBe("check-call:call:check");
+	// Current TODO state is still supplied once through the board adapter.
+	expect(sent.split("Malformed input rejected").length - 1).toBe(1);
 });
 
-test("repeated logs are deduplicated as whole call/result groups", () => {
-	const context = collect([user("goal", "Work on src/parser.ts"),
-		...pair("old", { file: "src/parser.ts" }, "src/parser.ts check passed"),
-		...pair("new", { file: "src/parser.ts" }, "src/parser.ts check passed"),
-	]);
-	expect(context.records.some((r) => r.id === "old")).toBe(false);
-	expect(context.records.some((r) => r.id === "new")).toBe(true);
-	expect(context.omissions.find((o) => o.id === "old")?.reason).toContain("duplicate");
-	expect(context.records.filter((r) => r.callId === "new").map((r) => r.kind)).toEqual(["tool_call", "tool_result"]);
+test("a result without status flags or content is unknown, never success", () => {
+	const context = collect([{ id: "r", type: "message", message: { role: "toolResult", toolCallId: "x", toolName: "odd" } }]);
+	expect(JSON.parse(context.records.find((r) => r.id === "r")!.text).status).toBe("unknown");
 });
 
-test("more than twenty relevant fragments and 4000 characters remain intact", () => {
-	const entries: unknown[] = [user("goal", "Work on src/parser.ts")];
-	for (let i = 0; i < 35; i++) entries.push(...pair(`check-${i}`, { file: "src/parser.ts", case: i }, `Unique acceptance ${i}: ` + "可见结果".repeat(150)));
+test("all supported text-only analysis turns are kept in order, and a short reply keeps its question", () => {
+	const entries: unknown[] = [user("goal", "Compare three designs; analysis only.")];
+	for (let i = 0; i < 35; i++) entries.push(assistant(`t${i}`, `Analysis part ${i}: ` + "可见结果".repeat(150)));
+	entries.push(assistant("q", "Shall I also cover migration?"), user("yes", "yes"));
 	const context = collect(entries);
 	const sent = state(context);
 	expect(sent.length).toBeGreaterThan(16000);
-	for (let i = 0; i < 35; i++) expect(sent).toContain(`Unique acceptance ${i}:`);
+	for (let i = 0; i < 35; i++) expect(sent).toContain(`Analysis part ${i}:`);
+	expect(context.records.find((r) => r.id === "yes")!.selection).toBe("replies to q");
 });
 
 test("supplements retain prose, arbitrary metadata, owner and dependencies without private result details", () => {
@@ -55,7 +58,8 @@ test("supplements retain prose, arbitrary metadata, owner and dependencies witho
 		{ id: "tool", type: "message", message: { role: "toolResult", toolName: "unrecognized", content: "src/parser.ts approval denied", details: { privateCache: "DO_NOT_EXPORT" } } },
 	]);
 	const sent = state(context);
-	for (const value of ["Malformed input rejected", "Approval not granted", "parser-worker", "blockedBy", "approval denied"]) expect(sent).toContain(value);
+	for (const value of ["Malformed input rejected", "Approval not granted", "parser-worker", "blockedBy", "unrecognized"]) expect(sent).toContain(value);
+	expect(sent).not.toContain("approval denied");
 	expect(sent).not.toContain("DO_NOT_EXPORT");
 });
 
@@ -115,22 +119,17 @@ test("public summaries are labelled; missing effective API and missing results a
 });
 
 test("visible audit advice retains producer identity but is not a selectable source", () => {
-	const context = collect([user("goal", "Work on src/parser.ts"), { id: "advice", type: "custom_message", display: true, customType: "jev-todo-audit", content: "Split src/parser.ts task" }]);
+	const advice = { id: "advice", type: "custom_message", display: true, customType: "jev-todo-audit", content: "Split src/parser.ts task" };
+	const context = collect([user("goal", "Work on src/parser.ts"), advice,
+		assistant("rebuttal", "The parser task is one coherent outcome; its checks are already tracked as #6.")]);
 	const record = context.records.find((r) => r.id === "advice");
 	expect(record?.advice).toBe(true); expect(record?.producer).toBe("jev-todo-audit");
-	expect(buildAuditRequest(board, context, "jev-latest").questions.task_evidence_5.criteria.advice).toBeUndefined();
-});
-
-test("recovery removes optional complete groups once, preserves decisions, summaries and supplements", () => {
-	const original = collect([{ id: "summary", type: "compaction", summary: "Retained goal" }, user("goal", "Work on src/parser.ts"),
-		...pair("old", { file: "src/parser.ts" }, "Old src/parser.ts observation"),
-		...pair("latest", { file: "src/parser.ts" }, "Latest src/parser.ts observation"), user("decision", "Wait for approval"),
-	]);
-	const reduced = reduceContext(original)!;
-	expect(reduced).toBeDefined(); expect(reduced.globalComplete).toBe(false);
-	for (const id of ["summary", "goal", "latest", "decision", "task:5"]) expect(reduced.records.some((r) => r.id === id)).toBe(true);
-	expect(reduced.records.some((r) => r.id === "old")).toBe(false);
-	expect(reduced.records.filter((r) => r.callId === "latest")).toHaveLength(2);
-	expect(reduceContext(reduced)).toBeUndefined();
-	expect(reduceContext(collect([user("u", "Required only")]))).toBeUndefined();
+	const req = buildAuditRequest(board, context, "jev-latest");
+	expect(req.questions.task_evidence_5.criteria.advice).toBeUndefined();
+	// The main agent's reply is new review input, and the question it answers stays identifiable.
+	expect(req.state).toContain("already tracked as #6"); expect(req.state).toContain("Split src/parser.ts task");
+	// Unanswered advice alone is not new work: it neither enters review nor changes the input.
+	const unanswered = collect([user("goal", "Work on src/parser.ts"), advice]);
+	expect(unanswered.records.some((r) => r.id === "advice")).toBe(false);
+	expect(state(unanswered)).toBe(state(collect([user("goal", "Work on src/parser.ts")])));
 });

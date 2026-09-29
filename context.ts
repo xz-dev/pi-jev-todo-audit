@@ -15,6 +15,8 @@ export interface EvidenceRecord {
 	producer?: string;
 	request?: string;
 	selection?: string;
+	/** Ordered part of one oversized record; the record is covered only once its last fragment is reviewed. */
+	fragment?: { of: string; start: number; end: number; total: number };
 }
 
 export interface AuditContext {
@@ -24,6 +26,12 @@ export interface AuditContext {
 	omissions: { id: string; reason: string }[];
 	globalComplete: boolean;
 	reduced: boolean;
+	/** Rolling review: remembered JEV opinions and processing progress, kept apart from reported work (records). */
+	rolling?: {
+		opinions: Record<string, unknown>;
+		reportNote?: string;
+		progress: { processedThrough: string | null; final: boolean };
+	};
 }
 
 export const object = (v: unknown): Record<string, any> =>
@@ -73,25 +81,32 @@ function visibleText(content: unknown): string {
 
 export const digest = (v: unknown) => createHash("sha256").update(safeJson(v)).digest("hex");
 
-/** Generic public session collector. Supplements are data, not a tool schema. */
+/**
+ * Leader-level projection of the public session. JEV is a macro reviewer, not
+ * an executor: visible user/assistant/custom text is kept in order, while tool
+ * and shell activity is reduced to name, call identity/order and the existing
+ * envelope status. Arguments, commands and result bodies are never exported,
+ * and unfamiliar tools need no payload adapter. Supplements are task data.
+ */
+export type ToolStatus = "returned" | "error" | "cancelled" | "pending" | "unknown";
 export function collectContext(
 	entries: Iterable<unknown>,
 	supplements: { id: string; value: unknown }[] = [],
 	globalComplete = true,
 	secrets: readonly string[] = [],
 ): AuditContext {
-	const candidates: EvidenceRecord[] = [];
+	const records: EvidenceRecord[] = [];
 	const omissions: AuditContext["omissions"] = [];
-	const calls = new Map<string, string>();
-	let lastAssistant = "", lastAssistantText = "", lastToolGroup = "", lastUser = "", lastCustom = "";
-	const decisionGroups = new Set<string>();
+	const calls = new Map<string, EvidenceRecord>();
+	let lastUser = "", lastAssistantText = "";
 	let index = 0;
-	const add = (id: string, kind: string, text: string, group = id, extra: Partial<EvidenceRecord> = {}) => {
+	const add = (id: string, kind: string, text: string, extra: Partial<EvidenceRecord> = {}) => {
 		if (!text.trim()) return;
 		text = redact(text, secrets);
-		candidates.push({ id, kind, text, group, view: "global", protected: false, request: lastUser,
+		records.push({ id, kind, text, group: id, view: "global", protected: kind === "user" || kind === "summary", request: lastUser,
 			complete: !/\[REDACTED\]|\[unavailable:/.test(text), ...extra });
 	};
+	const event = (name: unknown, callId: string, status: ToolStatus) => safeJson({ tool: typeof name === "string" ? name : "unknown", call: callId, status });
 	for (const raw of entries) {
 		const e = object(raw);
 		const id = typeof e.id === "string" ? e.id : `entry-${index}`;
@@ -100,14 +115,11 @@ export function collectContext(
 			if (typeof e.summary !== "string" || !e.summary.trim()) {
 				globalComplete = false;
 				omissions.push({ id, reason: "summary unavailable" });
-			} else add(id, "summary", redact(e.summary), id, { protected: true });
+			} else add(id, "summary", redact(e.summary));
 			continue;
 		}
 		if (e.type === "custom_message") {
-			if (e.display !== false) {
-				lastCustom = id;
-				add(id, "custom", visibleText(e.content), id, { advice: e.customType === "jev-todo-audit", producer: e.customType });
-			}
+			if (e.display !== false) add(id, "custom", visibleText(e.content), { advice: e.customType === "jev-todo-audit", producer: e.customType });
 			continue;
 		}
 		if (e.type !== "message") {
@@ -117,105 +129,48 @@ export function collectContext(
 		const m = object(e.message);
 		if (m.role === "user") {
 			lastUser = id;
-			if (lastAssistantText) decisionGroups.add(`${lastAssistantText}:text`); // Preserve the question answered by "yes", not unrelated tool payloads.
-			add(id, "user", visibleText(m.content), id, { protected: true });
+			// Keep the question a short reply ("yes") answers identifiable.
+			add(id, "user", visibleText(m.content), lastAssistantText ? { selection: `replies to ${lastAssistantText}` } : {});
 		} else if (m.role === "assistant") {
-			lastAssistant = id;
 			const text = visibleText(m.content);
-			if (text) lastAssistantText = id;
-			add(id, "assistant", text, `${id}:text`);
+			if (text) { lastAssistantText = id; add(id, "assistant", text); }
 			for (const [n, rawBlock] of (Array.isArray(m.content) ? m.content : []).entries()) {
 				const b = object(rawBlock);
 				if (b.type !== "toolCall") continue;
 				const callId = typeof b.id === "string" ? b.id : `${id}-${n}`;
-				calls.set(callId, id);
-				add(`${id}:call:${callId}`, "tool_call", safeJson({ name: b.name, arguments: b.arguments }), id,
-					{ callId, toolName: b.name, complete: false });
+				add(`${id}:call:${callId}`, "tool_call", event(b.name, callId, "pending"), { callId, toolName: b.name });
+				calls.set(callId, records.at(-1)!);
 			}
 		} else if (m.role === "toolResult") {
-			const callId = typeof m.toolCallId === "string" ? m.toolCallId : "";
-			const group = calls.get(callId) ?? id;
-			lastToolGroup = group;
-			add(id, "tool_result", visibleText(m.content), group, { callId, toolName: m.toolName, isError: m.isError === true });
+			const callId = typeof m.toolCallId === "string" ? m.toolCallId : id;
+			const status: ToolStatus = m.isError === true ? "error" : m.isError === false || m.content !== undefined ? "returned" : "unknown";
+			const call = calls.get(callId);
+			calls.delete(callId);
+			// Recorded events stay immutable: a later result is a new event linked to its earlier call by identity.
+			add(id, "tool_result", event(m.toolName ?? call?.toolName, callId, status), { callId, toolName: m.toolName, isError: status === "error", group: call?.id ?? id });
 		} else if (m.role === "custom" && m.display !== false) {
-			lastCustom = id;
-			add(id, "custom", visibleText(m.content), id, { advice: m.customType === "jev-todo-audit", producer: m.customType });
+			add(id, "custom", visibleText(m.content), { advice: m.customType === "jev-todo-audit", producer: m.customType });
 		} else if (m.role === "bashExecution" && !m.excludeFromContext) {
-			lastToolGroup = id;
-			add(id, "shell", safeJson({ command: m.command, output: m.output, exitCode: m.exitCode, cancelled: m.cancelled }), id,
-				{ isError: m.cancelled === true || (typeof m.exitCode === "number" && m.exitCode !== 0) });
+			const status: ToolStatus = m.cancelled === true ? "cancelled" : typeof m.exitCode === "number" ? (m.exitCode === 0 ? "returned" : "error") : "unknown";
+			add(id, "shell", event("bash", id, status), { isError: status === "error" || status === "cancelled" });
 		} else if (m.role !== "system") omissions.push({ id, reason: "unsupported or context-excluded message" });
 	}
-	const latestUser = candidates.find((r) => r.id === lastUser)?.text ?? "";
-	// Exact artifact/task references, never a title-similarity score or tool allowlist.
-	const references = (text: string) => text.match(/https?:\/\/[^\s"<>]+|\b(?:[\w@.-]+\/)*[\w@.-]+\.[a-zA-Z0-9]+\b|#\d+\b/g) ?? [];
-	const refs = new Set(references(safeJson(supplements.map((s) => s.value)) + "\n" + latestUser));
-	const linkedRequests = new Set(candidates.filter((r) => r.kind === "user" &&
-		(r.id === lastUser || !references(r.text).length || references(r.text).some((ref) => refs.has(ref)))).map((r) => r.id));
-	const recentGroups = new Set([lastUser, lastAssistant, lastAssistant && `${lastAssistant}:text`, lastToolGroup, lastCustom].filter(Boolean));
-	const groups = new Map<string, EvidenceRecord[]>();
-	for (const r of candidates) groups.set(r.group, [...(groups.get(r.group) ?? []), r]);
-	const selected = new Set<string>(), protectedGroups = new Set<string>();
-	const selections = new Map<string, string>();
-	for (const [group, rows] of groups) {
-		const required = recentGroups.has(group) || decisionGroups.has(group) || rows.some((r) => r.protected);
-		const related = rows.some((r) => [...refs].some((ref) => r.text.includes(ref)));
-		const inputs = rows.filter((r) => r.kind === "tool_call" || r.kind === "shell");
-		const inputRefs = references(inputs.map((r) => r.text).join("\n"));
-		const request = inputs[0]?.request ?? rows[0].request;
-		// A generic result can inherit its retained user request's scope. An
-		// explicitly unrelated artifact is not pulled in merely by proximity.
-		const conversationLinked = rows.some((r) => ["tool_call", "tool_result", "shell", "custom"].includes(r.kind)) &&
-			linkedRequests.has(request ?? "") && (!inputRefs.length || inputRefs.some((ref) => refs.has(ref)));
-		const failure = rows.some((r) => r.isError) && (related || conversationLinked);
-		if (required || related || conversationLinked) selected.add(group);
-		if (required || failure) protectedGroups.add(group);
-		selections.set(group, required ? "current interaction or retained decision/summary" : related ? "explicit task/artifact link" :
-			"retained request/call chain; exact task relationship uncertain");
-	}
-	const signatures = new Map<string, string>();
-	for (const [group, rows] of [...groups].reverse()) {
-		if (!selected.has(group) || rows.some((r) => r.kind === "user")) continue;
-		const key = digest(rows.map(({ kind, text, isError }) => ({ kind, text, isError })));
-		if (signatures.has(key) && !protectedGroups.has(group)) {
-			selected.delete(group);
-			for (const r of rows) omissions.push({ id: r.id, reason: `duplicate of ${signatures.get(key)}` });
-		} else signatures.set(key, group);
-	}
-	const records: EvidenceRecord[] = candidates.filter((r) => {
-		if (selected.has(r.group)) return true;
-		if (!omissions.some((o) => o.id === r.id)) omissions.push({ id: r.id, reason: "unlinked historical background; not proof of absence" });
-		return false;
-	}).map((r) => ({ ...r, view: recentGroups.has(r.group) ? "recent" as const : "global" as const,
-		protected: protectedGroups.has(r.group), selection: selections.get(r.group) }));
-	for (const r of records.filter((r) => r.kind === "tool_call")) {
-		const result = records.find((x) => x.kind === "tool_result" && x.callId === r.callId);
-		// Calls are intentions, not proof that their execution succeeded.
-		if (!result) omissions.push({ id: r.id, reason: "tool result unavailable" });
-	}
+	// JEV's own opinion is not new work: it enters review only once a later reply can make it interpretable.
+	let lastReply = records.length - 1;
+	while (lastReply >= 0 && (records[lastReply].advice || !["user", "assistant", "custom", "summary"].includes(records[lastReply].kind))) lastReply--;
+	// Not recorded as an omission either: it is known bookkeeping, not missing evidence, and must not change the input identity.
+	for (let i = records.length - 1; i > lastReply; i--) if (records[i].advice) records.splice(i, 1);
+	for (const call of calls.values()) omissions.push({ id: call.id, reason: "tool result unavailable" });
 	for (const s of supplements) {
 		const text = safeJson(s.value, secrets);
 		records.push({ id: s.id, kind: "supplement", text, group: s.id, view: "task", protected: true,
 			complete: !/\[REDACTED\]|\[unavailable:/.test(text) });
 	}
-	for (const r of [...candidates, ...records.filter((r) => r.kind === "supplement")]) {
-		if (!r.complete && r.kind !== "tool_call") omissions.push({ id: r.id, reason: r.text.includes("[REDACTED]") ? "redacted evidence" : "unavailable: unsupported/serialization gap" });
+	for (const r of records) {
+		if (!r.complete) omissions.push({ id: r.id, reason: r.text.includes("[REDACTED]") ? "redacted evidence" : "unavailable: unsupported/serialization gap" });
 	}
 	if (!globalComplete) omissions.push({ id: "global", reason: "effective compaction-aware context unavailable" });
 	return { records, omissions, globalComplete, reduced: false, userBoundary: lastUser };
-}
-
-/** One coherent recovery packet, only after the server explicitly rejects context size. */
-export function reduceContext(context: AuditContext): AuditContext | undefined {
-	const removed = context.records.filter((r) => !r.protected);
-	if (context.reduced || !removed.length) return undefined;
-	return {
-		...context,
-		records: context.records.filter((r) => r.protected),
-		omissions: [...context.omissions, ...removed.map((r) => ({ id: r.id, reason: "provider hard-limit recovery" }))],
-		globalComplete: false,
-		reduced: true,
-	};
 }
 
 /** Advice/acknowledgments and board bookkeeping are not new execution evidence. */

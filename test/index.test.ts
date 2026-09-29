@@ -25,7 +25,7 @@ const user = (id: string, text: string) => ({ id, type: "message", message: { ro
 const task = { id: 5, subject: "Parser", status: "in_progress" as const, description: "Malformed input rejected; no deployment without approval" };
 const snapshot = (tasks: unknown[], id = "board") => ({ id, type: "message", message: { role: "toolResult", toolName: "todo", content: [{ type: "text", text: "Board snapshot updated" }], details: { tasks, nextId: 8 } } });
 const initial = () => [user("user", "Confirmed #5 passed all agreed acceptance checks. Reconcile completion only; do not start other work."), snapshot([task])];
-function setup(branch: unknown[] = initial(), config = {}) {
+function setup(branch: unknown[] = initial(), config = {}, opts: { persist?: boolean } = {}) {
 	const handlers = new Map<string, ((e: any, c: any) => Promise<void>)[]>();
 	const commands = new Map<string, any>();
 	const sent: { message: any; options: any }[] = [];
@@ -34,6 +34,8 @@ function setup(branch: unknown[] = initial(), config = {}) {
 		on: (name: string, h: any) => handlers.set(name, [...(handlers.get(name) ?? []), h]),
 		registerCommand: (name: string, c: any) => commands.set(name, c),
 		sendMessage: (message: any, options: any) => sent.push({ message, options }),
+		// `persist` adds a real appendEntry so receipts/answers become durable on the branch.
+		...(opts.persist ? { appendEntry: (customType: string, data: unknown) => { branch.push({ id: `c${branch.length}`, type: "custom", customType, data }); } } : {}),
 		events: { on: (name: string, h: any) => { listeners.set(name, [...(listeners.get(name) ?? []), h]); return () => {}; } },
 	} as unknown as ExtensionAPI;
 	const ctx = { sessionManager: { getSessionId: () => "s1", getBranch: () => branch, buildContextEntries: () => branch }, ui: { notify: mock((_text: string, _level?: string) => {}) } };
@@ -64,9 +66,22 @@ test("manual bypasses cadence, terminal reconciliation wakes for board work only
 
 test("explicit actionable-now with current authorization can wake for execution", async () => {
 	const h = setup([user("user", "Implement #5 now; the next action is to fix the parser rejection case and permission is granted."), snapshot([task])]);
-	answers = { ...answers, task_status_5: a("actionable_now"), interaction: a("working") };
+	answers = { ...answers, task_status_5: a("actionable_now"), task_granularity_5: a("appropriate"), interaction: a("working") };
 	await h.emit("session_start"); h.hook(); await tick();
 	expect(h.sent).toHaveLength(1); expect(h.sent[0].message.content).toContain("CONTINUE"); expect(h.sent[0].options.triggerTurn).toBe(true);
+});
+
+test("an incomplete terminal review cannot wake the agent for an active task", async () => {
+	// A missing task_granularity_5 answer (incomplete final piece) must not send CONTINUE + triggerTurn.
+	const h = setup([user("user", "Implement #5 now; permission is granted."), snapshot([task])]);
+	const all = { ...answers, task_status_5: a("actionable_now"), interaction: a("working") };
+	respond = async () => {
+		const asked = requests.at(-1)!;
+		const body = Object.fromEntries(Object.keys(asked.questions).filter((k) => k !== "task_granularity_5").map((k) => [k, all[k as keyof typeof all] ?? a("unclear")]));
+		return new Response(JSON.stringify({ answers: body }), { status: 200 });
+	};
+	await h.emit("session_start"); h.hook(); await tick();
+	expect(h.sent).toHaveLength(0);
 });
 
 test("blocked match and coarse-task judgment cannot override waiting; missing annotation is board-only", async () => {
@@ -148,7 +163,9 @@ test("request retains effective global context, visible failure and task require
 	answers = { task_status_5: a("blocked"), task_evidence_5: a("user"), task_board_5: a("accurate"), interaction: a("waiting_user") };
 	await h.emit("session_start"); await h.manual();
 	const state = requests[0].state;
-	for (const evidence of ["Global acceptance", "unfamiliar_probe", "malformed input accepted", "approval missing", "worker"]) expect(state).toContain(evidence);
+	for (const evidence of ["Global acceptance", "unfamiliar_probe", '\\"status\\":\\"error\\"', "approval missing", "worker"]) expect(state).toContain(evidence);
+	// Macro projection: the failure is visible as a status, not as its raw body.
+	expect(state).not.toContain("malformed input accepted");
 	expect(state).not.toContain("ABANDONED_PAYLOAD"); expect(h.sent).toHaveLength(0);
 });
 
@@ -185,4 +202,114 @@ test("API failure remains isolated and a later manual check can run", async () =
 	respond = async () => new Response("invalid question", { status: 422 });
 	const h = setup(); await h.emit("session_start"); await h.manual(); expect(h.sent).toHaveLength(0);
 	respond = async () => response(); await h.manual(); expect(h.sent).toHaveLength(1);
+});
+
+test("task trajectory is bounded, stable across an unchanged repeat, and keeps its first-active origin", async () => {
+	// Each revision stays an ordered `todo` tool event; the supplement carries origin, count and the latest five.
+	const snap = (tasks: unknown[], id: string) => ({ id, type: "message", message: { role: "toolResult", toolName: "todo", content: "ok", details: { tasks, nextId: 8 } } });
+	const say = (n: number) => ({ id: `a${n}`, type: "message", message: { role: "assistant", content: `x${n}` } });
+	const branch: unknown[] = [user("user", "Implement #5 parser rewrite."), snap([{ ...task, status: "pending" }], "e0")];
+	for (let i = 1; i <= 8; i++) branch.push(say(i), snap([{ ...task, description: `v${i}` }], `e${i}`));
+	// All required questions answered so the receipt actually commits (persist is on, so it is durable).
+	answers = { ...answers, drift: a("on_track"), task_board_5: a("accurate"), task_granularity_5: a("appropriate") };
+	const h = setup(branch, {}, { persist: true }); await h.emit("session_start"); await h.manual();
+	// The pending snapshot is the task's first board state, not a revision of it; e1–e8 are the revisions.
+	const trajOf = (state: string) => { const start = state.indexOf('{"records"'); const packet = JSON.parse(state.slice(start, state.indexOf("\nInterpret evidence", start))); const text = packet.records.find((r: any) => r.id === "task:5").text; return JSON.parse(text.slice(0, text.indexOf("\nAge review"))).trajectory; };
+	const first = trajOf(requests[0].state);
+	expect(first.segments.map((s: any) => s.source)).toEqual(["e4", "e5", "e6", "e7", "e8"]);
+	expect(first.revisionCount).toBe(8);
+	expect(first.firstActive).toEqual({ turn: 1, source: "e1" }); // the origin is kept even when its segment is bounded away
+	const events = JSON.parse(requests[0].state.slice(requests[0].state.indexOf('{"records"'), requests[0].state.indexOf("\nInterpret evidence"))).records
+		.filter((r: any) => r.toolName === "todo").map((r: any) => r.id);
+	expect(events).toEqual(["e0", "e1", "e2", "e3", "e4", "e5", "e6", "e7", "e8"]); // every revision remains an ordered tool event
+	// The durable receipt must not change the supplement: an unchanged repeat re-buys nothing.
+	await h.manual();
+	expect(requests).toHaveLength(1);
+	// A very long history stays bounded in the fixed task state.
+	for (let i = 9; i <= 1000; i++) branch.push(snap([{ ...task, description: `w${i}` }], `f${i}`));
+	await h.manual();
+	const later = trajOf(requests.at(-1)!.state);
+	expect(later.revisionCount).toBe(1000);
+	expect(later.segments.map((s: any) => s.source)).toEqual(["f996", "f997", "f998", "f999", "f1000"]);
+	expect(later.firstActive).toEqual({ turn: 1, source: "e1" });
+});
+
+test("TODO revisions start segments without paid calls; granularity keeps the first-active origin through resume", async () => {
+	const turn = (i: number) => ({ id: `t${i}`, type: "message", message: { role: "assistant", content: `Visible analysis step ${i}` } });
+	const branch: unknown[] = [user("user", "Implement #5 parser rewrite."), snapshot([{ ...task, status: "pending" }], "s0")];
+	const h = setup(branch, { interval: 1000 }); await h.emit("session_start");
+	const advance = async (to: number) => { while (branch.filter((e: any) => e.message?.role === "assistant").length < to) { branch.push(turn(branch.length)); await h.emit("turn_end"); } };
+	await advance(12); branch.push(snapshot([task], "start"));
+	await advance(20); branch.push(snapshot([{ ...task, description: "refined scope" }], "rev20"));
+	await advance(27); branch.push(snapshot([{ ...task, status: "pending", description: "waiting approval" }], "rev27"));
+	branch.push(user("approve", "Approved, resume #5.")); await h.emit("message_end", { message: { role: "user" } });
+	branch.push(snapshot([{ ...task, description: "resumed" }], "resume"));
+	await advance(35);
+	expect(requests).toHaveLength(0); // board edits alone never paid for a review
+	await h.manual();
+	expect(requests).toHaveLength(1);
+	const state = requests[0].state, start = state.indexOf('{"records"');
+	const packet = JSON.parse(state.slice(start, state.indexOf("\nInterpret evidence", start)));
+	const supplement = JSON.parse(packet.records.find((r: any) => r.id === "task:5").text.split("\nAge review")[0]);
+	expect(supplement.trajectory.firstActive).toEqual({ turn: 12, source: "start" });
+	expect(supplement.trajectory.segments.map((s: any) => s.source)).toEqual(["start", "rev20", "rev27", "resume"]);
+	expect(requests[0].questions.task_granularity_5.instructions).toContain("first in_progress turn");
+});
+
+test("manual modes: repeat sends none, full re-evaluates without tool bodies, unknown arguments send none", async () => {
+	const branch = [...initial(),
+		{ id: "call", type: "message", message: { role: "assistant", content: [{ type: "toolCall", id: "c1", name: "bash", arguments: { command: "SECRET_COMMAND" } }] } },
+		{ id: "ret", type: "message", message: { role: "toolResult", toolCallId: "c1", toolName: "bash", content: "SECRET_OUTPUT" } }];
+	// Every requested question is answered, so an unchanged repeat has nothing left to ask.
+	answers = { ...answers, drift: a("on_track"), task_board_5: a("accurate"), task_granularity_5: a("appropriate") };
+	const h = setup(branch); await h.emit("session_start");
+	const cmd = (args: string) => h.commands.get("jev-audit").handler(args, h.ctx) as Promise<void>;
+	await cmd(""); expect(requests).toHaveLength(1);
+	await cmd(""); expect(requests).toHaveLength(1); expect(h.sent).toHaveLength(1); // no duplicate correction either
+	await cmd("bogus"); expect(requests).toHaveLength(1);
+	expect(h.ctx.ui.notify.mock.calls.some((c) => String(c[0]).startsWith("Usage: /jev-audit"))).toBe(true);
+	await cmd("full"); expect(requests).toHaveLength(2);
+	const full = JSON.stringify(requests[1]);
+	expect(full).not.toContain("SECRET_COMMAND"); expect(full).not.toContain("SECRET_OUTPUT");
+	expect(requests[1].state).toContain("Confirmed #5 passed"); // whole projected history, not only new input
+	expect(h.sent).toHaveLength(1); // unchanged demand is still suppressed
+	await cmd(""); expect(requests).toHaveLength(2); // the completed forced review is the new baseline
+});
+
+test("the processed frontier is scoped to its endpoint: a different apiUrl re-evaluates", async () => {
+	// Same branch, same rules: only the endpoint changed — the stored receipt must not apply.
+	const branch = [...initial()];
+	answers = { ...answers, drift: a("on_track"), task_board_5: a("accurate"), task_granularity_5: a("appropriate") };
+	const h = setup(branch, {}, { persist: true }); await h.emit("session_start"); await h.manual();
+	expect(requests).toHaveLength(1);
+	const other = setup(branch, { apiUrl: "https://other-endpoint.example/v1/systemone" }, { persist: true });
+	await other.emit("session_start"); await other.manual();
+	expect(requests).toHaveLength(2); // not an unchanged repeat
+});
+
+test("a late response after a branch switch appends no ledger entries to the active branch", async () => {
+	// appendEntry writes to the live session file: after a branch switch, entries land on the ACTIVE branch.
+	let active: unknown[] = [...initial()];
+	const handlers = new Map<string, ((e: any, c: any) => Promise<void>)[]>();
+	const commands = new Map<string, any>();
+	const sent: { message: any; options: any }[] = [];
+	const pi = {
+		on: (n: string, h: any) => handlers.set(n, [...(handlers.get(n) ?? []), h]),
+		registerCommand: (n: string, c: any) => commands.set(n, c),
+		sendMessage: (m: any, o: any) => sent.push({ message: m, options: o }),
+		appendEntry: (t: string, d: unknown) => { active.push({ id: `c${active.length}`, type: "custom", customType: t, data: d }); },
+		events: { on: () => () => {} },
+	} as unknown as ExtensionAPI;
+	const ctxFor = () => ({ sessionManager: { getSessionId: () => "s1", getBranch: () => active, buildContextEntries: () => active }, ui: { notify: mock(() => {}) } });
+	makeExtension(pi, { ...DEFAULT_CONFIG, apiKeyEnvVar: "JEV_AUDIT_TEST_KEY" });
+	const emit = async (name: string) => { const ctx = ctxFor(); for (const h of handlers.get(name) ?? []) await h({}, ctx); };
+	await emit("session_start");
+	let release: (v: Response) => void = () => {};
+	respond = () => new Promise<Response>((resolve) => { release = resolve; });
+	const pending = commands.get("jev-audit").handler("", ctxFor()) as Promise<void>;
+	await new Promise((r) => setTimeout(r, 10)); // the request is in flight
+	active = [...initial(), user("other", "Different branch content entirely.")]; // branch switch (tip id changes)
+	await emit("session_tree");
+	release(response()); await pending;
+	expect(active.filter((e: any) => e.type === "custom" && e.customType === "jev-todo-audit-ledger")).toHaveLength(0);
 });

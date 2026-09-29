@@ -7,10 +7,12 @@ const pair = (id: string, text: string) => [
 	{ id: `${id}-call`, type: "message", message: { role: "assistant", content: [{ type: "toolCall", id, name: "unfamiliar_probe", arguments: { file: "parser.ts" } }] } },
 	{ id, type: "message", message: { role: "toolResult", toolCallId: id, toolName: "unfamiliar_probe", content: text } },
 ];
+const say = (id: string, text: string) => ({ id, type: "message", message: { role: "assistant", content: text } });
 const context = () => collectContext([
 	{ id: "goal", type: "message", message: { role: "user", content: "Work on parser.ts; malformed input must be rejected." } },
-	...pair("old", "Earlier parser.ts observation: " + "历史证据 ".repeat(1000)),
-	...pair("latest", "Latest parser.ts acceptance check passed"),
+	...pair("probe", "tool body is projected away"),
+	say("old", "Earlier parser.ts observation: " + "历史证据 ".repeat(1000)),
+	say("latest", "Latest parser.ts acceptance check passed"),
 ], [{ id: "task:5", value: board.tasks[0] }]);
 const ok = () => new Response(JSON.stringify({ answers: { alignment: { choice: "aligned", confidence: 0.9 } } }));
 
@@ -36,51 +38,7 @@ for (const [status, body] of [
 	const res = await auditWithContext(board, context(), "jev-latest", { ...options, fetchFn: async () => {
 		calls++; return new Response(JSON.stringify(body), { status });
 	} });
-	expect(calls).toBe(1); expect(res.context.reduced).toBe(false); expect(res.result.ok).toBe(false);
-});
-
-test("state-longest-question or combined request overflow gets one rebuilt recovery, not a guessed local budget", async () => {
-	for (const message of ["State tokens exceeds the allowed context length", "Total token count exceeds the maximum request context limit"]) {
-		const requests: AuditRequest[] = [];
-		const original = context();
-		const res = await auditWithContext(board, original, "jev-latest", { ...options, maxRetries: 3, fetchFn: async (_url, init) => {
-			requests.push(JSON.parse(init!.body as string));
-			return requests.length === 1 ? new Response(JSON.stringify({ error: { message } }), { status: 422 }) : ok();
-		} });
-		expect(requests).toHaveLength(2); expect(res.result.ok).toBe(true);
-		expect(requests[0].state).toContain("历史证据"); expect(requests[1].state).not.toContain("历史证据");
-		expect(requests[1].state).toContain("provider hard-limit recovery"); expect(requests[1].state).toContain("malformed input must be rejected");
-		expect(Object.keys(requests[1].questions)).toEqual(Object.keys(requests[0].questions));
-		expect(requests[0].questions.task_evidence_5.criteria.old).toBeDefined();
-		expect(requests[1].questions.task_evidence_5.criteria.old).toBeUndefined();
-		expect(res.context.globalComplete).toBe(false);
-	}
-});
-
-test("second overflow never causes a third context attempt, despite transient retry settings", async () => {
-	let calls = 0;
-	const res = await auditWithContext(board, context(), "jev-latest", { ...options, maxRetries: 5, fetchFn: async () => {
-		calls++; return new Response(JSON.stringify({ code: "context_length_exceeded" }), { status: 400 });
-	} });
-	expect(calls).toBe(2); expect(res.result.ok).toBe(false);
-});
-
-test("live-observed max_tokens_exceeded body triggers one recovery retry", async () => {
-	const requests: AuditRequest[] = [];
-	const res = await auditWithContext(board, context(), "jev-latest", { ...options, fetchFn: async (_url, init) => {
-		requests.push(JSON.parse(init!.body as string));
-		return requests.length === 1
-			? new Response(JSON.stringify({ detail: { error_type: "max_tokens_exceeded" } }), { status: 400 })
-			: ok();
-	} });
-	expect(requests).toHaveLength(2); expect(res.result.ok).toBe(true); expect(res.context.reduced).toBe(true);
-});
-
-test("protected-only packet is not cropped or retried", async () => {
-	let calls = 0;
-	const c = collectContext([{ id: "u", type: "message", message: { role: "user", content: "Required context" } }]);
-	await auditWithContext(board, c, "jev-latest", { ...options, fetchFn: async () => { calls++; return new Response(JSON.stringify({ code: "context_length_exceeded" }), { status: 400 }); } });
-	expect(calls).toBe(1);
+	expect(calls).toBe(1); expect(res.result.ok).toBe(false);
 });
 
 test("valid source survives unknown answers, illegal confidence/options and inherited key names", async () => {

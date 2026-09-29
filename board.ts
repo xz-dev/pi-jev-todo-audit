@@ -21,17 +21,32 @@ export interface BoardSnapshot {
 	nextId: number;
 }
 
+/** One actual change of the persisted board: a new state segment (not an audit trigger). */
+export interface BoardRevision {
+	/** Source entry id of the snapshot, when available. */
+	source?: string;
+	/** Assistant-message count (turn) at which the snapshot was recorded. */
+	turn: number;
+	/** Tasks whose record was added, changed or removed. */
+	changed: number[];
+}
+
 /** Board + the loop index at which each task entered in_progress. */
 export interface BoardWithAges extends BoardSnapshot {
-	/** taskId → assistant-message count when it last transitioned to in_progress. */
+	/** taskId → assistant-message count when it last transitioned to in_progress (age diagnostic). */
 	inProgressSince: Map<number, number>;
+	/** taskId → first in_progress turn/source for this task identity; updates, waits and resumes keep it. */
+	firstActive: Map<number, { turn: number; source?: string }>;
+	/** Actual snapshot changes in order. Reads, failed updates and no-ops add none. */
+	revisions: BoardRevision[];
 }
 
 export const EMPTY_BOARD: BoardSnapshot = { tasks: [], nextId: 1 };
 
 interface BranchEntry {
+	id?: string;
 	type?: string;
-	message?: { role?: string; toolName?: string; details?: unknown };
+	message?: { role?: string; toolName?: string; details?: unknown; isError?: boolean };
 }
 
 /** Duck-type check mirroring rpiv-todo's own discriminator. */
@@ -58,7 +73,10 @@ export function replayBoard(branch: Iterable<unknown>): BoardSnapshot {
 export function replayBoardWithAges(branch: Iterable<unknown>): BoardWithAges {
 	let result: BoardSnapshot = { tasks: [], nextId: 1 };
 	const inProgressSince = new Map<number, number>();
+	const firstActive = new Map<number, { turn: number; source?: string }>();
+	const revisions: BoardRevision[] = [];
 	const prevStatus = new Map<number, BoardTask["status"]>();
+	let prevRecords = new Map<number, string>();
 	let loops = 0;
 	for (const entry of branch) {
 		const e = entry as BranchEntry;
@@ -68,12 +86,16 @@ export function replayBoardWithAges(branch: Iterable<unknown>): BoardWithAges {
 			loops++;
 			continue;
 		}
-		if (msg?.role !== "toolResult" || msg.toolName !== "todo") continue;
+		if (msg?.role !== "toolResult" || msg.toolName !== "todo" || msg.isError === true) continue;
 		if (!isTaskDetails(msg.details)) continue;
 		result = {
 			tasks: msg.details.tasks.map((t) => ({ ...t })),
 			nextId: msg.details.nextId,
 		};
+		const records = new Map(result.tasks.map((t) => [t.id, JSON.stringify(t)]));
+		const changed = [...new Set([...records.keys(), ...prevRecords.keys()])].filter((id) => records.get(id) !== prevRecords.get(id));
+		prevRecords = records;
+		if (changed.length) revisions.push({ source: e.id, turn: loops, changed });
 		const seen = new Set<number>();
 		for (const t of result.tasks) {
 			seen.add(t.id);
@@ -83,16 +105,20 @@ export function replayBoardWithAges(branch: Iterable<unknown>): BoardWithAges {
 			} else if (t.status !== "in_progress") {
 				inProgressSince.delete(t.id);
 			}
+			if (t.status === "in_progress" && !firstActive.has(t.id)) firstActive.set(t.id, { turn: loops, source: e.id });
+			// A finished task's origin ends; a pending/waiting task keeps it for resumption.
+			if (t.status === "completed" || t.status === "deleted") firstActive.delete(t.id);
 			prevStatus.set(t.id, t.status);
 		}
 		for (const id of prevStatus.keys()) {
 			if (!seen.has(id)) {
 				prevStatus.delete(id);
 				inProgressSince.delete(id);
+				firstActive.delete(id);
 			}
 		}
 	}
-	return { ...result, inProgressSince };
+	return { ...result, inProgressSince, firstActive, revisions };
 }
 
 /** Visible (non-deleted) tasks. */

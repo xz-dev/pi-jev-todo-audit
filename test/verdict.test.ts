@@ -11,8 +11,9 @@ const board: BoardSnapshot = { tasks: [
 const a = (choice: string, confidence = 0.9): ChoiceAnswer => ({ choice, confidence });
 const context = collectContext([
 	{ id: "user", type: "message", message: { role: "user", content: "Implement #5 and #7. The separable authorized checkpoints are documented and not already tracked." } },
-	{ id: "check5", type: "message", message: { role: "toolResult", toolName: "unknown_check", content: "#5 entire acceptance suite passed", isError: false } },
-	{ id: "check7", type: "message", message: { role: "toolResult", toolName: "unknown_check", content: "#7 entire acceptance suite passed", isError: false } },
+	// Main-agent reports carry the macro facts; tool bodies are never exported.
+	{ id: "check5", type: "message", message: { role: "assistant", content: "Report: #5 entire acceptance suite passed." } },
+	{ id: "check7", type: "message", message: { role: "assistant", content: "Report: #7 entire acceptance suite passed." } },
 ]);
 function answers(patch: Partial<AuditAnswers> = {}): AuditAnswers {
 	return { alignment: a("aligned"), current_match: a("5"), drift: a("on_track"), interaction: a("working"), work_evidence: a("user"),
@@ -64,9 +65,25 @@ describe("evidence-grounded verdict", () => {
 	});
 	test("explicit authorized actionable task can wake, pending task can be claimed", () => {
 		for (const status of ["pending", "in_progress"] as const) {
-			const result = run({ lifecycle: { task_status_5: a("actionable_now") }, board_warranted: a("warranted") }, { terminalStop: true }, { tasks: [{ ...board.tasks[0], status }], nextId: 6 });
+			// An in_progress task is asked the granularity question, so CONTINUE needs that verdict present.
+			const gran = status === "in_progress" ? { granularity: { task_granularity_5: a("appropriate") } } : {};
+			const result = run({ lifecycle: { task_status_5: a("actionable_now") }, board_warranted: a("warranted"), ...gran }, { terminalStop: true }, { tasks: [{ ...board.tasks[0], status }], nextId: 6 });
 			expect(text(result)).toContain("CONTINUE"); if (result.kind === "inject") expect(result.mayWake).toBe(true);
 		}
+	});
+	test("an incomplete final piece cannot wake the agent: CONTINUE requires the granularity verdict", () => {
+		// task_status_5=actionable_now with task_granularity_5 missing (incomplete stage) must not send CONTINUE.
+		const result = run({ lifecycle: { task_status_5: a("actionable_now") }, board_warranted: a("warranted") }, { terminalStop: true });
+		expect(result.kind === "inject" ? result.text : "").not.toContain("CONTINUE");
+		expect(result.kind === "inject" ? result.text : "").not.toContain('set #5 "Add repository layer" in_progress');
+		// Same incomplete stage still delivers independently supported board-only corrections.
+		const withBookkeeping = run({ lifecycle: { task_status_5: a("actionable_now"), task_status_7: a("blocked") },
+			reconciliation: { task_board_7: a("needs_reconciliation") } }, { terminalStop: true });
+		const t = text(withBookkeeping);
+		expect(t).toContain('#7 "Wire endpoint" pending'); expect(t).toContain("BOARD ONLY"); expect(t).not.toContain("CONTINUE");
+		// With the granularity verdict present and non-blocked, the same actionable task wakes unchanged.
+		const ok = run({ lifecycle: { task_status_5: a("actionable_now") }, board_warranted: a("warranted"), granularity: { task_granularity_5: a("appropriate") } }, { terminalStop: true });
+		expect(text(ok)).toContain("CONTINUE");
 	});
 	for (const interaction of ["waiting_user", "waiting_external", "idle", "unclear"]) {
 		test(`actionable_now cannot override ${interaction}`, () => {
@@ -144,7 +161,7 @@ describe("evidence-grounded verdict", () => {
 		expect(out).not.toContain("mark #5"); expect(out).toContain("mark #7");
 	});
 	test("missing context fails closed", () => { expect(run({ lifecycle: { task_status_5: a("actually_completed") } }, { context: undefined }).kind).not.toBe("inject"); });
-	for (const change of [{ advice: true }, { complete: false }, { isError: true }, { kind: "assistant" }, { kind: "summary" }]) {
+	for (const change of [{ advice: true }, { complete: false }, { isError: true }, { kind: "tool_result" }, { kind: "shell" }, { kind: "summary" }, { kind: "supplement" }]) {
 		test(`unusable completion source ${JSON.stringify(change)}`, () => {
 			const altered = { ...context, records: context.records.map((r) => r.id === "check5" ? { ...r, ...change } : r) };
 			expect(run({ lifecycle: { task_status_5: a("actually_completed") } }, { context: altered }).kind).not.toBe("inject");
@@ -183,3 +200,25 @@ describe("evidence-grounded verdict", () => {
 
 // This suite supplies judgments. It does not measure live jev semantic accuracy.
 import { NOT_ON_BOARD } from "../typesafe.js";
+
+describe("leader evidence contract", () => {
+	test("a main-agent report can support completion but is phrased as reported, never as verified execution", () => {
+		const out = text(run({ lifecycle: { task_status_5: a("actually_completed") } }));
+		expect(out).toContain("main-agent report"); expect(out).toContain("not independently verified");
+		expect(out).toContain("not independent verification of execution"); expect(out).not.toMatch(/JEV verified/);
+		expect(out).toContain("reply briefly with the reason"); // the main agent can correct the leader
+	});
+	test("a main-agent report cannot cancel scope or create execution permission", () => {
+		expect(run({ lifecycle: { task_status_5: a("cancelled") } }).kind).not.toBe("inject");
+		const out = run({ alignment: a("not_aligned"), current_match: a("7"), work_evidence: a("check5"), lifecycle: { task_status_7: a("actionable_now") }, evidence: { task_evidence_7: a("check7") } });
+		expect(out.kind === "inject" ? out.text : "").not.toContain("in_progress");
+	});
+	test("a returned tool event alone never establishes completion", () => {
+		const c = collectContext([
+			{ id: "user", type: "message", message: { role: "user", content: "Implement #5." } },
+			{ id: "call", type: "message", message: { role: "assistant", content: [{ type: "toolCall", id: "t", name: "bash", arguments: {} }] } },
+			{ id: "ret", type: "message", message: { role: "toolResult", toolCallId: "t", toolName: "bash", content: "ok", isError: false } },
+		]);
+		expect(run({ lifecycle: { task_status_5: a("actually_completed") }, evidence: { task_evidence_5: a("ret") } }, { context: c }).kind).not.toBe("inject");
+	});
+});

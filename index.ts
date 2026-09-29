@@ -10,11 +10,14 @@
 import type { ExtensionAPI, ExtensionCommandContext } from "@earendil-works/pi-coding-agent";
 import { SettingsManager } from "@earendil-works/pi-coding-agent";
 import { existsSync } from "node:fs";
+import { randomUUID } from "node:crypto";
 import { agentConfigPath, legacyConfigPath, loadConfig, projectConfigPath, resolveApiKey, type AuditConfig } from "./config.js";
 import { replayBoardWithAges, staleTaskIds, unfinishedTasks, visibleTasks, inProgressTasks as inProgressBoardTasks } from "./board.js";
 import { collectContext, digest, object, redact } from "./context.js";
 import { freshCounter, onTurnEnd, onUserMessage, replayCounter, shouldAudit, type LoopCounter } from "./counter.js";
-import { auditWithContext, type TerminalStopInfo } from "./typesafe.js";
+import { JUDGMENT_VERSION, newEvaluationCache, type Attempt, type EvaluationCache, type TerminalStopInfo } from "./typesafe.js";
+import { diagnose, isOwnBookkeeping, restoreLedger, writeLedger } from "./ledger.js";
+import { processedEntries, reviewRolling, type Rolling } from "./rolling.js";
 import { decide } from "./verdict.js";
 
 /** Neutral bus channel shared with pi-continue-watchdog — plain data, no imports. */
@@ -60,6 +63,25 @@ export default function (pi: ExtensionAPI, cfgOverride?: AuditConfig) {
 	if (!cfg.enabled) return;
 
 	const counters = new Map<string, LoopCounter>();
+	/** Same-session evaluation memory; never shared across sessions. */
+	const caches = new Map<string, EvaluationCache>();
+	const cacheFor = (id: string) => caches.get(id) ?? (caches.set(id, newEvaluationCache()), caches.get(id)!);
+	/** Latest durable processing receipt per session (cumulative; replaced, never accumulated). */
+	const rollings = new Map<string, Rolling | undefined>();
+	/** Per-load prefix: the sequence restarts on reload, so ids stay unique within a session branch. */
+	const LOAD_ID = randomUUID();
+	let auditSeq = 0;
+	/** Token of an unfinished `/jev-audit full` per session. */
+	const fullReviews = new Map<string, string>();
+	/** Rebuild same-session memory from the active branch (reload, compaction, tree navigation). */
+	const restoreMemory = (ctx: Ctx) => {
+		const cache = newEvaluationCache();
+		rollings.set(sid(ctx), restoreLedger(ctx.sessionManager.getBranch(), cache));
+		caches.set(sid(ctx), cache);
+	};
+	const append = (pi as { appendEntry?: ExtensionAPI["appendEntry"] }).appendEntry?.bind(pi);
+	/** Own ledger entries are neither evidence nor a boundary change. */
+	const withoutBookkeeping = (entries: Iterable<unknown>) => [...entries].filter((e) => !isOwnBookkeeping(e));
 	const counterFor = (id: string) => counters.get(id) ?? freshCounter();
 	let inFlight = false;
 	let projectMerged = false;
@@ -69,12 +91,26 @@ export default function (pi: ExtensionAPI, cfgOverride?: AuditConfig) {
 	const noticeKeys = new Set<string>();
 	let warnedBudget = false;
 	let lastStopKey = "";
-	const contextFor = (ctx: Ctx, board = replayBoardWithAges(ctx.sessionManager.getBranch())) => collectContext(
-		ctx.sessionManager.buildContextEntries?.() ?? ctx.sessionManager.getBranch(),
-		visibleTasks(board).map((task) => ({ id: `task:${task.id}`, value: task })),
-		!!ctx.sessionManager.buildContextEntries,
-		[resolveApiKey(cfg) ?? ""],
-	);
+	const contextFor = (ctx: Ctx, board = replayBoardWithAges(ctx.sessionManager.getBranch())) => {
+		return collectContext(
+			withoutBookkeeping(ctx.sessionManager.buildContextEntries?.() ?? ctx.sessionManager.getBranch()),
+			visibleTasks(board).map((task) => {
+				const origin = board.firstActive.get(task.id);
+				// Task-long macro span: first in_progress turn through now; updates/waits/resumes do not reset it.
+				const revisions = board.revisions.filter((r) => r.changed.includes(task.id) && (!origin || r.turn >= origin.turn));
+				// Bounded and derived from the branch alone, so an unchanged repeat keeps an identical supplement
+				// (0 requests). Every revision still appears in order as a projected `todo` tool event.
+				const trajectory = {
+					firstActive: origin ? { turn: origin.turn, source: origin.source } : task.status === "in_progress" ? "unknown: not reconstructable from the branch" : "not started",
+					revisionCount: revisions.length,
+					segments: revisions.slice(-5).map((r) => ({ turn: r.turn, source: r.source })),
+				};
+				return { id: `task:${task.id}`, value: { ...task, trajectory } };
+			}),
+			!!ctx.sessionManager.buildContextEntries,
+			[resolveApiKey(cfg) ?? ""],
+		);
+	};
 	const evidenceVersionFor = (ctx: Ctx) => digest([...ctx.sessionManager.getBranch()].flatMap((raw) => {
 		const e = object(raw), m = e.type === "custom_message" ? e : object(e.message);
 		const visibleCustom = m.customType && m.display !== false && m.customType !== "jev-todo-audit";
@@ -84,10 +120,19 @@ export default function (pi: ExtensionAPI, cfgOverride?: AuditConfig) {
 		return [];
 	}));
 	const boundaryFor = (ctx: Ctx) => {
-		const branch = [...ctx.sessionManager.getBranch()];
+		const branch = withoutBookkeeping(ctx.sessionManager.getBranch());
 		return digest({ session: sid(ctx), board: replayBoardWithAges(branch).tasks,
 			entries: branch.map((raw) => { const e = object(raw); return [e.id, e.type, e.message?.role === "user" ? e.message.content : undefined]; }) });
 	};
+	/** Entry id of the branch tip when the audit started; used to detect a branch switch. */
+	const leafId = (ctx: Ctx) => {
+		let id: string | undefined;
+		for (const raw of ctx.sessionManager.getBranch()) { const e = object(raw); if (typeof e.id === "string") id = e.id; }
+		return id;
+	};
+	/** The entry the audit started on is still on the branch (appends keep it; a branch switch removes it). */
+	const onSameBranch = (ctx: Ctx, leaf: string | undefined) =>
+		leaf === undefined || [...ctx.sessionManager.getBranch()].some((raw) => object(raw).id === leaf);
 	const restoreKeys = (ctx: Ctx) => {
 		for (const raw of ctx.sessionManager.getBranch()) {
 			const e = object(raw), m = e.type === "custom_message" ? e : object(e.message);
@@ -104,7 +149,7 @@ export default function (pi: ExtensionAPI, cfgOverride?: AuditConfig) {
 	async function auditNow(
 		ctx: Ctx & { ui?: { notify?: (m: string, l?: "error" | "warning" | "info") => void } },
 		label: string,
-		opts: { terminalStop?: TerminalStopInfo } = {},
+		opts: { terminalStop?: TerminalStopInfo; full?: boolean } = {},
 	) {
 		if (!cfg.enabled || inFlight) return;
 		const apiKey = resolveApiKey(cfg);
@@ -130,22 +175,54 @@ export default function (pi: ExtensionAPI, cfgOverride?: AuditConfig) {
 			// Terminal-stop short-circuit: nothing unfinished → nothing to check.
 			if (opts.terminalStop && unfinishedTasks(board).length === 0) return;
 			const boundary = boundaryFor(ctx);
+			const startLeaf = leafId(ctx);
+			const current = (c: Ctx | undefined) => !!c && !ac.signal.aborted && sid(c) === mySid && onSameBranch(c, startLeaf);
 			const evidenceVersion = evidenceVersionFor(ctx);
+			// Already processed input is represented by the last receipt; a receipt from another branch is not applicable.
+			// `full` reassesses the whole projected history from scratch (never restoring tool bodies); an unfinished
+			// full review keeps its token so a retry reuses the parts it already completed.
+			const fresh = opts.full ? (fullReviews.get(mySid) ?? (fullReviews.set(mySid, `full:${randomUUID()}`), fullReviews.get(mySid)!)) : undefined;
+			let rolling = fresh ? undefined : rollings.get(mySid);
+			let processed = processedEntries(ctx.sessionManager.getBranch(), rolling?.through);
+			if (!processed) { rolling = undefined; processed = new Set(); }
 			const initialContext = contextFor(ctx, board);
 			const staleIds = staleTaskIds(board, c.totalLoops, cfg.interval, cfg.staleAuditSpans);
 			// Diagnostic age, not a split decision or a task-size threshold.
 			for (const task of inProgressBoardTasks(board)) {
 				const record = initialContext.records.find((r) => r.id === `task:${task.id}`);
-				if (record) record.text += `\nAge review: ${c.totalLoops - (board.inProgressSince.get(task.id) ?? c.totalLoops)} loops; review flag=${staleIds.includes(task.id)}. Age alone does not justify splitting.`;
+				// Only the flag enters the payload: an exact loop count would change every loop and defeat reuse.
+				if (record) record.text += `\nAge review flag=${staleIds.includes(task.id)}. Age alone does not justify splitting.`;
 			}
-			const { result: res, context } = await auditWithContext(board, initialContext, cfg.model,
-				{ apiUrl: cfg.apiUrl, apiKey, timeoutMs: cfg.timeoutMs, signal: ac.signal, ...retrySettingsFor(ctx) }, opts.terminalStop);
+			const inputKey = digest({ v: JUDGMENT_VERSION, endpoint: cfg.apiUrl, model: cfg.model, stop: opts.terminalStop, omissions: initialContext.omissions,
+				records: initialContext.records.map((r) => [r.id, r.text]) });
+			const attempts: Attempt[] = [];
+			const outcome = await reviewRolling({ board, context: initialContext, processed, rolling, inputKey, model: cfg.model, stop: opts.terminalStop,
+				opts: { apiUrl: cfg.apiUrl, apiKey, timeoutMs: cfg.timeoutMs, signal: ac.signal, cache: cacheFor(mySid), fresh, ...retrySettingsFor(ctx),
+					onAttempt: (a) => attempts.push(a),
+					// Answers are immutable facts about their captured input; persist even if delivery later becomes stale.
+					onStore: (answers, { model }) => { if (current(lastCtx)) writeLedger(append, { kind: "eval", answers, model }); },
+					onReject: (envelope) => { if (current(lastCtx)) writeLedger(append, { kind: "rejected", envelope }); } },
+				// Progress advances only on a durable receipt written for this same session.
+				commit: (next) => {
+					if (!current(lastCtx) || !writeLedger(append, { kind: "receipt", receipt: next })) return false;
+					rollings.set(mySid, next);
+					return true;
+				} });
+			const { result: res, context } = outcome;
+			// A completed forced review is the ordinary baseline from now on.
+			if (fresh && outcome.final && outcome.complete && res.ok) fullReviews.delete(mySid);
+			// Accounting is recorded for every attempt, including failed, recovered and later-stale audits.
+			if (current(lastCtx)) writeLedger(append, { kind: "diag", diag: diagnose(`${mySid}:${LOAD_ID}:${++auditSeq}`, label, outcome.reuse,
+				{ from: rolling?.through ?? null, to: rollings.get(mySid)?.through ?? null },
+				outcome.unchanged ? "unchanged" : !res.ok ? "failed" : !(outcome.final && outcome.complete) ? "incomplete" : outcome.recovered ? "recovered" : "completed", attempts) });
 			if (ac.signal.aborted || sid(lastCtx ?? ctx) !== mySid || boundaryFor(ctx) !== boundary) return;
 
-			if (!res.ok) {
-				ctx.ui?.notify?.(`[jev audit ${label}] failed: ${redact(res.error, [apiKey])}`, "warning");
+			if (!res.ok || !outcome.final) {
+				ctx.ui?.notify?.(`[jev audit ${label}] failed: ${redact(res.ok ? "review incomplete" : res.error, [apiKey])}`, "warning");
 				return;
 			}
+			// The initial overflow is not the final outcome when subdivision completed the review.
+			if (outcome.recovered) ctx.ui?.notify?.(`[jev audit ${label}] context overflow recovered by subdivision`, "info");
 
 			restoreKeys(ctx);
 			const action = decide(res.answers, board, cfg.confidenceThreshold, c.totalLoops, staleIds,
@@ -214,6 +291,7 @@ export default function (pi: ExtensionAPI, cfgOverride?: AuditConfig) {
 			ctx.ui?.notify?.("[jev-todo-audit] activityBudgetChars is deprecated and ignored; only provider context admission limits evidence size.", "warning");
 		}
 		restoreKeys(ctx);
+		restoreMemory(ctx);
 		counters.set(sid(ctx), replayCounter(ctx.sessionManager.getBranch()));
 		// Background audit is useless without a key — warn once at session start.
 		if (!resolveApiKey(cfg)) {
@@ -225,6 +303,7 @@ export default function (pi: ExtensionAPI, cfgOverride?: AuditConfig) {
 		auditAbort?.abort();
 		lastCtx = ctx;
 		lastStopKey = "";
+		restoreMemory(ctx);
 		counters.set(sid(ctx), replayCounter(ctx.sessionManager.getBranch()));
 	});
 	pi.on("session_tree", async (_e, ctx) => {
@@ -233,12 +312,16 @@ export default function (pi: ExtensionAPI, cfgOverride?: AuditConfig) {
 		lastStopKey = "";
 		sentKeys.clear();
 		restoreKeys(ctx);
+		restoreMemory(ctx);
 		counters.set(sid(ctx), replayCounter(ctx.sessionManager.getBranch()));
 		auditAbort?.abort();
 		pendingStop = undefined;
 	});
 	pi.on("session_shutdown", async (_e, ctx) => {
 		counters.delete(sid(ctx));
+		caches.delete(sid(ctx));
+		rollings.delete(sid(ctx));
+		fullReviews.delete(sid(ctx));
 		auditAbort?.abort();
 		if (lastCtx && sid(lastCtx) === sid(ctx)) {
 			lastCtx = undefined;
@@ -288,9 +371,14 @@ export default function (pi: ExtensionAPI, cfgOverride?: AuditConfig) {
 	});
 
 	pi.registerCommand("jev-audit", {
-		description: "Manually trigger a jev todo-board audit right now (ignores interval/cooldown)",
-		handler: async (_args, ctx: ExtensionCommandContext) => {
-			await auditNow(ctx, "manual");
+		description: "Audit now (ignores interval/cooldown; reuses already reviewed results). `full` forces a fresh reassessment.",
+		handler: async (args, ctx: ExtensionCommandContext) => {
+			const mode = (args ?? "").trim();
+			if (mode !== "" && mode !== "full") {
+				ctx.ui?.notify?.("Usage: /jev-audit [full] — default reviews only new input; full re-evaluates the projected history (tool bodies stay excluded).", "warning");
+				return;
+			}
+			await auditNow(ctx, mode === "full" ? "manual full" : "manual", { full: mode === "full" });
 		},
 	});
 }
