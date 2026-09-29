@@ -367,7 +367,15 @@ Overflow-driven subdivision SHALL be authorized only by an explicit context/toke
 
 Subdivision SHALL make measurable structural progress toward smaller request contents, SHALL operate over finite input pieces, and SHALL not repeatedly submit an unchanged known-rejected envelope. When a text record must cross request boundaries, fragment identity/order and incomplete-record coverage SHALL remain explicit. When fixed required state or a single question cannot fit even without additional context, processing for the affected scope SHALL stop with an actionable diagnostic or request for a concise main-agent report; it SHALL not loop or claim complete coverage. Independent completed scopes SHALL remain available.
 
-Existing bounded transient-network retries SHALL remain separate. Authentication, quota/rate, generic validation, payload-size and unrecognized errors SHALL NOT be treated as context overflow. A capacity-complete final result SHALL require all required parts, even if every individual part was valid. Known credentials and unsupported content SHALL be excluded before sending or displaying observations.
+Existing bounded transient-network retries SHALL remain separate. Authentication, quota/rate, generic validation, payload-size and unrecognized errors SHALL NOT be treated as context overflow. A typed provider overflow code (including OpenRouter's `error.metadata.error_type: "context_length_exceeded"`) SHALL count as an explicit overflow; typed credit-cap, per-field length, payload-size, payment, rate and validation codes SHALL NOT. The OpenRouter System One endpoint SHALL be a built-in channel whose single published context window bounds both the request-wide and state-plus-longest-question dimensions. A capacity-complete final result SHALL require all required parts, even if every individual part was valid. Known credentials and unsupported content SHALL be excluded before sending or displaying observations.
+
+#### Scenario: OpenRouter reports a context overflow
+- **WHEN** the OpenRouter endpoint rejects a request with `error.metadata.error_type` `context_length_exceeded`
+- **THEN** it is treated as an explicit overflow and subdivided like a TypeSafe `max_tokens_exceeded` rejection, while its other typed errors fail through the ordinary isolated error path
+
+#### Scenario: OpenRouter's published window is applied to both dimensions
+- **WHEN** an envelope fits TypeSafe direct's 64k request-wide limit but exceeds OpenRouter's single 32K context
+- **THEN** it is pre-split on the OpenRouter channel and sent whole on TypeSafe direct
 
 #### Scenario: Relevant context exceeds the old application budget
 - **WHEN** permitted macro evidence exceeds 4,000 characters or twenty fragments
@@ -601,7 +609,7 @@ Intermediate chunk results SHALL remain internal review state. They SHALL NOT be
 
 ### Requirement: Observable cost and capacity outcomes
 
-The extension SHALL report compact observations for cache hits/misses, actual provider attempts, projected state/question sizes, chunk progress, response model and provider-reported input/output usage when available. Retries, recovery and stale responses SHALL count as attempts; missing usage SHALL be unknown rather than zero. Cached answers SHALL not charge their original usage again. Accounting SHALL not export transcript bodies or credentials or trigger additional evaluations.
+The extension SHALL report compact observations for cache hits/misses, actual provider attempts, projected state/question sizes, chunk progress, response model and provider-reported input/output usage when available. Retries, recovery and stale responses SHALL count as attempts; missing usage SHALL be unknown rather than zero. A provider-reported charge (such as OpenRouter `usage.cost` in USD) SHALL be recorded per attempt and totalled; a channel that reports no charge SHALL show none rather than zero, and a total with any attempt lacking a reported charge SHALL be unknown. Cached answers SHALL not charge their original usage again. Accounting SHALL not export transcript bodies or credentials or trigger additional evaluations.
 
 Comparisons SHALL use matching event sequences and endpoint/model settings and report per-workload and aggregate observations for tool-heavy, text-only and short-context cases. Input tokens and an applicable verified rate or provider charge SHALL be the monetary evidence; bytes SHALL not be presented as tokens. Oversized-input recovery SHALL be evaluated for successful coverage and resumption separately from cost comparisons against already successful baselines. No savings percentage or semantic-equivalence claim SHALL be inferred solely from mocked responses.
 
@@ -624,3 +632,7 @@ Comparisons SHALL use matching event sequences and endpoint/model settings and r
 #### Scenario: Short-context overhead is measurable
 - **WHEN** rolling-state overhead makes a short-context request larger than its baseline
 - **THEN** that regression appears alongside savings on other workloads rather than being omitted from the comparison
+
+#### Scenario: A provider reports the charge
+- **WHEN** every attempt of an audit on OpenRouter reports `usage.cost`
+- **THEN** diagnostics record each charge and their USD total, and a channel without reported charges shows no dollar total
