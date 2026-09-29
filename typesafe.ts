@@ -26,6 +26,8 @@ export interface Attempt {
 	model?: string;
 	inputTokens?: number;
 	outputTokens?: number;
+	/** Provider-reported charge in USD (OpenRouter `usage.cost`); undefined means not reported. */
+	costUsd?: number;
 	/** Size of what was actually sent (UTF-8 bytes, not tokens). */
 	stateBytes?: number;
 	questionBytes?: number;
@@ -243,7 +245,8 @@ export function isContextOverflow(status: number, body: string): boolean {
 	const e = object(payload), inner = object(e.error), detail = object(e.detail);
 	// Do not scan echoed request state, validation input, or arbitrary nested data.
 	// Observed live contract: {"detail":{"error_type":"max_tokens_exceeded"}}.
-	const code = inner.code ?? e.code ?? detail.code ?? detail.error_type;
+	// OpenRouter: {"error":{"code":400,"metadata":{"error_type":"context_length_exceeded"}}}; its numeric code is only the status.
+	const code = object(inner.metadata).error_type ?? inner.code ?? e.code ?? detail.code ?? detail.error_type;
 	const message = typeof e.error === "string" ? e.error : inner.message ?? e.message ?? (typeof e.detail === "string" ? e.detail : detail.message ?? "");
 	if (/quota|billing|rate.?limit|per[- ](?:minute|second|hour|day)|balance|authentication|unauthorized/i.test(`${code ?? ""} ${message}`)) return false;
 	if (code === "context_length_exceeded" || code === "context_window_exceeded" || code === "max_tokens_exceeded") return true;
@@ -271,9 +274,9 @@ interface ClientOptions {
 }
 const tokens = (v: unknown) => typeof v === "number" && Number.isFinite(v) && v >= 0 ? v : undefined;
 /** Model/usage are retained independently of whether the answers are valid. */
-function observed(body: unknown): Pick<Attempt, "model" | "inputTokens" | "outputTokens"> {
-	const b = object(body), usage = object(b.usage);
-	return { model: typeof b.model === "string" ? b.model : undefined, inputTokens: tokens(usage.input_tokens), outputTokens: tokens(usage.output_tokens) };
+function observed(body: unknown): Pick<Attempt, "model" | "inputTokens" | "outputTokens" | "costUsd"> {
+	const b = object(body), usage = object(b.usage), cost = tokens(usage.cost);
+	return { model: typeof b.model === "string" ? b.model : undefined, inputTokens: tokens(usage.input_tokens), outputTokens: tokens(usage.output_tokens), ...(cost === undefined ? {} : { costUsd: cost }) };
 }
 export async function runAudit(req: AuditRequest, opts: ClientOptions): Promise<AuditResult> {
 	for (let attempt = 0; ; attempt++) {

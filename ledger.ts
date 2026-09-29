@@ -33,19 +33,21 @@ export interface AuditDiagnostics {
 	channel?: string;
 	/** Envelopes split before sending by the capacity estimate: not provider attempts, no usage. */
 	presplits?: number;
-	attempts: { n: number; outcome: Attempt["outcome"]; status?: number; model?: string; stateBytes?: number; questionBytes?: number; longestQuestionBytes?: number; inputTokens: number | "unknown"; outputTokens: number | "unknown" }[];
-	usage: { inputTokens: number | "unknown"; outputTokens: number | "unknown" };
+	attempts: { n: number; outcome: Attempt["outcome"]; status?: number; model?: string; stateBytes?: number; questionBytes?: number; longestQuestionBytes?: number; inputTokens: number | "unknown"; outputTokens: number | "unknown"; costUsd?: number }[];
+	/** `costUsd` only on channels that report a charge; unknown if any attempt there lacks one. */
+	usage: { inputTokens: number | "unknown"; outputTokens: number | "unknown"; costUsd?: number | "unknown" };
 }
 
 /** Pure: builds diagnostics from observed attempts without sending anything. */
 export function diagnose(audit: string, label: string, reuse: { hits: number; joined: number; sent: number }, range: AuditDiagnostics["range"],
 	outcome: AuditDiagnostics["outcome"], attempts: Attempt[], capacity?: { channel: string; presplits: number }): AuditDiagnostics {
 	const known = (v: number | undefined): number | "unknown" => v ?? "unknown";
-	const sum = (k: "inputTokens" | "outputTokens") => attempts.every((a) => a[k] !== undefined) ? attempts.reduce((s, a) => s + a[k]!, 0) : "unknown" as const;
+	const sum = (k: "inputTokens" | "outputTokens" | "costUsd") => attempts.every((a) => a[k] !== undefined) ? attempts.reduce((s, a) => s + a[k]!, 0) : "unknown" as const;
+	const charged = attempts.some((a) => a.costUsd !== undefined);
 	return { audit, label, hits: reuse.hits + reuse.joined, misses: reuse.sent, range, outcome, ...capacity,
 		attempts: attempts.map((a, i) => ({ n: i + 1, outcome: a.outcome, status: a.status, model: a.model, stateBytes: a.stateBytes, questionBytes: a.questionBytes, longestQuestionBytes: a.longestQuestionBytes,
-			inputTokens: known(a.inputTokens), outputTokens: known(a.outputTokens) })),
-		usage: { inputTokens: sum("inputTokens"), outputTokens: sum("outputTokens") } };
+			inputTokens: known(a.inputTokens), outputTokens: known(a.outputTokens), ...(a.costUsd === undefined ? {} : { costUsd: a.costUsd }) })),
+		usage: { inputTokens: sum("inputTokens"), outputTokens: sum("outputTokens"), ...(charged ? { costUsd: sum("costUsd") } : {}) } };
 }
 
 const validAnswer = (v: unknown): v is ChoiceAnswer => {

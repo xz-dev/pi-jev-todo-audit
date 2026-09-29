@@ -11,9 +11,13 @@ import type { AuditRequest } from "./typesafe.js";
 
 /** Token limits; `request` = state + all questions, `stateAndLongestQuestion` = state + the largest question. */
 export interface ContextLimits { request?: number; stateAndLongestQuestion?: number }
-/** TypeSafe Models page, checked 2026-09-29 (Jev 1.13). */
+/**
+ * TypeSafe Models page (Jev 1.13) and OpenRouter model page (`typesafe/jev-1.13`, one 32K context), checked 2026-09-29.
+ * OpenRouter publishes no separate per-question limit, so its single context bounds both dimensions.
+ */
 export const PUBLISHED_LIMITS: Readonly<Record<string, ContextLimits>> = {
 	"https://api.typesafe.ai/v1/systemone": { request: 64_000, stateAndLongestQuestion: 32_000 },
+	"https://openrouter.ai/api/v1/systemone": { request: 32_000, stateAndLongestQuestion: 32_000 },
 };
 /** Live smoke densest observation was 1/1.766 tokens per byte; slightly denser until real usage exists. */
 export const PRIOR_TOKENS_PER_BYTE = 1 / 1.75;
