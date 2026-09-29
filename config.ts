@@ -16,6 +16,7 @@
 import { existsSync, readFileSync } from "node:fs";
 import { join } from "node:path";
 import { CONFIG_DIR_NAME, getAgentDir } from "@earendil-works/pi-coding-agent";
+import type { ContextLimits } from "./capacity.js";
 
 export interface AuditConfig {
 	/** Trigger an audit every Nth completed loop. */
@@ -42,6 +43,8 @@ export interface AuditConfig {
 	activityBudgetChars?: number;
 	/** Audits an in_progress task may span before being flagged stale. */
 	staleAuditSpans: number;
+	/** Token limits of a non-built-in channel (overrides the published table for apiUrl). */
+	contextLimits?: ContextLimits;
 }
 
 export const DEFAULT_CONFIG: AuditConfig = {
@@ -70,6 +73,7 @@ const PROJECT_ALLOWED_KEYS: ReadonlySet<keyof AuditConfig> = new Set([
 	"timeoutMs",
 	"activityBudgetChars",
 	"staleAuditSpans",
+	"contextLimits",
 ]);
 
 /** Global config path — ~/.pi/agent/jev-todo-audit.json (or PI_CODING_AGENT_DIR). */
@@ -91,6 +95,13 @@ export function legacyConfigPath(): string {
 
 function num(v: unknown, fallback: number, min: number): number {
 	return typeof v === "number" && Number.isFinite(v) && v >= min ? v : fallback;
+}
+
+function limits(v: unknown): ContextLimits | undefined {
+	if (!v || typeof v !== "object" || Array.isArray(v)) return undefined;
+	const o = v as Record<string, unknown>, pos = (x: unknown) => typeof x === "number" && Number.isFinite(x) && x > 0 ? x : undefined;
+	const out: ContextLimits = { request: pos(o.request), stateAndLongestQuestion: pos(o.stateAndLongestQuestion) };
+	return out.request || out.stateAndLongestQuestion ? out : undefined;
 }
 
 /** Non-blank string or undefined. */
@@ -132,6 +143,7 @@ function applyLayer(cfg: AuditConfig, o: Record<string, unknown>): AuditConfig {
 		timeoutMs: num(o.timeoutMs, cfg.timeoutMs, 1_000),
 		activityBudgetChars: typeof o.activityBudgetChars === "number" ? o.activityBudgetChars : cfg.activityBudgetChars,
 		staleAuditSpans: num(o.staleAuditSpans, cfg.staleAuditSpans, 1),
+		contextLimits: limits(o.contextLimits) ?? cfg.contextLimits,
 	};
 }
 

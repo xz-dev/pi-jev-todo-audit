@@ -1,0 +1,150 @@
+/** Per-channel pre-split: predict overflow before sending, use each channel's real limits, learn from real attempts. */
+import { expect, test } from "bun:test";
+import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
+import makeExtension from "../index.js";
+import { DEFAULT_CONFIG } from "../config.js";
+import { collectContext } from "../context.js";
+import { isOwnBookkeeping, LEDGER_TYPE } from "../ledger.js";
+import { reviewRolling } from "../rolling.js";
+import { newCapacityProfile, observe, predictOverflow, PUBLISHED_LIMITS, restoreCapacity, type EnvelopeSize } from "../capacity.js";
+import { auditWithContext, evaluate, newEvaluationCache, type AuditRequest, type EvaluateOptions } from "../typesafe.js";
+
+const TYPESAFE = PUBLISHED_LIMITS["https://api.typesafe.ai/v1/systemone"];
+const env = (stateBytes: number, questionBytes: number, longestQuestionBytes = Math.min(questionBytes, 1800)): EnvelopeSize => ({ stateBytes, questionBytes, longestQuestionBytes });
+
+test("the two published limits are checked separately so admitted request-wide capacity is not wasted", () => {
+	const p = newCapacityProfile(); p.tokensPerByte = 0.5;
+	// state + longest = 60k bytes → 30k tokens (≤ 32k); state + all = 120k bytes → 60k tokens (≤ 64k): sent whole.
+	expect(predictOverflow(p, env(58_000, 62_000, 2_000), TYPESAFE)).toBe(false);
+	// Same total but state + longest question exceeds 32k tokens.
+	expect(predictOverflow(p, env(66_000, 54_000, 2_000), TYPESAFE)).toBe(true);
+	// State + longest fits but the request-wide 64k is exceeded.
+	expect(predictOverflow(p, env(40_000, 100_000, 2_000), TYPESAFE)).toBe(true);
+	// An unknown channel without configured limits relies on learned rejections only.
+	expect(predictOverflow(p, env(900_000, 9_000), undefined)).toBe(false);
+});
+
+test("learning uses the densest observed ratio and minimal rejection sizes, dominating in both dimensions", () => {
+	const p = newCapacityProfile();
+	observe(p, { outcome: "answered", inputTokens: 1000, stateBytes: 1500, questionBytes: 500 });
+	observe(p, { outcome: "answered", inputTokens: 1000, stateBytes: 1600, questionBytes: 600 });
+	expect(p.tokensPerByte).toBe(0.5);
+	observe(p, { outcome: "overflow", stateBytes: 50_000, questionBytes: 5_000, longestQuestionBytes: 1_000 });
+	observe(p, { outcome: "overflow", stateBytes: 60_000, questionBytes: 6_000, longestQuestionBytes: 1_000 }); // dominated: not kept
+	expect(p.rejections).toHaveLength(1);
+	expect(predictOverflow(p, env(50_000, 5_000, 1_000))).toBe(true);
+	expect(predictOverflow(p, env(49_000, 9_000, 1_000))).toBe(false); // smaller state + longest question: not dominated
+	observe(p, { outcome: "http_error", stateBytes: 1, questionBytes: 1, longestQuestionBytes: 1 }); // not an overflow: ignored
+	expect(p.rejections).toHaveLength(1);
+});
+
+test("replay of the live smoke attempts: all 7 rejected envelopes are predicted, none of the 8 admitted ones", () => {
+	// [stateBytes, questionBytes, provider inputTokens or rejected] from evidence.md live smoke (TypeSafe direct, jev-1.13.0).
+	const live: [number, number, number | "overflow"][] = [
+		[211114, 12440, "overflow"], [113295, 7671, "overflow"], [58918, 5140, "overflow"], [32610, 4097, 20789], [34990, 4150, 21629],
+		[63504, 5691, "overflow"], [35373, 4407, 21111], [39072, 4651, 20036], [115672, 8343, "overflow"], [67256, 5808, "overflow"],
+		[42994, 4721, 23042], [42155, 4767, 21751], [65980, 6162, "overflow"], [41133, 4926, 21242], [42429, 4916, 21345]];
+	// Longest single question was about 1.7 KB (task_granularity) in that session.
+	const p = newCapacityProfile();
+	const predicted = live.map(([s, q]) => predictOverflow(p, env(s, q, 1_750), TYPESAFE));
+	expect(predicted).toEqual(live.map(([, , t]) => t === "overflow"));
+	// After learning the real usage the verdicts do not change.
+	for (const [s, q, t] of live) observe(p, t === "overflow" ? { outcome: "overflow", stateBytes: s, questionBytes: q, longestQuestionBytes: 1_750 } : { outcome: "answered", inputTokens: t, stateBytes: s, questionBytes: q });
+	expect(live.map(([s, q]) => predictOverflow(p, env(s, q, 1_750), TYPESAFE))).toEqual(live.map(([, , t]) => t === "overflow"));
+});
+
+const req = (stateChars: number, n = 2): AuditRequest => ({ state: "s".repeat(stateChars), model: "m",
+	questions: Object.fromEntries(Array.from({ length: n }, (_, i) => [`q${i}`, { type: "choice" as const, instructions: `question ${i}`, criteria: { yes: "y", no: "n" } }])) });
+const answering = () => {
+	const sent: AuditRequest[] = [];
+	const fetchFn = async (_u: string, init?: RequestInit) => {
+		const r = JSON.parse(String(init!.body)) as AuditRequest; sent.push(r);
+		return new Response(JSON.stringify({ answers: Object.fromEntries(Object.keys(r.questions).map((k) => [k, { choice: "yes", confidence: 0.9 }])), usage: { input_tokens: 10, output_tokens: 1 } }));
+	};
+	return { sent, fetchFn };
+};
+
+test("a predicted overflow sends nothing, records no rejection and is reported as a pre-split", async () => {
+	const { sent, fetchFn } = answering();
+	const cache = newEvaluationCache(), rejects: string[] = [], attempts: unknown[] = [];
+	let presplits = 0;
+	const opts: EvaluateOptions = { apiUrl: "http://jev", apiKey: "k", timeoutMs: 1000, cache, fetchFn,
+		capacity: { profile: newCapacityProfile(), limits: { stateAndLongestQuestion: 100 } },
+		onReject: (e) => rejects.push(e), onAttempt: (a) => attempts.push(a), onPresplit: () => presplits++ };
+	const out = await evaluate(req(1000), opts);
+	expect(out.result.ok).toBe(false);
+	expect(!out.result.ok && out.result.predicted && out.result.contextOverflow).toBe(true);
+	expect(out.reuse.sent).toBe(0); expect(sent).toHaveLength(0); expect(attempts).toHaveLength(0);
+	expect(rejects).toHaveLength(0); expect(cache.rejected.size).toBe(0); expect(presplits).toBe(1);
+});
+
+const task = { id: 4, subject: "Design review", status: "in_progress" as const };
+const board = { tasks: [task], nextId: 5 };
+
+test("an irreducible unit predicted too large is still sent once so server admission decides", async () => {
+	const { sent, fetchFn } = answering();
+	const opts: EvaluateOptions = { apiUrl: "http://jev", apiKey: "k", timeoutMs: 1000, cache: newEvaluationCache(), fetchFn,
+		capacity: { profile: newCapacityProfile(), limits: { stateAndLongestQuestion: 10, request: 10 } } };
+	const out = await reviewRolling({ board, context: collectContext([{ id: "u", type: "message", message: { role: "user", content: "Short." } }], [{ id: "task:4", value: task }]),
+		processed: new Set(), inputKey: "k", model: "m", opts, commit: () => true });
+	expect(out.final).toBe(true); expect(out.result.ok).toBe(true);
+	expect(sent.every((r) => Object.keys(r.questions).length === 1)).toBe(true); // split to single questions first, then admitted
+	expect(out.recovered).toBe(false); // no real rejection happened
+});
+
+test("a direct context evaluation still sends single questions for admission instead of ending on a prediction", async () => {
+	const { sent, fetchFn } = answering();
+	const out = await auditWithContext(board, collectContext([], [{ id: "task:4", value: task }]), "m", { apiUrl: "http://jev", apiKey: "k", timeoutMs: 1000,
+		cache: newEvaluationCache(), fetchFn, capacity: { profile: newCapacityProfile(), limits: { request: 1 } } });
+	expect(out.result.ok).toBe(true);
+	expect(sent.length).toBeGreaterThan(0);
+	expect(sent.every((r) => Object.keys(r.questions).length === 1)).toBe(true);
+});
+
+test("host: a recorded rejection is restored after reload and the next audit pre-splits instead of buying a new 400", async () => {
+	const OVERFLOW = JSON.stringify({ detail: { error_type: "max_tokens_exceeded" } });
+	const say = (id: string, text: string) => ({ id, type: "message", message: { role: "assistant", content: text } });
+	const branch: unknown[] = [{ id: "u", type: "message", message: { role: "user", content: "Review the design; analysis only." } },
+		...Array.from({ length: 8 }, (_, i) => say(`a${i}`, `TEXT_${i} ` + "analysis sentence. ".repeat(200))),
+		{ id: "b", type: "message", message: { role: "toolResult", toolName: "todo", content: "ok", details: board } }];
+	const statuses: number[] = [];
+	const original = globalThis.fetch;
+	globalThis.fetch = (async (_u: string, init?: RequestInit) => {
+		const r = JSON.parse(String(init!.body)) as AuditRequest;
+		const bytes = Buffer.byteLength(r.state) + Buffer.byteLength(JSON.stringify(r.questions));
+		if (bytes > 20_000) { statuses.push(400); return new Response(OVERFLOW, { status: 400 }); }
+		statuses.push(200);
+		return new Response(JSON.stringify({ model: "jev-mock", usage: { input_tokens: Math.round(bytes / 4), output_tokens: 1 },
+			answers: Object.fromEntries(Object.entries(r.questions).map(([k, q]) => [k, { choice: Object.keys(q.criteria).includes("unclear") ? "unclear" : Object.keys(q.criteria)[0], confidence: 0.9 }])) }));
+	}) as unknown as typeof fetch;
+	process.env.JEV_PRESPLIT_KEY = "sk-presplit";
+	const cfg = { ...DEFAULT_CONFIG, apiUrl: "http://custom-jev", apiKeyEnvVar: "JEV_PRESPLIT_KEY" };
+	const run = async (arg: string) => {
+		const handlers = new Map<string, any[]>(), commands = new Map<string, any>();
+		const pi = {
+			on: (n: string, h: any) => handlers.set(n, [...(handlers.get(n) ?? []), h]),
+			registerCommand: (n: string, c: any) => commands.set(n, c), sendMessage: () => {},
+			appendEntry: (customType: string, data: unknown) => branch.push({ id: `c${branch.length}`, type: "custom", customType, data }),
+			events: { on: () => () => {} },
+		} as unknown as ExtensionAPI;
+		const ctx = { sessionManager: { getSessionId: () => "s", getBranch: () => branch, buildContextEntries: () => branch }, ui: { notify: () => {} } };
+		makeExtension(pi, cfg);
+		for (const h of handlers.get("session_start") ?? []) await h({}, ctx);
+		await commands.get("jev-audit").handler(arg, ctx);
+	};
+	try {
+		await run("");
+		expect(statuses).toContain(400); // unknown channel: the first audit has to learn by a real rejection
+		const firstRejects = statuses.filter((s) => s === 400).length;
+		statuses.length = 0;
+		await run("full"); // reload (new extension instance) and re-assess everything from scratch
+		expect(statuses.length).toBeGreaterThan(0);
+		expect(statuses.filter((s) => s === 400).length).toBeLessThan(firstRejects);
+		const diags = branch.filter((e: any) => e.customType === LEDGER_TYPE && e.data.kind === "diag").map((e: any) => e.data.diag);
+		expect(diags.at(-1).presplits).toBeGreaterThan(0);
+		expect(typeof diags.at(-1).channel).toBe("string");
+		// Restore is derived from the diagnostics alone.
+		const restored = restoreCapacity(branch, isOwnBookkeeping).get(diags.at(-1).channel)!;
+		expect(restored.rejections.length).toBeGreaterThan(0); expect(restored.tokensPerByte).toBeGreaterThan(0);
+	} finally { globalThis.fetch = original; }
+});

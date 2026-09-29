@@ -29,17 +29,21 @@ export interface AuditDiagnostics {
 	/** Processed-range receipt before and after this audit. */
 	range: { from: string | null; to: string | null };
 	outcome: "unchanged" | "completed" | "recovered" | "incomplete" | "failed";
-	attempts: { n: number; outcome: Attempt["outcome"]; status?: number; model?: string; stateBytes?: number; questionBytes?: number; inputTokens: number | "unknown"; outputTokens: number | "unknown" }[];
+	/** Capacity channel (endpoint + requested model digest); attempts on it calibrate later predictions. */
+	channel?: string;
+	/** Envelopes split before sending by the capacity estimate: not provider attempts, no usage. */
+	presplits?: number;
+	attempts: { n: number; outcome: Attempt["outcome"]; status?: number; model?: string; stateBytes?: number; questionBytes?: number; longestQuestionBytes?: number; inputTokens: number | "unknown"; outputTokens: number | "unknown" }[];
 	usage: { inputTokens: number | "unknown"; outputTokens: number | "unknown" };
 }
 
 /** Pure: builds diagnostics from observed attempts without sending anything. */
 export function diagnose(audit: string, label: string, reuse: { hits: number; joined: number; sent: number }, range: AuditDiagnostics["range"],
-	outcome: AuditDiagnostics["outcome"], attempts: Attempt[]): AuditDiagnostics {
+	outcome: AuditDiagnostics["outcome"], attempts: Attempt[], capacity?: { channel: string; presplits: number }): AuditDiagnostics {
 	const known = (v: number | undefined): number | "unknown" => v ?? "unknown";
 	const sum = (k: "inputTokens" | "outputTokens") => attempts.every((a) => a[k] !== undefined) ? attempts.reduce((s, a) => s + a[k]!, 0) : "unknown" as const;
-	return { audit, label, hits: reuse.hits + reuse.joined, misses: reuse.sent, range, outcome,
-		attempts: attempts.map((a, i) => ({ n: i + 1, outcome: a.outcome, status: a.status, model: a.model, stateBytes: a.stateBytes, questionBytes: a.questionBytes,
+	return { audit, label, hits: reuse.hits + reuse.joined, misses: reuse.sent, range, outcome, ...capacity,
+		attempts: attempts.map((a, i) => ({ n: i + 1, outcome: a.outcome, status: a.status, model: a.model, stateBytes: a.stateBytes, questionBytes: a.questionBytes, longestQuestionBytes: a.longestQuestionBytes,
 			inputTokens: known(a.inputTokens), outputTokens: known(a.outputTokens) })),
 		usage: { inputTokens: sum("inputTokens"), outputTokens: sum("outputTokens") } };
 }

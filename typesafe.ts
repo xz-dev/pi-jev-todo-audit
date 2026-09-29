@@ -2,6 +2,7 @@
 import type { BoardSnapshot } from "./board.js";
 import { renderBoardLines, inProgressTasks, unfinishedTasks, visibleTasks } from "./board.js";
 import { safeJson, redact, object, digest, type AuditContext } from "./context.js";
+import { observe, predictOverflow, sizeOf, type CapacityProfile, type ContextLimits } from "./capacity.js";
 
 export interface ChoiceAnswer { choice: string; probabilities?: Record<string, number>; confidence?: number }
 export interface AuditAnswers {
@@ -16,7 +17,8 @@ export interface AuditAnswers {
 	evidence?: Record<string, ChoiceAnswer>;
 	reconciliation?: Record<string, ChoiceAnswer>;
 }
-export type AuditResult = { ok: true; answers: AuditAnswers } | { ok: false; error: string; contextOverflow?: boolean; retryable?: boolean };
+/** `predicted`: split before sending by the capacity estimate; no provider request was made. */
+export type AuditResult = { ok: true; answers: AuditAnswers } | { ok: false; error: string; contextOverflow?: boolean; retryable?: boolean; predicted?: boolean };
 /** One actual provider request. Usage is provider-reported; undefined means unknown, never zero. */
 export interface Attempt {
 	outcome: "answered" | "malformed" | "overflow" | "http_error" | "network_error";
@@ -27,6 +29,7 @@ export interface Attempt {
 	/** Size of what was actually sent (UTF-8 bytes, not tokens). */
 	stateBytes?: number;
 	questionBytes?: number;
+	longestQuestionBytes?: number;
 }
 export interface AuditRequest {
 	state: string;
@@ -171,6 +174,12 @@ export interface EvaluateOptions extends ClientOptions {
 	onStore?: (stored: Record<string, ChoiceAnswer>, attempt: { model?: string }) => void;
 	/** A context-overflow rejection of this exact envelope (for persistence). */
 	onReject?: (envelope: string) => void;
+	/** Channel capacity: predict overflow of the actual miss envelope before sending, and learn from real attempts. */
+	capacity?: { profile: CapacityProfile; limits?: ContextLimits };
+	/** Irreducible scope: a single-question envelope is always sent so server admission decides. */
+	sendIrreducible?: boolean;
+	/** An envelope was split before sending (not a provider attempt). */
+	onPresplit?: () => void;
 }
 
 /** Answer every question from cache, joined in-flight work, or one batch of the misses only. */
@@ -194,9 +203,17 @@ export async function evaluate(req: AuditRequest, opts: EvaluateOptions): Promis
 	if (misses.length && cache.rejected.has(envelope)) {
 		reuse.sent = 0;
 		result = { ok: false, error: "context overflow: this exact request was already rejected and is not resent", contextOverflow: true };
+	} else if (misses.length && opts.capacity && !(opts.sendIrreducible && misses.length === 1) && predictOverflow(opts.capacity.profile, sizeOf(sub), opts.capacity.limits)) {
+		reuse.sent = 0;
+		opts.onPresplit?.();
+		result = { ok: false, error: "context overflow predicted by channel capacity estimate; split before sending", contextOverflow: true, predicted: true };
 	} else if (misses.length) {
 		let model: string | undefined;
-		const run = runAudit(sub, { ...opts, onAttempt: (a) => { model = a.model ?? model; opts.onAttempt?.(a); } }).then((r) => {
+		const run = runAudit(sub, { ...opts, onAttempt: (a) => {
+			model = a.model ?? model;
+			if (opts.capacity) observe(opts.capacity.profile, a);
+			opts.onAttempt?.(a);
+		} }).then((r) => {
 			if (!r.ok && r.contextOverflow) { cache.rejected.add(envelope); opts.onReject?.(envelope); }
 			const got = r.ok ? flattenAnswers(r.answers) : {};
 			const stored: Record<string, ChoiceAnswer> = {};
@@ -290,12 +307,13 @@ export async function evaluateBatched(req: AuditRequest, opts: EvaluateOptions):
 
 /** One cache-aware evaluation of a context with question-batch subdivision; context subdivision is the rolling reviewer's job. */
 export async function auditWithContext(board: BoardSnapshot, context: AuditContext, model: string, opts: EvaluateOptions, stop?: TerminalStopInfo): Promise<{ result: AuditResult; context: AuditContext; reuse: Reuse }> {
-	const { result, reuse } = await evaluateBatched(buildAuditRequest(board, context, model, stop), opts);
+	// No context subdivision here: single questions are the irreducible unit, so admission decides them.
+	const { result, reuse } = await evaluateBatched(buildAuditRequest(board, context, model, stop), { ...opts, sendIrreducible: true });
 	return { result, context, reuse };
 }
 
 async function runOnce(req: AuditRequest, fetchFn: NonNullable<ClientOptions["fetchFn"]>, opts: ClientOptions): Promise<AuditResult> {
-	const size = { stateBytes: Buffer.byteLength(req.state), questionBytes: Buffer.byteLength(JSON.stringify(req.questions)) };
+	const size = sizeOf(req);
 	try {
 		const res = await fetchFn(opts.apiUrl, {
 			method: "POST", headers: { "content-type": "application/json", authorization: `Bearer ${opts.apiKey}` },

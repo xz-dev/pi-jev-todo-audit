@@ -17,6 +17,7 @@ import { collectContext, digest, object, redact } from "./context.js";
 import { freshCounter, onTurnEnd, onUserMessage, replayCounter, shouldAudit, type LoopCounter } from "./counter.js";
 import { JUDGMENT_VERSION, newEvaluationCache, type Attempt, type EvaluationCache, type TerminalStopInfo } from "./typesafe.js";
 import { diagnose, isOwnBookkeeping, restoreLedger, writeLedger } from "./ledger.js";
+import { channelKey, newCapacityProfile, PUBLISHED_LIMITS, restoreCapacity, type CapacityProfile } from "./capacity.js";
 import { processedEntries, reviewRolling, type Rolling } from "./rolling.js";
 import { decide } from "./verdict.js";
 
@@ -73,11 +74,18 @@ export default function (pi: ExtensionAPI, cfgOverride?: AuditConfig) {
 	let auditSeq = 0;
 	/** Token of an unfinished `/jev-audit full` per session. */
 	const fullReviews = new Map<string, string>();
+	/** Same-session per-channel capacity learning (endpoint + requested model). */
+	const capacities = new Map<string, Map<string, CapacityProfile>>();
+	const capacityFor = (id: string, channel: string) => {
+		const byChannel = capacities.get(id) ?? (capacities.set(id, new Map()), capacities.get(id)!);
+		return byChannel.get(channel) ?? (byChannel.set(channel, newCapacityProfile()), byChannel.get(channel)!);
+	};
 	/** Rebuild same-session memory from the active branch (reload, compaction, tree navigation). */
 	const restoreMemory = (ctx: Ctx) => {
 		const cache = newEvaluationCache();
 		rollings.set(sid(ctx), restoreLedger(ctx.sessionManager.getBranch(), cache));
 		caches.set(sid(ctx), cache);
+		capacities.set(sid(ctx), restoreCapacity(ctx.sessionManager.getBranch(), isOwnBookkeeping));
 	};
 	const append = (pi as { appendEntry?: ExtensionAPI["appendEntry"] }).appendEntry?.bind(pi);
 	/** Own ledger entries are neither evidence nor a boundary change. */
@@ -196,8 +204,12 @@ export default function (pi: ExtensionAPI, cfgOverride?: AuditConfig) {
 			const inputKey = digest({ v: JUDGMENT_VERSION, endpoint: cfg.apiUrl, model: cfg.model, stop: opts.terminalStop, omissions: initialContext.omissions,
 				records: initialContext.records.map((r) => [r.id, r.text]) });
 			const attempts: Attempt[] = [];
+			const channel = channelKey(cfg.apiUrl, cfg.model);
+			let presplits = 0;
 			const outcome = await reviewRolling({ board, context: initialContext, processed, rolling, inputKey, model: cfg.model, stop: opts.terminalStop,
 				opts: { apiUrl: cfg.apiUrl, apiKey, timeoutMs: cfg.timeoutMs, signal: ac.signal, cache: cacheFor(mySid), fresh, ...retrySettingsFor(ctx),
+					capacity: { profile: capacityFor(mySid, channel), limits: cfg.contextLimits ?? PUBLISHED_LIMITS[cfg.apiUrl] },
+					onPresplit: () => presplits++,
 					onAttempt: (a) => attempts.push(a),
 					// Answers are immutable facts about their captured input; persist even if delivery later becomes stale.
 					onStore: (answers, { model }) => { if (current(lastCtx)) writeLedger(append, { kind: "eval", answers, model }); },
@@ -214,7 +226,7 @@ export default function (pi: ExtensionAPI, cfgOverride?: AuditConfig) {
 			// Accounting is recorded for every attempt, including failed, recovered and later-stale audits.
 			if (current(lastCtx)) writeLedger(append, { kind: "diag", diag: diagnose(`${mySid}:${LOAD_ID}:${++auditSeq}`, label, outcome.reuse,
 				{ from: rolling?.through ?? null, to: rollings.get(mySid)?.through ?? null },
-				outcome.unchanged ? "unchanged" : !res.ok ? "failed" : !(outcome.final && outcome.complete) ? "incomplete" : outcome.recovered ? "recovered" : "completed", attempts) });
+				outcome.unchanged ? "unchanged" : !res.ok ? "failed" : !(outcome.final && outcome.complete) ? "incomplete" : outcome.recovered ? "recovered" : "completed", attempts, { channel, presplits }) });
 			if (ac.signal.aborted || sid(lastCtx ?? ctx) !== mySid || boundaryFor(ctx) !== boundary) return;
 
 			if (!res.ok || !outcome.final) {

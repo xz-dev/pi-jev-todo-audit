@@ -1,6 +1,7 @@
 /** Actual-attempt accounting: model/usage retained independently of answer validity. */
 import { expect, test } from "bun:test";
 import { auditWithContext, buildAuditRequest, runAudit, type Attempt } from "../typesafe.js";
+import { sizeOf } from "../capacity.js";
 import { collectContext } from "../context.js";
 
 const opts = { apiUrl: "https://x.test/v1/systemone", apiKey: "k", timeoutMs: 1000, baseDelayMs: 1 };
@@ -12,7 +13,8 @@ test("valid, malformed and invalid answers all keep the response model and usage
 	for (const answers of [{ alignment: { choice: "aligned", confidence: 0.9 } }, undefined, { alignment: { choice: "bogus", confidence: 0.9 } }]) {
 		const seen: Attempt[] = [];
 		await runAudit(req, { ...opts, onAttempt: (a) => seen.push(a), fetchFn: async () => json({ answers, model: "jev-1.13", usage: { input_tokens: 1200, output_tokens: 7 } }) });
-		expect(seen).toEqual([{ outcome: answers ? "answered" : "malformed", status: 200, model: "jev-1.13", inputTokens: 1200, outputTokens: 7, stateBytes: Buffer.byteLength(req.state), questionBytes: Buffer.byteLength(JSON.stringify(req.questions)) }]);
+		expect(seen).toEqual([{ outcome: answers ? "answered" : "malformed", status: 200, model: "jev-1.13", inputTokens: 1200, outputTokens: 7, ...sizeOf(req) }]);
+		expect(sizeOf(req).stateBytes).toBe(Buffer.byteLength(req.state)); expect(sizeOf(req).questionBytes).toBe(Buffer.byteLength(JSON.stringify(req.questions)));
 	}
 });
 
