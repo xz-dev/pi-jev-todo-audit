@@ -55,9 +55,14 @@ test("valid source survives unknown answers, illegal confidence/options and inhe
 
 test("task rubric is scoped, differentiates levels, and never mandates one test/file per task", () => {
 	const req = buildAuditRequest({ ...board, tasks: [...board.tasks, { id: 7, subject: "Second task", status: "in_progress" }] }, context(), "jev-latest");
+	// The engineering rubric is stated once in state; each question stays scoped to its own task.
+	for (const phrase of ["feature/story", "concrete next action", "Age raises review", "already tracked", "One overall goal can still need checkpoints", "many tests/steps can be one coherent outcome"]) {
+		expect(req.state).toContain(phrase);
+		expect(req.state.split(phrase).length).toBe(2); // once, not per task
+	}
 	for (const id of [5, 7]) {
 		const q = req.questions[`task_granularity_${id}`];
-		for (const phrase of [`ONLY #${id}`, "feature/story", "concrete next action", "Age raises review", "already tracked", "One overall goal can still need checkpoints"]) expect(q.instructions).toContain(phrase);
+		expect(q.instructions).toContain(`ONLY #${id}`); expect(q.instructions).toContain("see rubric");
 		expect(Object.keys(q.criteria).sort()).toEqual(["appropriate", "blocked", "clarify_done_criteria", "clarify_next_action", "insufficient_evidence", "not_applicable", "split_independent_outcomes", "split_verifiable_checkpoints"]);
 	}
 	expect(req.questions.granularity).toBeUndefined();

@@ -253,7 +253,8 @@ test("TODO revisions start segments without paid calls; granularity keeps the fi
 	const supplement = JSON.parse(packet.records.find((r: any) => r.id === "task:5").text.split("\nAge review")[0]);
 	expect(supplement.trajectory.firstActive).toEqual({ turn: 12, source: "start" });
 	expect(supplement.trajectory.segments.map((s: any) => s.source)).toEqual(["start", "rev20", "rev27", "resume"]);
-	expect(requests[0].questions.task_granularity_5.instructions).toContain("first in_progress turn");
+	expect(requests[0].questions.task_granularity_5.instructions).toContain("whole trajectory (see rubric)");
+	expect(state).toContain("from its first in_progress turn (trajectory.firstActive)");
 });
 
 test("manual modes: repeat sends none, full re-evaluates without tool bodies, unknown arguments send none", async () => {
