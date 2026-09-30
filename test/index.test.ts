@@ -25,7 +25,7 @@ const user = (id: string, text: string) => ({ id, type: "message", message: { ro
 const task = { id: 5, subject: "Parser", status: "in_progress" as const, description: "Malformed input rejected; no deployment without approval" };
 const snapshot = (tasks: unknown[], id = "board") => ({ id, type: "message", message: { role: "toolResult", toolName: "todo", content: [{ type: "text", text: "Board snapshot updated" }], details: { tasks, nextId: 8 } } });
 const initial = () => [user("user", "Confirmed #5 passed all agreed acceptance checks. Reconcile completion only; do not start other work."), snapshot([task])];
-function setup(branch: unknown[] = initial(), config = {}, opts: { persist?: boolean } = {}) {
+function setup(branch: unknown[] = initial(), config = {}, opts: { persist?: boolean; modelRegistry?: unknown } = {}) {
 	const handlers = new Map<string, ((e: any, c: any) => Promise<void>)[]>();
 	const commands = new Map<string, any>();
 	const sent: { message: any; options: any }[] = [];
@@ -38,7 +38,8 @@ function setup(branch: unknown[] = initial(), config = {}, opts: { persist?: boo
 		...(opts.persist ? { appendEntry: (customType: string, data: unknown) => { branch.push({ id: `c${branch.length}`, type: "custom", customType, data }); } } : {}),
 		events: { on: (name: string, h: any) => { listeners.set(name, [...(listeners.get(name) ?? []), h]); return () => {}; } },
 	} as unknown as ExtensionAPI;
-	const ctx = { sessionManager: { getSessionId: () => "s1", getBranch: () => branch, buildContextEntries: () => branch }, ui: { notify: mock((_text: string, _level?: string) => {}) } };
+	const ctx = { sessionManager: { getSessionId: () => "s1", getBranch: () => branch, buildContextEntries: () => branch }, ui: { notify: mock((_text: string, _level?: string) => {}) },
+		...(opts.modelRegistry ? { modelRegistry: opts.modelRegistry } : {}) };
 	makeExtension(pi, { ...DEFAULT_CONFIG, apiKeyEnvVar: "JEV_AUDIT_TEST_KEY", ...config });
 	const emit = async (name: string, event = {}) => { for (const h of handlers.get(name) ?? []) await h(event, ctx); };
 	const hook = (values = { STOP_KIND: "AI_UNLOCK", REASON_TYPE: "JOB_DONE", REASON: "done" }) => { for (const h of listeners.get("pi:semantic-hook:v1") ?? []) h({ version: 1, name: "user-ready", values }); };
@@ -135,7 +136,7 @@ test("new user evidence permits a fresh audit under identical stop metadata", as
 for (const change of ["user", "board", "branch", "shutdown"]) test(`in-flight result invalidated by ${change} is discarded`, async () => {
 	let release!: (r: Response) => void;
 	respond = () => new Promise<Response>((resolve) => { release = resolve; });
-	const h = setup(); await h.emit("session_start"); const pending = h.manual();
+	const h = setup(); await h.emit("session_start"); const pending = h.manual(); await tick(); // request in flight
 	if (change === "user") { h.branch.push(user("new-user", "Stop. The acceptance criteria have changed.")); await h.emit("message_end", { message: { role: "user" } }); }
 	if (change === "board") h.branch.push(snapshot([{ ...task, subject: "Different acceptance scope" }], "new-board"));
 	if (change === "branch") await h.emit("session_tree");
@@ -146,7 +147,7 @@ for (const change of ["user", "board", "branch", "shutdown"]) test(`in-flight re
 test("new stop after an in-flight user change is queued once and not lost with the aborted request", async () => {
 	let release!: (r: Response) => void; let first = true;
 	respond = () => first ? (first = false, new Promise<Response>((resolve) => { release = resolve; })) : Promise.resolve(response());
-	const h = setup(); await h.emit("session_start"); h.hook();
+	const h = setup(); await h.emit("session_start"); h.hook(); await tick(); // request in flight
 	h.branch.push(user("new-user", "Confirmed the revised #5 is now accepted; reconcile the new board state."));
 	await h.emit("message_end", { message: { role: "user" } }); answers.task_evidence_5 = a("new-user"); h.hook();
 	release(response()); await tick(); await tick();
@@ -196,6 +197,42 @@ test("known opaque API key is absent from evidence, task labels and failure diag
 	expect(JSON.stringify(requests)).not.toContain("opaque-credential-no-prefix");
 	expect(JSON.stringify(h.ctx.ui.notify.mock.calls)).not.toContain("opaque-credential-no-prefix");
 	expect(h.sent).toHaveLength(0);
+});
+
+const piRegistry = (keys: Record<string, string | undefined>) => ({ getProvider: (p: string) => p in keys ? {} : undefined, getApiKeyForProvider: async (p: string) => keys[p] });
+const warnings = (h: ReturnType<typeof setup>) => h.ctx.ui.notify.mock.calls.filter((c) => c[1] === "warning").map((c) => String(c[0]));
+
+test("Pi-resolved key authenticates the request and is redacted from evidence, without migration warning", async () => {
+	const auth: string[] = [];
+	globalThis.fetch = mock(async (_url: unknown, init: any) => { auth.push(init.headers.authorization); requests.push(JSON.parse(init.body)); return respond(); }) as unknown as typeof fetch;
+	const h = setup([user("user", "pi-opaque-key-123 leaked in chat"), snapshot([task])], {}, { modelRegistry: piRegistry({ typesafe: "pi-opaque-key-123" }) });
+	await h.emit("session_start"); await h.manual();
+	expect(auth).toEqual(["Bearer pi-opaque-key-123"]);
+	expect(JSON.stringify(requests)).not.toContain("pi-opaque-key-123");
+	expect(warnings(h)).toEqual([]);
+});
+
+test("fallback key on a Pi-mapped endpoint warns once per session start to move it into Pi", async () => {
+	const h = setup(initial(), { apiUrl: "https://openrouter.ai/api/v1/systemone" }, { modelRegistry: piRegistry({ openrouter: undefined }) });
+	await h.emit("session_start"); await h.manual(); await h.manual();
+	expect(requests.length).toBeGreaterThan(0);
+	const w = warnings(h); expect(w).toHaveLength(1); expect(w[0]).toContain("prefer Pi auth for openrouter"); expect(w[0]).toContain("/login openrouter");
+});
+
+test("no migration warning for a custom endpoint or an unregistered provider", async () => {
+	for (const [config, registry] of [[{ apiUrl: "https://proxy.example/v1/systemone" }, piRegistry({ typesafe: "x" })], [{}, piRegistry({})]] as const) {
+		const h = setup(initial(), config, { modelRegistry: registry }); await h.emit("session_start");
+		expect(warnings(h)).toEqual([]);
+	}
+});
+
+test("no key anywhere names Pi auth first and skips the audit", async () => {
+	delete process.env.JEV_AUDIT_TEST_KEY;
+	const h = setup(initial(), {}, { modelRegistry: piRegistry({ typesafe: undefined }) });
+	await h.emit("session_start"); await h.manual();
+	expect(requests).toHaveLength(0);
+	const w = warnings(h); expect(w).toHaveLength(2);
+	for (const text of w) expect(text.indexOf("Pi auth for typesafe")).toBeLessThan(text.indexOf("JEV_AUDIT_TEST_KEY"));
 });
 
 test("API failure remains isolated and a later manual check can run", async () => {

@@ -11,13 +11,13 @@ import type { ExtensionAPI, ExtensionCommandContext } from "@earendil-works/pi-c
 import { SettingsManager } from "@earendil-works/pi-coding-agent";
 import { existsSync } from "node:fs";
 import { randomUUID } from "node:crypto";
-import { agentConfigPath, legacyConfigPath, loadConfig, projectConfigPath, resolveApiKey, type AuditConfig } from "./config.js";
+import { agentConfigPath, legacyConfigPath, loadConfig, projectConfigPath, resolveAuditKey, type AuditConfig, type KeyRegistry } from "./config.js";
 import { replayBoardWithAges, staleTaskIds, unfinishedTasks, visibleTasks, inProgressTasks as inProgressBoardTasks } from "./board.js";
 import { collectContext, digest, object, redact } from "./context.js";
 import { freshCounter, onTurnEnd, onUserMessage, replayCounter, shouldAudit, type LoopCounter } from "./counter.js";
 import { JUDGMENT_VERSION, newEvaluationCache, type Attempt, type EvaluationCache, type TerminalStopInfo } from "./typesafe.js";
 import { diagnose, isOwnBookkeeping, restoreLedger, writeLedger } from "./ledger.js";
-import { channelKey, newCapacityProfile, PUBLISHED_LIMITS, restoreCapacity, type CapacityProfile } from "./capacity.js";
+import { channelKey, newCapacityProfile, PI_PROVIDERS, PUBLISHED_LIMITS, restoreCapacity, type CapacityProfile } from "./capacity.js";
 import { processedEntries, reviewRolling, type Rolling } from "./rolling.js";
 import { decide } from "./verdict.js";
 
@@ -40,8 +40,16 @@ function parseUserReady(data: unknown): TerminalStopInfo | undefined {
 	return out;
 }
 
-type Ctx = { sessionManager: { getSessionId(): string; getBranch(): Iterable<unknown>; buildContextEntries?: () => Iterable<unknown> }; cwd?: string; isProjectTrusted?: () => boolean; signal?: AbortSignal };
+type Ctx = { sessionManager: { getSessionId(): string; getBranch(): Iterable<unknown>; buildContextEntries?: () => Iterable<unknown> }; cwd?: string; isProjectTrusted?: () => boolean; signal?: AbortSignal; modelRegistry?: KeyRegistry };
 const sid = (ctx: Ctx) => ctx.sessionManager.getSessionId() ?? "";
+
+/** Where to put a key so Pi, not this extension, owns it. */
+const PI_KEY_HINT: Record<string, string> = {
+	openrouter: "run /login openrouter or set OPENROUTER_API_KEY",
+	typesafe: "set TYPESAFE_API_KEY or add a typesafe entry to Pi's auth.json",
+};
+const noKeyMessage = (cfg: AuditConfig, provider?: string) =>
+	`no API key: ${provider ? `configure Pi auth for ${provider} (${PI_KEY_HINT[provider] ?? "see Pi provider docs"}), or ` : ""}set ${cfg.apiKeyEnvVar} or apiKey in ${agentConfigPath()}`;
 
 /** Same retry settings the agent loop uses (settings.json `retry` block). */
 function retrySettingsFor(ctx: Ctx): { maxRetries: number; baseDelayMs: number } {
@@ -99,7 +107,7 @@ export default function (pi: ExtensionAPI, cfgOverride?: AuditConfig) {
 	const noticeKeys = new Set<string>();
 	let warnedBudget = false;
 	let lastStopKey = "";
-	const contextFor = (ctx: Ctx, board = replayBoardWithAges(ctx.sessionManager.getBranch())) => {
+	const contextFor = (ctx: Ctx, apiKey: string, board = replayBoardWithAges(ctx.sessionManager.getBranch())) => {
 		return collectContext(
 			withoutBookkeeping(ctx.sessionManager.buildContextEntries?.() ?? ctx.sessionManager.getBranch()),
 			visibleTasks(board).map((task) => {
@@ -116,7 +124,7 @@ export default function (pi: ExtensionAPI, cfgOverride?: AuditConfig) {
 				return { id: `task:${task.id}`, value: { ...task, trajectory } };
 			}),
 			!!ctx.sessionManager.buildContextEntries,
-			[resolveApiKey(cfg) ?? ""],
+			[apiKey],
 		);
 	};
 	const evidenceVersionFor = (ctx: Ctx) => digest([...ctx.sessionManager.getBranch()].flatMap((raw) => {
@@ -160,13 +168,9 @@ export default function (pi: ExtensionAPI, cfgOverride?: AuditConfig) {
 		opts: { terminalStop?: TerminalStopInfo; full?: boolean } = {},
 	) {
 		if (!cfg.enabled || inFlight) return;
-		const apiKey = resolveApiKey(cfg);
-		if (!apiKey) {
-			ctx.ui?.notify?.(`[jev audit] no API key: set ${cfg.apiKeyEnvVar} or apiKey in ${agentConfigPath()}`, "warning");
-			return;
-		}
 		const c = counterFor(sid(ctx));
 		inFlight = true;
+		let apiKey = "";
 		const ac = new AbortController();
 		// Compose user/agent abort (ctx.signal) with the session-lifecycle abort.
 		// Handler must be removable — once:true only fires on abort, completed
@@ -193,7 +197,15 @@ export default function (pi: ExtensionAPI, cfgOverride?: AuditConfig) {
 			let rolling = fresh ? undefined : rollings.get(mySid);
 			let processed = processedEntries(ctx.sessionManager.getBranch(), rolling?.through);
 			if (!processed) { rolling = undefined; processed = new Set(); }
-			const initialContext = contextFor(ctx, board);
+			// Resolved after the snapshot above, so changes during the lookup are caught by the staleness guards.
+			const resolved = await resolveAuditKey(cfg, ctx.modelRegistry);
+			if (ac.signal.aborted) return;
+			if (!resolved.key) {
+				ctx.ui?.notify?.(`[jev audit] ${noKeyMessage(cfg, resolved.provider ?? PI_PROVIDERS[cfg.apiUrl])}`, "warning");
+				return;
+			}
+			apiKey = resolved.key;
+			const initialContext = contextFor(ctx, apiKey, board);
 			const staleIds = staleTaskIds(board, c.totalLoops, cfg.interval, cfg.staleAuditSpans);
 			// Diagnostic age, not a split decision or a task-size threshold.
 			for (const task of inProgressBoardTasks(board)) {
@@ -306,8 +318,11 @@ export default function (pi: ExtensionAPI, cfgOverride?: AuditConfig) {
 		restoreMemory(ctx);
 		counters.set(sid(ctx), replayCounter(ctx.sessionManager.getBranch()));
 		// Background audit is useless without a key — warn once at session start.
-		if (!resolveApiKey(cfg)) {
-			ctx.ui?.notify?.(`[jev-todo-audit] no API key: set ${cfg.apiKeyEnvVar} or apiKey in ${agentConfigPath()}`, "warning");
+		const resolved = await resolveAuditKey(cfg, ctx.modelRegistry);
+		if (!resolved.key) {
+			ctx.ui?.notify?.(`[jev-todo-audit] ${noKeyMessage(cfg, resolved.provider ?? PI_PROVIDERS[cfg.apiUrl])}`, "warning");
+		} else if (resolved.source === "fallback" && resolved.provider) {
+			ctx.ui?.notify?.(`[jev-todo-audit] API key comes from this extension's config; prefer Pi auth for ${resolved.provider}: ${PI_KEY_HINT[resolved.provider] ?? "see Pi provider docs"}`, "warning");
 		}
 	});
 	pi.on("session_compact", async (_e, ctx) => {

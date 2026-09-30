@@ -7,8 +7,9 @@
  *   3. `<cwd>/.pi/jev-todo-audit.json`    — project, only when ctx.isProjectTrusted()
  *
  * `apiKey` / `apiKeyEnvVar` are global-layer only — project files can never
- * inject secrets into a repo. API key resolution: env var (named by
- * `apiKeyEnvVar`) wins over file `apiKey`. Empty/whitespace = absent.
+ * inject secrets into a repo. API key resolution (resolveAuditKey): Pi's key
+ * for the endpoint's provider first, then env var (named by `apiKeyEnvVar`),
+ * then file `apiKey`. Empty/whitespace = absent.
  *
  * Missing or malformed files → all defaults, never throws.
  */
@@ -16,7 +17,7 @@
 import { existsSync, readFileSync } from "node:fs";
 import { join } from "node:path";
 import { CONFIG_DIR_NAME, getAgentDir } from "@earendil-works/pi-coding-agent";
-import type { ContextLimits } from "./capacity.js";
+import { PI_PROVIDERS, type ContextLimits } from "./capacity.js";
 
 export interface AuditConfig {
 	/** Trigger an audit every Nth completed loop. */
@@ -166,9 +167,41 @@ export function loadConfig(input: LoadConfigInput | string = {}): AuditConfig {
 	return cfg;
 }
 
-/** Resolve the key: env var first, config `apiKey` fallback. Blank = absent. */
+/** Extension-only key: env var first, config `apiKey` fallback. Blank = absent. */
 export function resolveApiKey(cfg: AuditConfig): string | undefined {
 	const env = process.env[cfg.apiKeyEnvVar];
 	if (env && env.trim()) return env.trim();
 	return cfg.apiKey;
+}
+
+/** The slice of Pi's ModelRegistry used for key lookup. */
+export interface KeyRegistry {
+	getProvider?(provider: string): unknown;
+	getApiKeyForProvider?(provider: string): Promise<string | undefined>;
+}
+
+export interface ResolvedKey {
+	key?: string;
+	source: "pi" | "fallback" | "none";
+	/** Mapped Pi provider registered in this Pi; set with `fallback` it means the key should move into Pi. */
+	provider?: string;
+}
+
+/** Pi's key for the endpoint's provider first, then the extension's own sources. Never throws. */
+export async function resolveAuditKey(cfg: AuditConfig, registry?: KeyRegistry): Promise<ResolvedKey> {
+	const mapped = PI_PROVIDERS[cfg.apiUrl];
+	let provider: string | undefined;
+	if (mapped && registry) {
+		try {
+			if (registry.getProvider?.(mapped)) {
+				provider = mapped;
+				const key = str(await registry.getApiKeyForProvider?.(mapped));
+				if (key) return { key, source: "pi", provider };
+			}
+		} catch {
+			// Pi lookup unavailable → extension fallback.
+		}
+	}
+	const key = resolveApiKey(cfg);
+	return key ? { key, source: "fallback", provider } : { source: "none", provider };
 }

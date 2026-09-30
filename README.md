@@ -12,7 +12,7 @@ The design goal is **lower jev spend**: the same context and question is never p
 pi install git:github.com/xz-dev/pi-jev-todo-audit
 ```
 
-Restart your Pi session. A TypeSafe API key is required. An already-loaded extension continues running its old code until it is reloaded/restarted.
+Restart your Pi session. A TypeSafe (or OpenRouter) API key is required; configure it in Pi (see [Configuration](#configuration)). An already-loaded extension continues running its old code until it is reloaded/restarted.
 
 ## When it audits
 
@@ -109,7 +109,7 @@ Those are provider constraints, not local budgets; there is no fixed character o
 
 **Pre-split per channel.** A channel is one endpoint plus the requested model. Before sending, the unanswered part of a request is estimated as bytes × the densest tokens/byte seen in that channel's provider-reported usage (1/1.75 until usage exists). The estimate is checked against each of the channel's limits separately, so the 64k request-wide allowance is not wasted by a stricter combined guess. The request is also pre-split if it is at least as large as a request the same channel actually rejected, in both dimensions. A pre-split sends nothing and is not recorded as a rejection. It never ends a scope on its own: one record or fragment with one question is still sent, and the server decides. Learning is restored from the diagnostics below. Unknown endpoints rely on learned rejections, or on `contextLimits: { request, stateAndLongestQuestion }` in the config. The estimate errs toward splitting: it pays a little repeated state overhead to avoid a rejection.
 
-**OpenRouter** (supported, not used by the maintainers). Set `apiUrl` to `https://openrouter.ai/api/v1/systemone` and use an OpenRouter key. The [System One API](https://openrouter.ai/docs/guides/community/typesafe-sdk) accepts TypeSafe's request shape and bare model ids (`jev-latest` → `~typesafe/jev-latest`). Its [Jev page](https://openrouter.ai/typesafe/jev-1.13) lists one 32K context, used for both limits. OpenRouter reports overflow as `error.metadata.error_type: "context_length_exceeded"` and the charge as `usage.cost` (USD). Support is checked against the docs and offline tests only.
+**OpenRouter** (supported, not used by the maintainers). Set `apiUrl` to `https://openrouter.ai/api/v1/systemone` and use an OpenRouter key (Pi's `/login openrouter` or `OPENROUTER_API_KEY`). The [System One API](https://openrouter.ai/docs/guides/community/typesafe-sdk) accepts TypeSafe's request shape and bare model ids (`jev-latest` → `~typesafe/jev-latest`). Its [Jev page](https://openrouter.ai/typesafe/jev-1.13) lists one 32K context, used for both limits. OpenRouter reports overflow as `error.metadata.error_type: "context_length_exceeded"` and the charge as `usage.cost` (USD). Support is checked against the docs and offline tests only.
 
 Input is first made small by the projection (tool events only) and the rolling result (processed input not resent). Only an explicit input context/token-overflow error then triggers **subdivision**, in order:
 
@@ -127,7 +127,14 @@ Each audit appends one non-context ledger entry (`customType: "jev-todo-audit-le
 
 ## Configuration
 
-Create `~/.pi/agent/jev-todo-audit.json` (or the equivalent under `PI_CODING_AGENT_DIR`):
+**API key: use Pi auth (recommended).** For the two known endpoints the key comes from Pi's own credentials for the matching provider, in Pi's order (`auth.json`, including `!command` keys, then `models.json`, then the provider environment variable):
+
+| `apiUrl` | Pi provider | How to configure in Pi |
+| --- | --- | --- |
+| `https://api.typesafe.ai/v1/systemone` (default) | `typesafe` | `TYPESAFE_API_KEY`, or a `typesafe` entry in `~/.pi/agent/auth.json` |
+| `https://openrouter.ai/api/v1/systemone` | `openrouter` | `/login openrouter` or `OPENROUTER_API_KEY` |
+
+When Pi's key is set it wins over this extension's config. **Fallback:** if Pi resolves no key (or the running Pi lacks that provider), the extension uses the env var named by `apiKeyEnvVar`, then `apiKey` in `~/.pi/agent/jev-todo-audit.json` (or the equivalent under `PI_CODING_AGENT_DIR`):
 
 ```json
 {
@@ -135,14 +142,14 @@ Create `~/.pi/agent/jev-todo-audit.json` (or the equivalent under `PI_CODING_AGE
 }
 ```
 
-Alternatively set `TYPESAFE_API_KEY`; a nonblank environment value wins over the file key. All other fields are optional.
+A fallback key on a known endpoint still works, but session start warns once to move it into Pi. A custom `apiUrl` has no Pi provider and uses only the fallback, without that warning. All other fields are optional.
 
 Configuration layers are defaults, global user configuration, then `<repo>/.pi/jev-todo-audit.json` **only for trusted projects**. Project files may set tuning fields but cannot set `apiKey` or `apiKeyEnvVar`. Missing/malformed files fall back safely. A legacy `~/.config/jev-todo-audit/config.json` produces a move notice rather than being loaded.
 
 | Setting | Meaning | Default |
 | --- | --- | --- |
-| `apiKey` | Global-layer file key; environment wins | absent |
-| `apiKeyEnvVar` | Global-layer environment variable name | `TYPESAFE_API_KEY` |
+| `apiKey` | Global-layer fallback file key; Pi auth and `apiKeyEnvVar` win | absent |
+| `apiKeyEnvVar` | Global-layer fallback environment variable name | `TYPESAFE_API_KEY` |
 | `enabled` | Disable auditing when false | `true` |
 | `interval` | Audit every Nth completed loop | `10` |
 | `cooldownLoops` | Skip periodic audit at or below this distance from latest user message; independent of an overridden interval | `10` |

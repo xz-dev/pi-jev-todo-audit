@@ -19,6 +19,11 @@ export const PUBLISHED_LIMITS: Readonly<Record<string, ContextLimits>> = {
 	"https://api.typesafe.ai/v1/systemone": { request: 64_000, stateAndLongestQuestion: 32_000 },
 	"https://openrouter.ai/api/v1/systemone": { request: 32_000, stateAndLongestQuestion: 32_000 },
 };
+/** Pi provider whose credentials serve each known endpoint; other URLs use extension config only. */
+export const PI_PROVIDERS: Readonly<Record<string, string>> = {
+	"https://api.typesafe.ai/v1/systemone": "typesafe",
+	"https://openrouter.ai/api/v1/systemone": "openrouter",
+};
 /** Live smoke densest observation was 1/1.766 tokens per byte; slightly denser until real usage exists. */
 export const PRIOR_TOKENS_PER_BYTE = 1 / 1.75;
 

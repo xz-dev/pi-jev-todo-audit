@@ -2,7 +2,8 @@ import { describe, expect, test } from "bun:test";
 import { mkdtempSync, writeFileSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { DEFAULT_CONFIG, agentConfigPath, loadConfig, projectConfigPath, resolveApiKey } from "../config.js";
+import { DEFAULT_CONFIG, agentConfigPath, loadConfig, projectConfigPath, resolveApiKey, resolveAuditKey } from "../config.js";
+import { PI_PROVIDERS } from "../capacity.js";
 
 describe("config", () => {
 	test("missing file → defaults", () => {
@@ -115,5 +116,46 @@ describe("config", () => {
 		const cfg = loadConfig({ globalPath: join(dir, "nope.json"), projectPath: proj, projectTrusted: true });
 		expect(cfg.staleAuditSpans).toBe(5);
 		rmSync(dir, { recursive: true });
+	});
+});
+
+describe("resolveAuditKey", () => {
+	const TS = "https://api.typesafe.ai/v1/systemone", OR = "https://openrouter.ai/api/v1/systemone";
+	const base = { ...DEFAULT_CONFIG, apiKeyEnvVar: "JEV_MISSING_XYZ", apiKey: "sk-file" };
+	const registry = (keys: Record<string, string | undefined>, providers = Object.keys(keys)) => {
+		const calls: string[] = [];
+		return { calls, getProvider: (p: string) => providers.includes(p) ? {} : undefined,
+			getApiKeyForProvider: async (p: string) => { calls.push(p); return keys[p]; } };
+	};
+
+	test("PI_PROVIDERS maps both known endpoints only", () => {
+		expect(PI_PROVIDERS[TS]).toBe("typesafe");
+		expect(PI_PROVIDERS[OR]).toBe("openrouter");
+		expect(PI_PROVIDERS["https://proxy.example/v1/systemone"]).toBeUndefined();
+	});
+	test("Pi key wins over config for TypeSafe and OpenRouter", async () => {
+		expect(await resolveAuditKey({ ...base, apiUrl: TS }, registry({ typesafe: "sk-pi" }))).toEqual({ key: "sk-pi", source: "pi", provider: "typesafe" });
+		expect(await resolveAuditKey({ ...base, apiUrl: OR }, registry({ openrouter: "sk-or" }))).toEqual({ key: "sk-or", source: "pi", provider: "openrouter" });
+	});
+	test("blank Pi key → fallback flagged for migration", async () => {
+		expect(await resolveAuditKey({ ...base, apiUrl: TS }, registry({ typesafe: "  " }))).toEqual({ key: "sk-file", source: "fallback", provider: "typesafe" });
+	});
+	test("provider not registered → fallback without migration flag", async () => {
+		const r = registry({}, []);
+		expect(await resolveAuditKey({ ...base, apiUrl: TS }, r)).toEqual({ key: "sk-file", source: "fallback", provider: undefined });
+		expect(r.calls).toEqual([]);
+	});
+	test("custom endpoint never consults Pi", async () => {
+		const r = registry({ typesafe: "sk-pi", openrouter: "sk-or" });
+		expect(await resolveAuditKey({ ...base, apiUrl: "https://proxy.example/v1/systemone" }, r)).toEqual({ key: "sk-file", source: "fallback", provider: undefined });
+		expect(r.calls).toEqual([]);
+	});
+	test("registry throws or is absent → fallback", async () => {
+		const bad = { getProvider: () => ({}), getApiKeyForProvider: async () => { throw new Error("boom"); } };
+		expect((await resolveAuditKey({ ...base, apiUrl: TS }, bad)).key).toBe("sk-file");
+		expect(await resolveAuditKey({ ...base, apiUrl: TS })).toEqual({ key: "sk-file", source: "fallback", provider: undefined });
+	});
+	test("nothing anywhere → none", async () => {
+		expect(await resolveAuditKey({ ...base, apiKey: undefined, apiUrl: TS }, registry({ typesafe: undefined }))).toEqual({ source: "none", provider: "typesafe" });
 	});
 });
