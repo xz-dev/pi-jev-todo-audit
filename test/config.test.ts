@@ -98,14 +98,22 @@ describe("config", () => {
 	});
 
 	test("agent path honors PI_CODING_AGENT_DIR", () => {
-		process.env.PI_CODING_AGENT_DIR = "/tmp/jev-agent-test";
-		expect(agentConfigPath()).toBe("/tmp/jev-agent-test/jev-todo-audit.json");
-		delete process.env.PI_CODING_AGENT_DIR;
-		expect(agentConfigPath()).toContain(".pi/agent/jev-todo-audit.json");
+		const original = process.env.PI_CODING_AGENT_DIR;
+		const dir = join(tmpdir(), "jev-agent-test");
+		try {
+			process.env.PI_CODING_AGENT_DIR = dir;
+			expect(agentConfigPath()).toBe(join(dir, "jev-todo-audit.json"));
+			delete process.env.PI_CODING_AGENT_DIR;
+			expect(agentConfigPath()).toContain(join(".pi", "agent", "jev-todo-audit.json"));
+		} finally {
+			if (original === undefined) delete process.env.PI_CODING_AGENT_DIR;
+			else process.env.PI_CODING_AGENT_DIR = original;
+		}
 	});
 
 	test("projectConfigPath sits under .pi", () => {
-		expect(projectConfigPath("/repo")).toBe("/repo/.pi/jev-todo-audit.json");
+		const dir = join(tmpdir(), "jev-project-test");
+		expect(projectConfigPath(dir)).toBe(join(dir, ".pi", "jev-todo-audit.json"));
 	});
 
 	test("staleAuditSpans default + project override", () => {
