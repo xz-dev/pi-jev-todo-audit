@@ -4,7 +4,7 @@
 
 - Baseline: `4109aefe2d3ba80768efa4f4cd2049f6e63ff11f`.
 - Candidate source: `f273312fe1a3fcb532805843d7a3c221258f8d49` on the independently authorized `ci/prevent-audit-request-amplification` branch; later CI/documentation commits leave those production sources unchanged.
-- CI workflow commit: `98669ef4126f37af37abe64c7397f6074726a699`. GitHub execution is still pending; commits or workflow configuration are not Windows evidence.
+- CI workflow commit: `98669ef4126f37af37abe64c7397f6074726a699`. Actual successful Linux/Windows execution is bound to candidate `ddd7f9aae8eca52cea7d08fc27911370ffffa681` and run [36973608562](https://github.com/xz-dev/pi-jev-todo-audit/actions/runs/36973608562); see the OS matrix below.
 - Publication is authorized for this CI branch only. No master merge, installation update, live model request, release, or deployment was performed.
 - Synthetic measurements below establish request routing/coverage, not live semantic equivalence or a monetary savings percentage.
 
@@ -71,11 +71,24 @@ Historical replay matched **all 819** exact evaluation identities and request si
 - Publication preparation reran all 272 tests, typecheck, native Linux Node smoke, strict validation and both offline comparisons with the same results. The only subsequent test-file change removed one extra EOF newline to pass the staged whitespace check: current SHA-256 `4d328248b21c7176d33f2654c89133555e76ced60d825ddd5f968b1d20f9a4bb`. Appending exactly one newline reproduces the original reviewed test hash above; 30 amplification tests/864 assertions and typecheck passed again. `typesafe.ts` remains at its reviewed hash. This is formatting-only, not a new functional repair.
 - Original private incident figures above describe the initial repair candidate; the unchanged public corpus was rerun, not the private historical trace. No new historical/semantic/billing claim is made for this targeted follow-up.
 
+## Actual GitHub Actions OS matrix
+
+- First published candidate `acad83729ddd8eb956509702700ae75f8fa79584`, run [36972243121](https://github.com/xz-dev/pi-jev-todo-audit/actions/runs/36972243121): Ubuntu succeeded; Windows installation/typecheck succeeded, but two config-path tests expected POSIX `/` instead of native Windows `\`. Windows had 270 passing / 2 failing tests and the separate Node step was skipped; this run did not satisfy O5 or task 6.2.
+- Test-only correction `ddd7f9a`: use `tmpdir()` / `node:path.join` for override/project paths and the default suffix; restore `PI_CODING_AGENT_DIR` in `finally`. `config.ts` and all production audit modules were unchanged. The focused 20 config tests, full 272 tests, typecheck and native Linux fixture passed locally.
+- Successful candidate: `ddd7f9aae8eca52cea7d08fc27911370ffffa681`, run [36973608562](https://github.com/xz-dev/pi-jev-todo-audit/actions/runs/36973608562).
+
+| Actual runner | Installation | Typecheck | Full Bun suite | Native Node fixture |
+| --- | --- | --- | --- | --- |
+| `ubuntu-latest` | passed | passed | 272 passed / 0 failed; 1,851 assertions | passed, Node v26.10.0 |
+| `windows-latest` | passed | passed | 272 passed / 0 failed; 1,851 assertions | passed, Node v26.10.0 |
+
+The captured native output on each OS identifies `runtime: node`: parent `allowed: true` / `reload: true`; child and grandchild retain the parent's owner marker with `allowed: false` / `reload: false`. The actual spaced-path fixture and full ownership suite, not merely workflow configuration or Linux simulation, establish the selected O5 execution boundary. These runs use fake model transports; they do not establish real-model accuracy, semantic equivalence, live token savings, installation or deployment.
+
 ## Acceptance status and operational boundaries
 
-- O1–O4, C1–C3, A1–A4, R1, D1: local implementation/test evidence above; final product acceptance belongs to the user.
-- O5: native Linux run passed. **Windows execution is pending.** `.github/workflows/test.yml` defines Ubuntu/Windows, Node 26, Bun 1.4.2, install, full test, typecheck, and the native Node smoke. It is now committed for the authorized CI branch but no completed GitHub execution result has been observed; no Windows pass is claimed.
-- Independent code review: P1 independently closed on the repaired hashes; local source candidate approved with explicit residual risk. Windows, live checks, deployment and final user acceptance remain separate and unapproved. The follow-up context-design investigation is analysis only, not an expansion of this implementation.
+- O1–O4, C1–C3, A1–A4, R1, D1: local and full CI implementation/test evidence above. On 2026-10-02 the user explicitly delegated final acceptance with “ok 那你验收并继续”; the agent accepted this reviewed source candidate against the agreed matrix and successful platform checks, with no acceptance of live model accuracy, billing reduction or deployment implied.
+- O5: actual native Linux and Windows checks passed on run 36973608562. The configured Node 26 / Bun 1.4.2 OS matrix successfully executed installation, typecheck, full tests and native Node inheritance. Task 6.2 is satisfied; first-run Windows failure remains recorded rather than hidden.
+- Independent code review: P1 independently closed on the repaired production hash; only the documented EOF and config-test portability corrections followed. Automated platform verification and the delegated source-candidate acceptance/handoff are complete. Live checks and deployment remain separate; `improve-audit-context-fidelity` is the separately authorized next change, not an unreviewed extension of this repair.
 - Installed plugin and already-running Pi processes still use the existing installation until an explicitly authorized update/reload. Already-started descendants do not receive retroactive environment changes.
 - The PID marker only covers inherited process environments. Same-process child sessions, intentionally scrubbed environments, worker threads, remote/container PID namespaces, and PID reuse are not reliable agent-role detection. Same-process children must exclude JEV.
 - Live rollout and fee trend: pending separate approval; use the existing ledger after activation instead of buying new model requests just to demonstrate savings.

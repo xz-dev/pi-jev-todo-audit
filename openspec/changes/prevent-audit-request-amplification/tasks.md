@@ -36,10 +36,10 @@
 ## 6. Execute real cross-platform checks
 
 - [x] 6.1 Add a native Node parent-child-grandchild smoke fixture that executes the actual ownership gate, uses `node:child_process` with executable paths/argument arrays and no shell, and includes spaced paths and canonicalized Windows environment keys; verify O5 locally and record the real Node executable/version rather than substituting Bun.
-- [ ] 6.2 Add or extend the repository's test CI matrix for Linux and Windows using the supported Node/Bun toolchain; verify installation, full `bun test`, `bun run typecheck`, and the native Node inheritance fixture on each OS, leaving unavailable or unexecuted Windows evidence explicitly pending.
+- [x] 6.2 Add or extend the repository's test CI matrix for Linux and Windows using the supported Node/Bun toolchain; verify installation, full `bun test`, `bun run typecheck`, and the native Node inheritance fixture on each OS, leaving unavailable or unexecuted Windows evidence explicitly pending.
 
 ## 7. Review and hand off without implicit release
 
 - [x] 7.1 Update the affected README sections for owner-marker semantics, independent/manual launches, reload/child inheritance, same-process and environment-scrubbing boundaries, corrected calibration, and real-overflow behavior; verify every claim against source and the acceptance evidence.
 - [x] 7.2 Obtain an independent read-only review of functional changes and regression quality, including Windows assumptions, fixed-state progress, cache/receipt safety, and accidental scope growth; verify any findings are fixed and rechecked before reporting implementation ready.
-- [ ] 7.3 Run `bun test`, `bun run typecheck`, and `openspec validate "prevent-audit-request-amplification" --strict`; verify the implementation/evidence covers every acceptance ID, with user acceptance, automated results, and any pending platform/live checks reported separately. Do not deploy, change installed settings, commit, push, publish, synchronize/archive specs, or run a paid live comparison without its required separate authorization.
+- [x] 7.3 Run `bun test`, `bun run typecheck`, and `openspec validate "prevent-audit-request-amplification" --strict`; verify the implementation/evidence covers every acceptance ID, with user acceptance, automated results, and any pending platform/live checks reported separately. Do not deploy, change installed settings, commit, push, publish, synchronize/archive specs, or run a paid live comparison without its required separate authorization.
