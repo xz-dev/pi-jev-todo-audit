@@ -14,6 +14,18 @@ pi install git:github.com/xz-dev/pi-jev-todo-audit
 
 Restart your Pi session. A TypeSafe (or OpenRouter) API key is required; configure it in Pi (see [Configuration](#configuration)). An already-loaded extension continues running its old code until it is reloaded/restarted.
 
+## Main processes only
+
+The extension owns its process through `PI_JEV_TODO_AUDIT_OWNER_PID`, using Node.js `process.env` and `process.pid`:
+
+- An unset or empty marker is set to the current PID. Independently started Pi processes each own themselves; no subagent framework flag is required.
+- The same PID stays eligible on `/reload`, session replacement, and in-process main-agent forks. Session shutdown does not clear the marker.
+- A different or malformed nonempty marker skips the extension before configuration, credentials, event handlers, or commands are registered. Inherited child and grandchild processes therefore have **no automatic or manual JEV audit**, including `/jev-audit full`.
+
+Do not put this runtime marker in shell profiles, machine settings, or project config. Normal OS/Node environment inheritance passes it to descendants; the extension does not modify the launching shell. Existing children started before the owner claimed the marker are not retroactively marked.
+
+This is an inheritance convention, not a security boundary or universal agent-role detector. Same-process SDK children, processes whose launcher strips the environment, and remote/container PID namespaces cannot be reliably classified this way. Same-process child launches must exclude JEV; explicitly loading it into such a child is not protected by a PID comparison. Headless main sessions remain eligible. The guard uses APIs shared by Windows and POSIX systems, not `/proc`, process commands, or shell parsing; platform execution is checked separately below.
+
 ## When it audits
 
 - **Periodic:** every 10 completed loops by default, except when at most 10 loops have elapsed since the latest user message. A skipped audit is not deferred.
@@ -41,7 +53,7 @@ If the host lacks the effective-context API, the visible branch is used with an 
 
 Processed input is represented by a **rolling result** that keeps three things separate:
 
-- **Reported work:** user decisions, the latest host summary and the most recent main-agent reports from the processed range, re-sent as authored and labelled `retained from processed range`. All processed user messages are always retained — user constraints/authority are never silently dropped; in a very long uncompacted session they can eventually hit the provider limit, where the irreducible-scope diagnostic asks the main agent for a concise report. Reports are kept newest-first within a 4,000-byte serialized-record budget (metadata counts — tiny reports still cost envelope bytes), so a short reply does not push out an earlier one; a report that alone exceeds the budget is not repeated and jev is told to ask the main agent for a concise account; any record that could only be reviewed in fragments is never repeated whole, because that would recreate the overflow. Plus current task records.
+- **Reported work:** user decisions, the latest host summary and the most recent main-agent reports from the processed range, re-sent as authored and labelled `retained from processed range`. All processed user messages are always retained — user constraints/authority are never silently dropped; in a very long uncompacted session they can eventually hit the provider limit, where the irreducible-scope diagnostic asks the main agent for a concise report. Reports are kept newest-first within a 4,000-character serialized-record budget (metadata counts — tiny reports still cost envelope bytes), so a short reply does not push out an earlier one; a report that alone exceeds the budget is not repeated and jev is told to ask the main agent for a concise account; any record that could only be reviewed in fragments is never repeated whole, because that would recreate the overflow. Plus current task records.
 - **jev opinions:** the latest validated answers, sent as `rolling.opinions` (derived and revisable).
 - **Progress:** the reviewed frontier `processedThrough`, stored as a receipt.
 
@@ -107,17 +119,19 @@ The [official Models documentation](https://docs.typesafe.ai/models.md), checked
 
 Those are provider constraints, not local budgets; there is no fixed character or "30k" payload budget in this extension. No usable official preflight token-counting contract was found, so admission is decided by the server and a first request can be rejected.
 
-**Pre-split per channel.** A channel is one endpoint plus the requested model. Before sending, the unanswered part of a request is estimated as bytes × the densest tokens/byte seen in that channel's provider-reported usage (1/1.75 until usage exists). The estimate is checked against each of the channel's limits separately, so the 64k request-wide allowance is not wasted by a stricter combined guess. The request is also pre-split if it is at least as large as a request the same channel actually rejected, in both dimensions. A pre-split sends nothing and is not recorded as a rejection. It never ends a scope on its own: one record or fragment with one question is still sent, and the server decides. Learning is restored from the diagnostics below. Unknown endpoints rely on learned rejections, or on `contextLimits: { request, stateAndLongestQuestion }` in the config. The estimate errs toward splitting: it pays a little repeated state overhead to avoid a rejection.
+**Pre-split per channel.** A channel is one endpoint plus the requested model. Before sending, the unanswered envelope is estimated as bytes × the **latest usable** tokens/byte reported on that channel (1/1.75 until usage exists). Each provider limit is checked separately. Later successful observations can lower the estimate; a historical high-density input is not a permanent lower bound. Missing usage does not become zero. Size comparisons against actual rejections are fallible hints across different contents: a later admission at least as large in both dimensions retires a contradicted hint, without forgetting the exact rejected request. Learning is restored chronologically from the existing diagnostics. Unknown endpoints rely on learned hints or `contextLimits: { request, stateAndLongestQuestion }`.
+
+A pre-split sends nothing and records no rejection. When retained state already defeats the prediction, splitting new records cannot solve it: the extension admits the current unanswered **batch** once instead of multiplying work by records and questions. This is useful audit work, not a separate validation query. Cached answers and exact rejected-envelope guards still apply, including a rejected single question that makes a same-state superset impossible. Success corrects learning; actual overflow still requires recovery. The estimate is not an exact token count or fit guarantee.
 
 **OpenRouter** (supported, not used by the maintainers). Set `apiUrl` to `https://openrouter.ai/api/v1/systemone` and use an OpenRouter key (Pi's `/login openrouter` or `OPENROUTER_API_KEY`). The [System One API](https://openrouter.ai/docs/guides/community/typesafe-sdk) accepts TypeSafe's request shape and bare model ids (`jev-latest` → `~typesafe/jev-latest`). Its [Jev page](https://openrouter.ai/typesafe/jev-1.13) lists one 32K context, used for both limits. OpenRouter reports overflow as `error.metadata.error_type: "context_length_exceeded"` and the charge as `usage.cost` (USD). Support is checked against the docs and offline tests only.
 
-Input is first made small by the projection (tool events only) and the rolling result (processed input not resent). Only an explicit input context/token-overflow error then triggers **subdivision**, in order:
+Input is first reduced by the projection (tool events only) and rolling results. Subdivision requires an explicit input-context overflow or a channel prediction. It reduces the constrained dimension:
 
-1. split the unprocessed records into ordered halves at record boundaries;
+1. split unprocessed records into ordered halves when the state needs reduction;
 2. split a single long text record into ordered, labelled fragments (each at least 1,000 characters; a surrogate pair is never split);
-3. when the questions dominate the request or the context cannot shrink, split the independent questions into batches over the same state.
+3. batch independent questions over the same frozen state when the request-wide limit is responsible or context cannot shrink. Generic rejections compare candidate reductions without pretending the provider identified a dimension.
 
-Completed parts are cached and kept; a failure resumes only the unfinished part. A mid-record fragment never advances the receipt, so resuming rebuilds identical fragments that hit the cache. The exact rejected request is remembered (also across reload) and never resent unchanged. If one record/fragment plus one question still cannot fit, the audit stops with a diagnostic asking the main agent for a concise current report, keeping what was completed. A recovered audit notifies `context overflow recovered by subdivision` instead of a failure.
+Completed parts are cached and kept; a failure resumes only unfinished work. A mid-record fragment never advances the receipt, so resuming rebuilds identical fragments that hit the cache. Exact rejected requests are restored across reload and never resent unchanged. If fixed required state plus an irreducible fragment/question cannot be admitted, the scope stops before traversing remaining sibling combinations, asks for a concise current report, and keeps completed work. User constraints are not silently dropped and incomplete reviews do not become final advice. A recovered audit notifies `context overflow recovered by subdivision` instead of a failure.
 
 Ordinary validation, authentication, rate/quota, generic payload-size and unknown errors never subdivide. Recognition is deliberately conservative: the inspected [HTTP API docs](https://docs.typesafe.ai/api.md) do not specify a dedicated overflow schema, so an unfamiliar spelling is an ordinary isolated failure. Existing bounded transient-network retries remain separate.
 
@@ -169,11 +183,14 @@ A loop is a finalized assistant message on the branch. Counters are replayed on 
 
 ```sh
 bun test
-npm run typecheck
-openspec validate reuse-jev-audit-decisions --strict
+bun run typecheck
+node "test/fixtures/node ownership.mjs"
+openspec validate prevent-audit-request-amplification --strict
 ```
 
-Tests use synthetic public Pi entries, captured requests and mocked Choice responses. They cover the tool-event projection, visible-text processing and replies, TODO segments and first-active origin, per-question reuse and reload, rolling results, overflow subdivision and resumption, manual modes, independent task decisions, repetition suppression and in-flight invalidation. An offline replay corpus (`test/corpus.ts`) compares request counts and bytes against a mock capacity. Those are request-shape measurements, **not** provider tokens or dollars, and they do not measure live jev semantic accuracy. Live savings require a separately authorized live replay.
+Tests use synthetic public Pi entries, captured requests and mocked Choice responses. They cover the tool-event projection, visible-text processing and replies, TODO segments and first-active origin, per-question reuse and reload, rolling results, overflow subdivision and resumption, manual modes, independent task decisions, repetition suppression and in-flight invalidation. Ownership tests drive the real extension registration and a native Node parent/child/grandchild fixture, without a shell. CI is configured for Linux and Windows with Node 26 and Bun 1.4.2; a Linux run or mocked Windows behavior does not substitute for executing the Windows job.
+
+An offline replay corpus (`test/corpus.ts`) compares request counts and bytes against a mock capacity. `bun test/compare-workloads.ts --baseline` reads core modules from the committed `HEAD` without a checkout; `bun test/compare-workloads.ts` runs the candidate against the same corpus and retained-prefix workloads. These are request-shape measurements, **not** provider tokens or dollars, and they do not measure live JEV semantic accuracy. Live savings require a separately authorized live replay.
 
 API/serialization/consumer failures remain isolated from the agent loop. The extension neither guarantees that the main agent obeys a steer nor provides a hard tool blocker. The current rpiv-todo persistence shape is the only private-data adapter; incompatible snapshots cannot be treated as authoritative task state.
 
