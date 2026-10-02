@@ -2,7 +2,7 @@
 import type { BoardSnapshot } from "./board.js";
 import { renderBoardLines, inProgressTasks, unfinishedTasks, visibleTasks } from "./board.js";
 import { safeJson, redact, object, digest, type AuditContext } from "./context.js";
-import { observe, predictOverflow, sizeOf, type CapacityProfile, type ContextLimits } from "./capacity.js";
+import { observe, overflowConstraint, sizeOf, type CapacityConstraint, type CapacityProfile, type ContextLimits } from "./capacity.js";
 
 export interface ChoiceAnswer { choice: string; probabilities?: Record<string, number>; confidence?: number }
 export interface AuditAnswers {
@@ -18,7 +18,7 @@ export interface AuditAnswers {
 	reconciliation?: Record<string, ChoiceAnswer>;
 }
 /** `predicted`: split before sending by the capacity estimate; no provider request was made. */
-export type AuditResult = { ok: true; answers: AuditAnswers } | { ok: false; error: string; contextOverflow?: boolean; retryable?: boolean; predicted?: boolean };
+export type AuditResult = { ok: true; answers: AuditAnswers } | { ok: false; error: string; contextOverflow?: boolean; retryable?: boolean; predicted?: boolean; constraint?: CapacityConstraint };
 /** One actual provider request. Usage is provider-reported; undefined means unknown, never zero. */
 export interface Attempt {
 	outcome: "answered" | "malformed" | "overflow" | "http_error" | "network_error";
@@ -187,6 +187,8 @@ export interface EvaluateOptions extends ClientOptions {
 	onReject?: (envelope: string) => void;
 	/** Channel capacity: predict overflow of the actual miss envelope before sending, and learn from real attempts. */
 	capacity?: { profile: CapacityProfile; limits?: ContextLimits };
+	/** Retained state without new evidence. A soft prediction defeated by this floor needs real batch admission. */
+	fixedState?: string;
 	/** Irreducible scope: a single-question envelope is always sent so server admission decides. */
 	sendIrreducible?: boolean;
 	/** An envelope was split before sending (not a provider attempt). */
@@ -211,13 +213,25 @@ export async function evaluate(req: AuditRequest, opts: EvaluateOptions): Promis
 	let result: AuditResult | undefined;
 	const sub: AuditRequest = { ...req, questions: Object.fromEntries(misses.map(([q]) => [q, req.questions[q]])) };
 	const envelope = envelopeKey(sub, opts.apiUrl);
-	if (misses.length && cache.rejected.has(envelope)) {
+	const size = sizeOf(sub), capacity = opts.capacity;
+	const constraint = capacity && overflowConstraint(capacity.profile, size, capacity.limits);
+	const fixedSize = opts.fixedState === undefined ? undefined : { ...size, stateBytes: Buffer.byteLength(opts.fixedState) };
+	const floor = capacity && fixedSize && overflowConstraint(capacity.profile, fixedSize, capacity.limits);
+	// Question batching cannot resolve a request-wide prediction if even fixed state plus one question exceeds it.
+	const requestFloor = capacity && fixedSize && overflowConstraint(capacity.profile,
+		{ ...fixedSize, questionBytes: size.longestQuestionBytes }, { request: capacity.limits?.request });
+	// Shrinking new records cannot resolve a fixed-state prediction. Admit the useful batch, not a validation-only probe.
+	const admitFixed = floor === "state" || floor === "rejection" || requestFloor === "request";
+	// A rejected single question proves that every superset with this exact state also cannot fit.
+	const rejected = cache.rejected.has(envelope) || misses.some(([q]) =>
+		cache.rejected.has(envelopeKey({ ...sub, questions: { [q]: sub.questions[q] } }, opts.apiUrl)));
+	if (misses.length && rejected) {
 		reuse.sent = 0;
-		result = { ok: false, error: "context overflow: this exact request was already rejected and is not resent", contextOverflow: true };
-	} else if (misses.length && opts.capacity && !(opts.sendIrreducible && misses.length === 1) && predictOverflow(opts.capacity.profile, sizeOf(sub), opts.capacity.limits)) {
+		result = { ok: false, error: "context overflow: this exact envelope or a required single question was already rejected for this state", contextOverflow: true };
+	} else if (misses.length && constraint && !admitFixed && !(opts.sendIrreducible && misses.length === 1)) {
 		reuse.sent = 0;
 		opts.onPresplit?.();
-		result = { ok: false, error: "context overflow predicted by channel capacity estimate; split before sending", contextOverflow: true, predicted: true };
+		result = { ok: false, error: "context overflow predicted by channel capacity estimate; split before sending", contextOverflow: true, predicted: true, constraint };
 	} else if (misses.length) {
 		let model: string | undefined;
 		const run = runAudit(sub, { ...opts, onAttempt: (a) => {

@@ -1,7 +1,7 @@
 /**
  * Per-channel request capacity: predict an overflow before sending instead of
  * buying a rejection. A channel is one endpoint + requested model. The estimate
- * is bytes × the densest tokens/byte actually observed on that channel (a
+ * is bytes × the latest usable tokens/byte observed on that channel (a
  * conservative prior until usage exists), checked separately against each
  * published limit, plus actual rejection sizes. It is an estimate, never a fit
  * guarantee: server admission stays authoritative for irreducible units.
@@ -30,7 +30,7 @@ export const PRIOR_TOKENS_PER_BYTE = 1 / 1.75;
 /** UTF-8 byte sizes of what is (or would be) sent. */
 export interface EnvelopeSize { stateBytes: number; questionBytes: number; longestQuestionBytes: number }
 export interface CapacityProfile {
-	/** Densest observed input tokens per sent byte; undefined until the provider reports usage. */
+	/** Latest usable input tokens per sent byte; undefined until the provider reports usage. */
 	tokensPerByte?: number;
 	/** Minimal set of actually rejected sizes (dominated entries pruned). */
 	rejections: EnvelopeSize[];
@@ -48,20 +48,29 @@ const total = (s: EnvelopeSize) => s.stateBytes + s.questionBytes;
 /** `a` is at least as large as `b` in both limited dimensions. */
 const covers = (a: EnvelopeSize, b: EnvelopeSize) => longest(a) >= longest(b) && total(a) >= total(b);
 
-export function predictOverflow(p: CapacityProfile, s: EnvelopeSize, limits?: ContextLimits): boolean {
-	if (p.rejections.some((r) => covers(s, r))) return true;
+/** The dimension that recovery must reduce; historical size hints are not exact token counts. */
+export type CapacityConstraint = "state" | "request" | "rejection";
+export function overflowConstraint(p: CapacityProfile, s: EnvelopeSize, limits?: ContextLimits): CapacityConstraint | undefined {
 	const ratio = p.tokensPerByte ?? PRIOR_TOKENS_PER_BYTE;
-	return (limits?.stateAndLongestQuestion !== undefined && longest(s) * ratio > limits.stateAndLongestQuestion)
-		|| (limits?.request !== undefined && total(s) * ratio > limits.request);
+	if (limits?.stateAndLongestQuestion !== undefined && longest(s) * ratio > limits.stateAndLongestQuestion) return "state";
+	if (limits?.request !== undefined && total(s) * ratio > limits.request) return "request";
+	if (p.rejections.some((r) => covers(s, r))) return "rejection";
+}
+export function predictOverflow(p: CapacityProfile, s: EnvelopeSize, limits?: ContextLimits): boolean {
+	return overflowConstraint(p, s, limits) !== undefined;
 }
 
 const size = (v: unknown): v is number => typeof v === "number" && Number.isFinite(v) && v >= 0;
 /** Learn from one real provider attempt (answered usage or an explicit overflow rejection). */
 export function observe(p: CapacityProfile, a: { outcome?: unknown; inputTokens?: unknown; stateBytes?: unknown; questionBytes?: unknown; longestQuestionBytes?: unknown }) {
 	if (!size(a.stateBytes) || !size(a.questionBytes)) return;
-	if (a.outcome === "answered" && size(a.inputTokens) && a.inputTokens > 0) {
-		const ratio = a.inputTokens / (a.stateBytes + a.questionBytes);
-		p.tokensPerByte = Math.max(p.tokensPerByte ?? 0, ratio);
+	if (a.outcome === "answered") {
+		if (size(a.inputTokens) && a.inputTokens > 0 && a.stateBytes + a.questionBytes > 0)
+			p.tokensPerByte = a.inputTokens / (a.stateBytes + a.questionBytes);
+		if (size(a.longestQuestionBytes)) {
+			const admitted = { stateBytes: a.stateBytes, questionBytes: a.questionBytes, longestQuestionBytes: a.longestQuestionBytes };
+			p.rejections = p.rejections.filter((r) => !covers(admitted, r));
+		}
 	} else if (a.outcome === "overflow" && size(a.longestQuestionBytes)) {
 		const s: EnvelopeSize = { stateBytes: a.stateBytes, questionBytes: a.questionBytes, longestQuestionBytes: a.longestQuestionBytes };
 		if (p.rejections.some((r) => covers(s, r))) return;

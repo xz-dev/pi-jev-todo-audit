@@ -10,6 +10,7 @@
  * dominant dimension (context records → ordered text fragments, or independent
  * question batches over the same frozen state), then stop with a diagnostic.
  */
+import { overflowConstraint, sizeOf } from "./capacity.js";
 import type { BoardSnapshot } from "./board.js";
 import { safeJson, type AuditContext, type EvidenceRecord } from "./context.js";
 import { buildAuditRequest, evaluate, evaluateBatched, evaluationKey, flattenAnswers, groupAnswers, type AuditResult, type ChoiceAnswer, type EvaluateOptions, type Reuse, type TerminalStopInfo } from "./typesafe.js";
@@ -159,20 +160,26 @@ export async function reviewRolling(a: RollingArgs): Promise<RollingOutcome> {
 	const opts: EvaluateOptions = { ...a.opts, onAttempt: (x) => { if (x.outcome === "overflow") recovered = true; a.opts.onAttempt?.(x); } };
 	let last: { result: AuditResult; context: AuditContext; complete?: boolean } | undefined;
 
-	/** Evaluate one leaf stage; on overflow subdivide the dominant dimension. Returns false to stop the run. */
+	/** Evaluate one leaf stage; on overflow reduce the constrained dimension. Returns false to stop the run. */
 	const stage = async (piece: EvidenceRecord[], final: boolean): Promise<boolean> => {
 		const context = stageContext(piece, final);
 		const req = buildAuditRequest(a.board, context, a.model, a.stop);
 		const halves = splitPiece(piece);
-		// With no context left to divide, a prediction never ends the scope: single questions are sent for admission.
-		const stageOpts = halves ? opts : { ...opts, sendIrreducible: true };
+		const fixedState = buildAuditRequest(a.board, stageContext([], final), a.model, a.stop).state;
+		// With no context left to divide, a prediction never ends the scope: admission still decides.
+		const stageOpts = { ...opts, fixedState, sendIrreducible: !halves };
 		let { result, reuse } = await evaluate(req, stageOpts);
 		add(reuse);
 		if (!result.ok && result.contextOverflow && !a.opts.signal?.aborted) {
 			if (!result.predicted) recovered = true;
-			const stateBytes = Buffer.byteLength(req.state), questionBytes = Buffer.byteLength(JSON.stringify(req.questions));
-			// Question batches share this frozen state: useful only when questions dominate or context cannot shrink.
-			if (questionBytes > stateBytes || !halves) {
+			const size = sizeOf(req);
+			const constraint = result.constraint ?? (opts.capacity && overflowConstraint(opts.capacity.profile, size, opts.capacity.limits));
+			const smaller = halves && sizeOf(buildAuditRequest(a.board, stageContext(halves[0], false), a.model, a.stop));
+			const contextReduction = smaller ? size.stateBytes + size.questionBytes - smaller.stateBytes - smaller.questionBytes : 0;
+			const qs = Object.entries(req.questions);
+			const questionReduction = size.questionBytes - sizeOf({ state: req.state, questions: Object.fromEntries(qs.slice(0, Math.ceil(qs.length / 2))) }).questionBytes;
+			// Known limits choose the dimension. Generic rejections compare actual candidate reductions, not record counts.
+			if (!halves || constraint === "request" || (constraint !== "state" && questionReduction > contextReduction)) {
 				({ result, reuse } = await evaluateBatched(req, stageOpts)); add(reuse);
 			}
 			if (!result.ok && result.contextOverflow && halves && !a.opts.signal?.aborted) {

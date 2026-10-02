@@ -11,7 +11,7 @@ import { DEFAULT_CONFIG } from "../config.js";
 export const MOCK_CAPACITY = 24_000;
 type Req = { state: string; model: string; questions: Record<string, { criteria: Record<string, unknown> }> };
 export interface CaseMetrics {
-	requests: number; rejected: number; failed: number; bytes: number; stateBytes: number; questionBytes: number; maxStatePlusQuestion: number;
+	requests: number; presplits: number; receipts: number; rejected: number; failed: number; bytes: number; stateBytes: number; questionBytes: number; maxStatePlusQuestion: number;
 	questionsAsked: number; textSeen: number; textTotal: number; toolBodyLeaks: number;
 	/** Bytes of non-task records already sent in an earlier request of this case (re-sent processed input). */
 	resentBytes: number;
@@ -90,7 +90,7 @@ const pick = (criteria: Record<string, unknown>) => PREFERRED.find((k) => Object
 export async function runCase(c: Case): Promise<CaseMetrics> {
 	const branch: unknown[] = [];
 	const bodies: string[] = [];
-	const m: CaseMetrics = { requests: 0, rejected: 0, failed: 0, bytes: 0, stateBytes: 0, questionBytes: 0, maxStatePlusQuestion: 0, questionsAsked: 0, textSeen: 0, textTotal: c.textMarkers.length, toolBodyLeaks: 0, resentBytes: 0, rollingBytes: 0, auditsWithoutRequest: 0 };
+	const m: CaseMetrics = { requests: 0, presplits: 0, receipts: 0, rejected: 0, failed: 0, bytes: 0, stateBytes: 0, questionBytes: 0, maxStatePlusQuestion: 0, questionsAsked: 0, textSeen: 0, textTotal: c.textMarkers.length, toolBodyLeaks: 0, resentBytes: 0, rollingBytes: 0, auditsWithoutRequest: 0 };
 	const seen = new Set<string>();
 	let pendingIds: string[] = [];
 	let omit: RegExp | undefined, failAt = 0;
@@ -127,7 +127,12 @@ export async function runCase(c: Case): Promise<CaseMetrics> {
 			on: (name: string, h: any) => handlers.set(name, [...(handlers.get(name) ?? []), h]),
 			registerCommand: (name: string, cmd: any) => commands.set(name, cmd),
 			sendMessage: (message: any) => branch.push({ id: id("jev"), type: "custom_message", ...message }),
-			appendEntry: (customType: string, data: unknown) => branch.push({ id: id("custom"), type: "custom", customType, data }),
+			appendEntry: (customType: string, data: unknown) => {
+				branch.push({ id: id("custom"), type: "custom", customType, data });
+				const entry = data as { kind?: string; diag?: { presplits?: number } };
+				if (entry.kind === "receipt") m.receipts++;
+				if (entry.kind === "diag") m.presplits += entry.diag?.presplits ?? 0;
+			},
 			events: { on: () => () => {} },
 		} as unknown as ExtensionAPI;
 		const ctx = { sessionManager: { getSessionId: () => `corpus-${c.name}`, getBranch: () => branch, buildContextEntries: () => branch }, ui: { notify: () => {} } };

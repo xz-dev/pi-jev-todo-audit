@@ -20,6 +20,7 @@ import { diagnose, isOwnBookkeeping, restoreLedger, writeLedger } from "./ledger
 import { channelKey, newCapacityProfile, PI_PROVIDERS, PUBLISHED_LIMITS, restoreCapacity, type CapacityProfile } from "./capacity.js";
 import { processedEntries, reviewRolling, type Rolling } from "./rolling.js";
 import { decide } from "./verdict.js";
+import { claimAuditProcess } from "./ownership.js";
 
 /** Neutral bus channel shared with pi-continue-watchdog — plain data, no imports. */
 const SEMANTIC_HOOK_CHANNEL = "pi:semantic-hook:v1";
@@ -66,6 +67,7 @@ function retrySettingsFor(ctx: Ctx): { maxRetries: number; baseDelayMs: number }
 
 
 export default function (pi: ExtensionAPI, cfgOverride?: AuditConfig) {
+	if (!claimAuditProcess()) return;
 	// Global layer resolved eagerly; project layer merges on first session_start
 	// once we can see ctx.cwd + ctx.isProjectTrusted().
 	let cfg: AuditConfig = cfgOverride ?? loadConfig({ globalPath: agentConfigPath() });

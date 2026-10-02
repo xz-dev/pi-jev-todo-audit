@@ -6,8 +6,8 @@ import { DEFAULT_CONFIG } from "../config.js";
 import { collectContext } from "../context.js";
 import { isOwnBookkeeping, LEDGER_TYPE } from "../ledger.js";
 import { reviewRolling } from "../rolling.js";
-import { newCapacityProfile, observe, predictOverflow, PUBLISHED_LIMITS, restoreCapacity, type EnvelopeSize } from "../capacity.js";
-import { auditWithContext, evaluate, newEvaluationCache, type AuditRequest, type EvaluateOptions } from "../typesafe.js";
+import { newCapacityProfile, observe, predictOverflow, PUBLISHED_LIMITS, restoreCapacity, sizeOf, type EnvelopeSize } from "../capacity.js";
+import { auditWithContext, evaluate, newEvaluationCache, type Attempt, type AuditRequest, type EvaluateOptions } from "../typesafe.js";
 
 const TYPESAFE = PUBLISHED_LIMITS["https://api.typesafe.ai/v1/systemone"];
 const env = (stateBytes: number, questionBytes: number, longestQuestionBytes = Math.min(questionBytes, 1800)): EnvelopeSize => ({ stateBytes, questionBytes, longestQuestionBytes });
@@ -24,11 +24,11 @@ test("the two published limits are checked separately so admitted request-wide c
 	expect(predictOverflow(p, env(900_000, 9_000), undefined)).toBe(false);
 });
 
-test("learning uses the densest observed ratio and minimal rejection sizes, dominating in both dimensions", () => {
+test("learning uses the latest usable ratio and minimal rejection sizes, dominating in both dimensions", () => {
 	const p = newCapacityProfile();
 	observe(p, { outcome: "answered", inputTokens: 1000, stateBytes: 1500, questionBytes: 500 });
 	observe(p, { outcome: "answered", inputTokens: 1000, stateBytes: 1600, questionBytes: 600 });
-	expect(p.tokensPerByte).toBe(0.5);
+	expect(p.tokensPerByte).toBe(1000 / 2200);
 	observe(p, { outcome: "overflow", stateBytes: 50_000, questionBytes: 5_000, longestQuestionBytes: 1_000 });
 	observe(p, { outcome: "overflow", stateBytes: 60_000, questionBytes: 6_000, longestQuestionBytes: 1_000 }); // dominated: not kept
 	expect(p.rejections).toHaveLength(1);
@@ -55,6 +55,56 @@ test("replay of the live smoke attempts: all 7 rejected envelopes are predicted,
 
 const req = (stateChars: number, n = 2): AuditRequest => ({ state: "s".repeat(stateChars), model: "m",
 	questions: Object.fromEntries(Array.from({ length: n }, (_, i) => [`q${i}`, { type: "choice" as const, instructions: `question ${i}`, criteria: { yes: "y", no: "n" } }])) });
+
+test("an admitted larger different envelope retires size hints but never its exact rejection identity", async () => {
+	const rejected = req(1000), profile = newCapacityProfile(), cache = newEvaluationCache();
+	let calls = 0;
+	const options: EvaluateOptions = { apiUrl: "http://jev", apiKey: "offline", timeoutMs: 1000, cache,
+		capacity: { profile, limits: TYPESAFE }, fetchFn: async (_u, init) => {
+			calls++;
+			const r = JSON.parse(String(init!.body)) as AuditRequest;
+			if (r.state === rejected.state) return new Response(JSON.stringify({ detail: { error_type: "max_tokens_exceeded" } }), { status: 400 });
+			const s = sizeOf(r);
+			return new Response(JSON.stringify({ usage: { input_tokens: (s.stateBytes + s.questionBytes) / 4 },
+				answers: Object.fromEntries(Object.keys(r.questions).map((k) => [k, { choice: "yes", confidence: 0.9 }])) }));
+		} };
+	await evaluate(rejected, options);
+	const admitted = { ...req(2000, 1), state: "different ".repeat(200) };
+	expect((await evaluate(admitted, { ...options, sendIrreducible: true })).result.ok).toBe(true);
+	const before = calls;
+	expect((await evaluate({ ...admitted, questions: req(2000).questions }, options)).result.ok).toBe(true);
+	expect(calls - before).toBe(1);
+	const after = calls;
+	expect((await evaluate(rejected, { ...options, sendIrreducible: true })).result.ok).toBe(false);
+	expect(calls).toBe(after); expect(cache.rejected.size).toBe(1);
+});
+
+test("lower-density admissions permit later batches in memory and after diagnostic replay", async () => {
+	const profile = newCapacityProfile(), attempts: Attempt[] = [], sent: AuditRequest[] = [];
+	const options: EvaluateOptions = { apiUrl: "http://jev", apiKey: "offline", timeoutMs: 1000, cache: newEvaluationCache(),
+		capacity: { profile, limits: TYPESAFE }, onAttempt: (a) => attempts.push(a),
+		fetchFn: async (_u, init) => {
+			const r = JSON.parse(String(init!.body)) as AuditRequest; sent.push(r);
+			const size = sizeOf(r), ratio = sent.length === 1 ? 0.478 : 0.347;
+			return new Response(JSON.stringify({ usage: { input_tokens: Math.ceil((size.stateBytes + size.questionBytes) * ratio), output_tokens: 1 },
+				answers: Object.fromEntries(Object.keys(r.questions).map((k) => [k, { choice: "yes", confidence: 0.9 }])) }));
+		} };
+	await evaluate(req(1000, 1), options);
+	await evaluate(req(70000, 1), { ...options, sendIrreducible: true });
+	const restored = restoreCapacity([{ type: "custom", customType: LEDGER_TYPE, data: { kind: "diag", diag: { channel: "c", attempts } } },
+		{ type: "custom", customType: LEDGER_TYPE, data: { kind: "diag", diag: { channel: "other", attempts: [{ outcome: "answered", inputTokens: 1000, stateBytes: 500, questionBytes: 500 }] } } },
+		{ type: "custom", customType: LEDGER_TYPE, data: { kind: "diag", diag: { attempts: [] } } }], isOwnBookkeeping);
+	for (const p of [profile, restored.get("c")!]) {
+		const before = sent.length;
+		const batch = await evaluate(req(70000), { ...options, cache: newEvaluationCache(), capacity: { profile: p, limits: TYPESAFE } });
+		expect(batch.result.ok).toBe(true); expect(sent.length - before).toBe(1);
+		expect(p.tokensPerByte).toBeLessThan(0.35);
+		for (const inputTokens of [undefined, "unknown", 0, NaN, -1]) observe(p, { outcome: "answered", inputTokens, stateBytes: 1, questionBytes: 1 });
+		expect(p.tokensPerByte).toBeLessThan(0.35);
+	}
+	expect(restored.get("other")?.tokensPerByte).toBe(1);
+});
+
 const answering = () => {
 	const sent: AuditRequest[] = [];
 	const fetchFn = async (_u: string, init?: RequestInit) => {
@@ -81,14 +131,15 @@ test("a predicted overflow sends nothing, records no rejection and is reported a
 const task = { id: 4, subject: "Design review", status: "in_progress" as const };
 const board = { tasks: [task], nextId: 5 };
 
-test("an irreducible unit predicted too large is still sent once so server admission decides", async () => {
+test("an irreducible fixed-state prediction admits the useful batch before individual questions", async () => {
 	const { sent, fetchFn } = answering();
 	const opts: EvaluateOptions = { apiUrl: "http://jev", apiKey: "k", timeoutMs: 1000, cache: newEvaluationCache(), fetchFn,
 		capacity: { profile: newCapacityProfile(), limits: { stateAndLongestQuestion: 10, request: 10 } } };
 	const out = await reviewRolling({ board, context: collectContext([{ id: "u", type: "message", message: { role: "user", content: "Short." } }], [{ id: "task:4", value: task }]),
 		processed: new Set(), inputKey: "k", model: "m", opts, commit: () => true });
 	expect(out.final).toBe(true); expect(out.result.ok).toBe(true);
-	expect(sent.every((r) => Object.keys(r.questions).length === 1)).toBe(true); // split to single questions first, then admitted
+	expect(sent).toHaveLength(1);
+	expect(Object.keys(sent[0].questions).length).toBeGreaterThan(1); // authoritative admission resolves the false fixed-floor prediction
 	expect(out.recovered).toBe(false); // no real rejection happened
 });
 
