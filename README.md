@@ -124,6 +124,8 @@ Practice references: [Wake's INVEST and SMART tasks](https://xp123.com/invest-in
 
 ### Waiting, repetition and stale results
 
+Every injected audit message identifies itself in its text as an automated `pi-jev-todo-audit` plugin advisory, not a user message, instruction or new authorization. Suggestions are for consideration at a natural checkpoint: the agent should continue its current task, respect the user's latest instructions and wait conditions, and need not send a separate reply. This wording does not change the steer delivery or terminal-wakeup gates below.
+
 A supported correction includes task IDs and sanitized source excerpts, delivered through the existing custom-message steer path. Terminal execution needs explicit actionable-now evidence; merely unfinished work never wakes the agent. A concrete missing board annotation may permit **one board-only turn**, expressly instructing the agent to reconcile the board and return control without executing the blocked task. Split/clarification advice alone does not trigger a terminal restart.
 
 Persisted correction keys suppress unchanged task/issue demands across reloads. Loop count, reworded stop reasons, previous audit messages and ordinary assistant acknowledgments do not re-arm them. Recording a requested blocker is reconciliation, not a reason to repeat it. New user/work evidence and meaningful task changes permit reconsideration.
