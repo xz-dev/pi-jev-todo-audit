@@ -47,6 +47,415 @@ function setup(branch: unknown[] = initial(), config = {}, opts: { persist?: boo
 }
 const tick = () => new Promise((r) => setTimeout(r, 0));
 
+const fidelityInput = () => {
+	const brief = { text: "XML chosen; all checks reported passed.", sources: ["origin"], covers: ["other"] };
+	const scoped = { ...task, metadata: { auditBrief: brief } };
+	const origin = { id: "origin", type: "message", message: { role: "assistant", content: "XML acceptance checks passed." } };
+	const other = { id: "other", type: "message", message: { role: "assistant", content: "Legacy supporting report." } };
+	return { brief, scoped, origin, other, branch: [user("user", "Reconcile #5 only; no other execution."), snapshot([scoped]), origin, other] };
+};
+
+for (const change of ["fact", "source", "coverage", "role"]) test(`I1: ${change}-only material change refreshes the same-label review`, async () => {
+	const input = fidelityInput();
+	answers = { ...answers, drift: a("on_track"), task_board_5: a("accurate"), task_granularity_5: a("appropriate") };
+	const h = setup(input.branch, {}, { persist: true }); await h.emit("session_start"); await h.manual();
+	await h.manual(); expect(requests).toHaveLength(1);
+	if (change === "fact") input.brief.text = "CSV chosen; validation remains pending.";
+	if (change === "source") input.brief.sources = ["other"];
+	if (change === "coverage") input.brief.covers = [];
+	if (change === "role") (input.origin.message as any).role = "custom";
+	answers.task_status_5 = a("still_ongoing");
+	await h.manual();
+	expect(requests).toHaveLength(2);
+	expect(requests[1].state).not.toBe(requests[0].state);
+	expect(h.sent).toHaveLength(1); // new facts never inherit the old completion answer
+});
+
+test("I1: a no-op board read keeps identical brief evaluations reusable", async () => {
+	const input = fidelityInput();
+	answers = { ...answers, drift: a("on_track"), task_board_5: a("accurate"), task_granularity_5: a("appropriate") };
+	const h = setup(input.branch, {}, { persist: true }); await h.emit("session_start"); await h.manual();
+	const reordered = { ...input.scoped, metadata: { auditBrief: { covers: ["other"], sources: ["origin"], text: input.brief.text } } };
+	h.branch.push({ id: "read-call", type: "message", message: { role: "assistant", content: [{ type: "toolCall", id: "read-todo", name: "todo", arguments: { action: "list" } }] } });
+	h.branch.push({ ...snapshot([reordered], "no-op-read"), message: { ...snapshot([reordered]).message, toolCallId: "read-todo" } });
+	await h.manual();
+	expect(requests).toHaveLength(1); expect(h.sent).toHaveLength(1);
+});
+
+test("I1: a same-id reported fact refreshes an identical terminal stop without rearming acknowledgment advice", async () => {
+	const input = fidelityInput();
+	answers = { ...answers, drift: a("on_track"), task_board_5: a("accurate"), task_granularity_5: a("appropriate"), task_evidence_5: a("origin") };
+	const h = setup(input.branch, {}, { persist: true }); await h.emit("session_start"); h.hook(); await tick();
+	input.origin.message.content = "CSV acceptance checks passed for the revised scope.";
+	h.hook(); await tick();
+	expect(requests).toHaveLength(2);
+	expect(requests[1].state).toContain("CSV acceptance checks passed");
+	expect(h.sent).toHaveLength(2);
+	h.branch.push({ id: "ack", type: "message", message: { role: "assistant", content: "Acknowledged." } });
+	h.hook(); await tick();
+	expect(h.sent).toHaveLength(2);
+});
+
+for (const change of ["fact", "source", "coverage", "report", "role", "effective-history"]) test(`I1: in-flight ${change} change suppresses stale corrections`, async () => {
+	const input = fidelityInput();
+	let release!: (r: Response) => void;
+	respond = () => new Promise<Response>((resolve) => { release = resolve; });
+	const h = setup(input.branch); await h.emit("session_start"); const pending = h.manual(); await tick();
+	if (change === "fact") input.brief.text = "CSV pending validation.";
+	if (change === "source") input.brief.sources = ["other"];
+	if (change === "coverage") input.brief.covers = [];
+	if (change === "report") input.origin.message.content = "CSV still requires validation.";
+	if (change === "role") (input.origin.message as any).role = "custom";
+	if (change === "effective-history") h.ctx.sessionManager.buildContextEntries = () => h.branch.filter((e: any) => e.id !== "origin");
+	release(response()); await pending;
+	expect(h.sent).toHaveLength(0);
+});
+for (const mode of ["", "full"]) for (const sources of [[], ["support-report"]]) test(`P1: ${mode || "cold"} covered completion report stays selectable with ${sources.length ? "support-only" : "empty"} sources`, async () => {
+	const completion = { id: "completion-report", type: "message", message: { role: "assistant", content: "Task 5 investigation complete. All agreed parser acceptance checks passed. Rollout still awaits user approval." } };
+	const support = { id: "support-report", type: "message", message: { role: "assistant", content: "Current checkout is clean; no new acceptance check outcome." } };
+	const scoped = { ...task, metadata: { auditBrief: { text: "Parser acceptance scope reported complete; rollout awaits approval.", sources, covers: [completion.id] } } };
+	answers = { ...answers, drift: a("on_track"), task_status_5: a("actually_completed"), task_evidence_5: a(completion.id), task_board_5: a("accurate"), task_granularity_5: a("appropriate") };
+	const h = setup([user("user", "Investigate #5 and reconcile only. No rollout without approval."), snapshot([scoped]), completion, support], {}, { persist: true });
+	await h.emit("session_start"); await h.commands.get("jev-audit").handler(mode, h.ctx);
+	expect(requests).toHaveLength(1);
+	expect(packetOf(requests[0]).records.find((r: any) => r.id === completion.id).text).toBe(completion.message.content);
+	expect(requests[0].questions.task_evidence_5.criteria).toHaveProperty(completion.id);
+	expect(h.branch.filter((e: any) => e.data?.kind === "receipt")).toHaveLength(1);
+	expect(h.sent).toHaveLength(1); expect(h.sent[0].message.content).toContain("Evidence [completion-report]");
+	expect(h.sent[0].options.triggerTurn).not.toBe(true);
+});
+
+test("P1/F1: a processed completion report stays whole and selectable without a prior primary pin", async () => {
+	const content = "Task 5's entire parser acceptance scope passed; rollout awaits approval. " + "Acceptance detail. ".repeat(300);
+	const completion = { id: "completion-report", type: "message", message: { role: "assistant", content } };
+	const scoped = { ...task, metadata: { auditBrief: { text: "Parser acceptance reported complete; no rollout approval.", sources: [], covers: [completion.id] } } };
+	answers = { ...answers, drift: a("on_track"), task_status_5: a("unclear"), task_evidence_5: a("insufficient_evidence"), task_board_5: a("accurate"), task_granularity_5: a("appropriate") };
+	const h = setup([user("user", "Investigate and reconcile #5 only; no rollout without approval."), snapshot([scoped]), completion], {}, { persist: true });
+	await h.emit("session_start"); await h.manual();
+	expect(h.branch.filter((e: any) => e.data?.kind === "receipt")).toHaveLength(1);
+	h.branch.push({ id: "ack", type: "message", message: { role: "assistant", content: "Rechecking the same accepted scope." } });
+	answers.task_status_5 = a("actually_completed"); answers.task_evidence_5 = a(completion.id);
+	await h.manual();
+	expect(requests).toHaveLength(2);
+	expect(packetOf(requests[1]).records.find((r: any) => r.id === completion.id).text).toBe(content);
+	expect(requests[1].questions.task_evidence_5.criteria).toHaveProperty(completion.id);
+	expect(h.sent).toHaveLength(1); expect(h.sent[0].message.content).toContain("Evidence [completion-report]");
+});
+
+const largeFidelityInput = (withBrief: boolean) => {
+	const reports = Array.from({ length: 260 }, (_, i) => ({ id: `report${i}`, type: "message", message: { role: "assistant",
+		content: i === 0 ? "XML chosen; malformed input rejected; investigation complete, rollout awaits user approval." : `Reported investigation detail ${i}; no new permission.` } }));
+	const scoped = { ...task, ...(withBrief ? { metadata: { auditBrief: {
+		text: "XML chosen; malformed input rejected; investigation complete, rollout awaits user approval.",
+		sources: ["user", "report0"], covers: reports.map((r) => r.id),
+	} } } : {}) };
+	return { reports, scoped, branch: [user("user", "Investigate #5; do not roll out without approval."), snapshot([scoped]), ...reports] };
+};
+
+for (const mode of ["", "full"]) test(`P2: ${mode || "cold"} known task-object scopes bound evidence without excluding public primary reports`, async () => {
+	const input = largeFidelityInput(true);
+	const others = Array.from({ length: 260 }, (_, i) => ({ ...task, id: i + 10, status: "completed" as const }));
+	input.scoped.metadata!.auditBrief.covers = ["report0"];
+	answers = { ...answers, drift: a("blocked"), task_status_5: a("blocked"), task_evidence_5: a("report0"), task_board_5: a("needs_reconciliation"), task_granularity_5: a("blocked") };
+	const h = setup([input.branch[0], snapshot([input.scoped, ...others]), input.reports[0]], { apiUrl: "https://fixture.invalid/v1/systemone" }, { persist: true }); await h.emit("session_start");
+	await h.commands.get("jev-audit").handler(mode, h.ctx);
+	expect(requests).toHaveLength(1);
+	for (const q of Object.values(requests[0].questions)) expect(Object.keys(q.criteria).length).toBeLessThanOrEqual(255);
+	expect(requests[0].questions.task_evidence_5.criteria).toHaveProperty("report0");
+	expect(requests[0].questions.task_evidence_5.criteria).not.toHaveProperty("task:269");
+	const packet = packetOf(requests[0]);
+	expect(packet.records.filter((r: any) => r.kind === "supplement")).toHaveLength(261);
+	expect(packet.records.find((r: any) => r.id === "report0").text).toContain("rollout awaits user approval");
+	expect(packet.candidateManifests.task_evidence_5.scope).toEqual(["task:5"]);
+	const correction = h.sent.filter((s) => s.message.content.includes("Evidence [report0]"));
+	expect(correction).toHaveLength(1);
+	expect(correction[0].message.content).toContain("do not execute it");
+	expect(correction[0].options.triggerTurn).not.toBe(true);
+});
+
+for (const mode of ["", "full"]) for (const withBrief of [false, true]) test(`P2/P3: ${mode || "cold"} 260 potential primary reports ${withBrief ? "with legal brief" : "without brief"} stay incomplete without hidden loss`, async () => {
+	const input = largeFidelityInput(withBrief);
+	answers = { ...answers, drift: a("on_track"), task_board_5: a("accurate"), task_granularity_5: a("appropriate") };
+	const h = setup(input.branch, { apiUrl: "https://fixture.invalid/v1/systemone" }, { persist: true }); await h.emit("session_start");
+	await h.commands.get("jev-audit").handler(mode, h.ctx);
+	expect(requests).toHaveLength(1);
+	for (const req of requests) for (const q of Object.values(req.questions)) expect(Object.keys(q.criteria).length).toBeLessThanOrEqual(255);
+	expect(requests[0].questions).not.toHaveProperty("task_evidence_5");
+	expect(requests[0].questions).not.toHaveProperty("work_evidence");
+	const packet = packetOf(requests[0]);
+	expect(packet.records.filter((r: any) => r.kind === "assistant")).toHaveLength(260);
+	if (withBrief) expect(packet.factualMaterial["task:5"].covers).toContainEqual({ id: "report259", role: "assistant" });
+	else expect(packet.candidateManifests.task_evidence_5.unresolved).toContain("report259");
+	expect(packet.records.some((r: any) => r.id === "task:5")).toBe(true);
+	expect(h.branch.some((e: any) => e.data?.kind === "receipt")).toBe(false);
+	const clarifications = () => h.sent.filter((s) => s.message.content.includes("CHOICE CONTEXT INCOMPLETE"));
+	expect(clarifications()).toHaveLength(1);
+	expect(h.sent).toHaveLength(1); expect(clarifications()[0].options.triggerTurn).not.toBe(true);
+	expect(clarifications()[0].message.content).toContain("Repeating the same brief does not guarantee a bounded set");
+	const diag = () => h.branch.filter((e: any) => e.data?.kind === "diag").at(-1) as any;
+	expect(diag().data.diag.withheld.some((w: any) => w.question === "task_evidence_5" && w.count > 255)).toBe(true);
+	await h.commands.get("jev-audit").handler(mode, h.ctx);
+	expect(requests).toHaveLength(1); expect(clarifications()).toHaveLength(1);
+	expect(diag().data.diag.attempts).toHaveLength(0); // exact valid pairs reused, withholding is not a model attempt
+	expect(diag().data.diag.range).toEqual({ from: null, to: null });
+});
+
+test("P3: an oversized task evidence set withholds only that finding; a supported sibling still reconciles", async () => {
+	const related = Array.from({ length: 260 }, (_, i) => ({ ...task, id: i + 10, status: "completed" as const }));
+	const five = { ...task, metadata: { auditBrief: { text: "Task 5 depends on these task records.", sources: related.map((t) => `task:${t.id}`), covers: [] } } };
+	const six = { ...task, id: 6, subject: "Separate accepted outcome", metadata: { auditBrief: {
+		text: "Task 6's whole acceptance scope is reported passed and accepted; reconcile only.", sources: ["user", "six-report"], covers: [],
+	} } };
+	const branch = [user("user", "Confirmed #6 passed its entire acceptance scope. Reconcile #6 only. #5 remains under investigation."),
+		snapshot([five, six, ...related]), { id: "six-report", type: "message", message: { role: "assistant", content: "Task 6's entire agreed outcome passed and was accepted; no further execution." } }];
+	answers = { ...answers, drift: a("on_track"), task_board_5: a("accurate"), task_granularity_5: a("appropriate"),
+		task_status_6: a("actually_completed"), task_evidence_6: a("six-report"), task_board_6: a("accurate"), task_granularity_6: a("appropriate") };
+	const h = setup(branch, { apiUrl: "https://fixture.invalid/v1/systemone" }, { persist: true }); await h.emit("session_start"); await h.manual();
+	expect(requests).toHaveLength(1);
+	expect(requests[0].questions).not.toHaveProperty("task_evidence_5");
+	expect(requests[0].questions.task_evidence_6.criteria).toHaveProperty("six-report");
+	expect(packetOf(requests[0]).records.some((r: any) => r.id === "task:269")).toBe(true);
+	const changes = h.sent.filter((s) => s.message.content.includes("Reconcile only the following"));
+	expect(changes).toHaveLength(1); expect(changes[0].message.content).toContain('mark #6 "Separate accepted outcome" completed');
+	expect(changes[0].message.content).not.toContain('mark #5'); expect(changes[0].message.content).toContain("Evidence [six-report]");
+	expect(h.branch.some((e: any) => e.data?.kind === "receipt")).toBe(false);
+	await h.manual(); expect(requests).toHaveLength(1); expect(h.sent).toHaveLength(2); // one scoped clarification + supported correction, neither repeated
+});
+
+test("P3: an oversized board-matching Choice loses no tasks and grants no work finding, while independent accepted work remains usable", async () => {
+	const tasks = Array.from({ length: 256 }, (_, i) => ({ ...task, id: i + 1, status: i + 1 === 5 ? "in_progress" as const : "completed" as const }));
+	const h = setup([user("user", "Confirmed #5 passes the entire agreed acceptance scope; update only its board status."), snapshot(tasks)],
+		{ apiUrl: "https://fixture.invalid/v1/systemone" }, { persist: true });
+	answers = { ...answers, current_match: a("not_on_board"), interaction: a("working"), alignment: a("no_in_progress_task"),
+		drift: a("on_track"), task_board_5: a("accurate"), task_granularity_5: a("appropriate") };
+	await h.emit("session_start"); await h.manual();
+	expect(requests).toHaveLength(1);
+	expect(requests[0].questions).not.toHaveProperty("current_match");
+	for (const q of Object.values(requests[0].questions)) expect(Object.keys(q.criteria).length).toBeLessThanOrEqual(255);
+	expect(packetOf(requests[0]).records.filter((r: any) => r.kind === "supplement")).toHaveLength(256);
+	const changes = h.sent.filter((s) => s.message.content.includes("Reconcile only the following"));
+	expect(changes).toHaveLength(1); expect(changes[0].message.content).toContain('mark #5 "Parser" completed');
+	expect(changes[0].message.content).not.toContain("CONTINUE"); expect(changes[0].message.content).not.toContain("CREATE");
+	expect(h.branch.some((e: any) => e.data?.kind === "receipt")).toBe(false);
+	const diag = h.branch.filter((e: any) => e.data?.kind === "diag").at(-1) as any;
+	expect(diag.data.diag.withheld).toContainEqual({ question: "current_match", count: 257, limit: 255 });
+	await h.manual(); expect(requests).toHaveLength(1); expect(h.sent).toHaveLength(2);
+});
+
+test("I1/R1: changing the remembered primary changes actual candidate definitions, not just the old fact/cursor identity", async () => {
+	const input = fidelityInput(); input.brief.covers = ["origin", "other"];
+	const six = { ...task, id: 6, status: "completed" as const };
+	input.brief.sources = ["task:6"];
+	input.branch[1] = snapshot([input.scoped, six]);
+	answers = { ...answers, task_status_5: a("still_ongoing"), task_evidence_5: a("task:6"), drift: a("on_track"), task_board_5: a("accurate"), task_granularity_5: a("appropriate") };
+	const h = setup(input.branch, { apiUrl: "https://fixture.invalid/v1/systemone" }, { persist: true }); await h.emit("session_start"); await h.manual();
+	input.brief.sources = ["other"]; answers.task_evidence_5 = a("other");
+	await h.manual();
+	expect(requests[1].questions.task_evidence_5.criteria).toHaveProperty("task:6"); // prior reference remains uncertain until refreshed
+	expect(requests[1].questions.task_evidence_5.criteria).toHaveProperty("other");
+	await h.manual();
+	expect(requests).toHaveLength(3); // same facts, but the other task's scoped supplement is no longer in this Choice
+	expect(requests[2].questions.task_evidence_5.criteria).not.toHaveProperty("task:6");
+	expect(requests[2].questions.task_evidence_5.criteria).toHaveProperty("origin"); // coverage never retires a public primary candidate
+	expect(requests[2].questions.task_evidence_5.criteria).toHaveProperty("other");
+	await h.manual(); expect(requests).toHaveLength(3); expect(h.sent).toHaveLength(0);
+});
+
+const packetOf = (request: AuditRequest) => {
+	const start = request.state.indexOf('{"records"');
+	return JSON.parse(request.state.slice(start, request.state.indexOf("\nInterpret evidence", start)));
+};
+
+test("F1: a supplied current brief is scoped reported data with original source roles, serialized once", async () => {
+	const text = "Current format is XML; rollout still awaits user approval.";
+	const h = setup([user("user", "Investigate #5; no rollout without approval."),
+		{ id: "decision", type: "message", message: { role: "assistant", content: "Chose XML during investigation." } },
+		snapshot([{ ...task, metadata: { auditBrief: { text, sources: ["user", "decision"], covers: ["decision"] } } }]),
+	]);
+	await h.emit("session_start"); await h.manual();
+	const packet = packetOf(requests[0]);
+	expect(packet.factualMaterial?.["task:5"]).toEqual({ role: "reported", valid: true,
+		sources: [{ id: "user", role: "user" }, { id: "decision", role: "assistant" }],
+		covers: [{ id: "decision", role: "assistant" }], gaps: [],
+	});
+	expect(requests[0].state.split(text).length - 1).toBe(1);
+	expect(packet.records.find((r: any) => r.id === "task:5").text).toContain(text);
+	expect(packet.records.find((r: any) => r.id === "user").kind).toBe("user");
+});
+
+test("F3: missing brief lineage stays a gap, not completion proof; legacy tasks remain useful", async () => {
+	const h = setup([user("user", "Investigate #5, awaiting approval."), snapshot([{ ...task,
+		metadata: { auditBrief: { text: "Investigation reported complete; approval outstanding.", sources: ["gone"], covers: ["gone"] } },
+	}])]);
+	answers.task_evidence_5 = a("task:5");
+	await h.emit("session_start"); await h.manual();
+	const material = packetOf(requests[0]).factualMaterial?.["task:5"];
+	expect(material?.valid).toBe(false);
+	expect(material?.gaps).toContainEqual({ id: "gone", reason: "source unavailable" });
+	expect(requests[0].state).toContain("Investigation reported complete");
+	expect(h.sent).toHaveLength(0);
+	answers.task_evidence_5 = a("user");
+	const legacy = setup(); await legacy.emit("session_start"); await legacy.manual();
+	expect(requests.at(-1)!.state).toContain(task.description);
+	expect(legacy.sent).toHaveLength(1);
+	expect(legacy.sent[0].message.content).toContain("Evidence [user]");
+});
+
+test("F3: coverage cannot erase user, summary or another task; excluded and redacted origins stay gaps", async () => {
+	const h = setup([user("user", "Work on #5 only; await approval."), user("abandoned", "ABANDONED_FACT"),
+		{ id: "redacted", type: "message", message: { role: "assistant", content: "Visible report password=SECRET_VALUE" } },
+		{ id: "summary", type: "compaction", summary: "Host account, not an original report" },
+		{ id: "private", type: "custom", customType: "internal", data: "PRIVATE_BODY" },
+		snapshot([{ ...task, metadata: { auditBrief: { text: "Current reported blocker", sources: ["redacted", "abandoned", "private"], covers: ["user", "summary", "task:6"] } } },
+			{ ...task, id: 6, description: "OTHER_TASK_FACT", status: "pending" }]),
+	]);
+	h.ctx.sessionManager.buildContextEntries = () => h.branch.filter((e: any) => e.id !== "abandoned");
+	await h.emit("session_start"); await h.manual();
+	const packet = packetOf(requests[0]), material = packet.factualMaterial["task:5"];
+	expect(material.valid).toBe(false);
+	expect(material.sources).toContainEqual({ id: "redacted", role: "assistant" });
+	for (const id of ["redacted", "abandoned", "private", "user", "summary", "task:6"]) expect(material.gaps.some((g: any) => g.id === id)).toBe(true);
+	for (const hidden of ["ABANDONED_FACT", "SECRET_VALUE", "PRIVATE_BODY"]) expect(requests[0].state).not.toContain(hidden);
+	expect(requests[0].state).toContain("OTHER_TASK_FACT");
+	expect(packet.records.find((r: any) => r.id === "user").protected).toBe(true);
+});
+
+test("F3: empty reference lists are permitted; malformed brief data stays qualified without breaking legacy prose", async () => {
+	for (const brief of [{ text: "Reported blocker", sources: [], covers: [] }, { text: 7, sources: "bad", covers: [null] }]) {
+		const h = setup([user("user", "Confirmed #5 is complete; reconcile only."), snapshot([{ ...task, metadata: { auditBrief: brief } }])]);
+		await h.emit("session_start"); await h.manual();
+		const packet = packetOf(requests.at(-1)!);
+		expect(packet.factualMaterial["task:5"].valid).toBe(typeof brief.text === "string");
+		expect(requests.at(-1)!.state).toContain(task.description);
+		expect(h.sent).toHaveLength(1); // An independent user anchor remains usable despite an unrelated malformed report.
+	}
+});
+
+test("F2: an irreducible necessary floor asks once for a scoped account, without completion, wakeup or receipt advance", async () => {
+	const h = setup([user("user", "Investigate #5 only; approval is required before rollout."), snapshot([task]),
+		{ id: "needed", type: "message", message: { role: "assistant", content: "OLD_REQUIRED_FORMAT: XML; approval pending. " + "detail ".repeat(700) } }], {}, { persist: true });
+	answers = { ...answers, drift: a("on_track"), task_status_5: a("still_ongoing"), task_evidence_5: a("needed"), task_board_5: a("accurate"), task_granularity_5: a("appropriate") };
+	await h.emit("session_start"); await h.manual();
+	expect(h.sent).toHaveLength(0);
+	const receipts = () => h.branch.filter((e: any) => e.data?.kind === "receipt");
+	const prior = receipts().length;
+	for (let i = 0; i < 6; i++) h.branch.push({ id: `later${i}`, type: "message", message: { role: "assistant", content: `New stage ${i}` } });
+	respond = async () => new Response(JSON.stringify({ detail: { error_type: "max_tokens_exceeded" } }), { status: 400 });
+	await h.manual();
+	expect(receipts()).toHaveLength(prior);
+	expect(h.sent).toHaveLength(1);
+	expect(h.sent[0].message.content).toContain("FACTUAL CONTEXT INCOMPLETE");
+	expect(h.sent[0].message.content).toContain("#5");
+	expect(h.sent[0].message.content).toContain("needed");
+	expect(h.sent[0].message.content).toContain("metadata.auditBrief");
+	expect(h.sent[0].options).toEqual({ deliverAs: "steer" });
+	const failed = requests.slice(1);
+	const leaves = failed.map(packetOf).map((p) => p.records.filter((r: any) => r.view === "recent").map((r: any) => r.id)).filter((ids) => ids.length === 1);
+	expect(leaves.length).toBeGreaterThan(0);
+	for (const ids of leaves) expect(ids).toEqual(["later0"]); // Never traverse the remaining sibling work after the irreducible leaf.
+	await h.manual();
+	expect(receipts()).toHaveLength(prior); expect(h.sent).toHaveLength(1);
+});
+
+test("F2: an older ready brief never supplies permission against a later CSV/approval decision", async () => {
+	const h = setup([user("old-user", "Proceed on the old XML plan."),
+		{ id: "old-report", type: "message", message: { role: "assistant", content: "XML investigation done; reported ready." } },
+		snapshot([{ ...task, metadata: { auditBrief: { text: "XML and ready to roll out", sources: ["old-user", "old-report"], covers: ["old-report"] } } }]),
+		user("new-user", "Use CSV instead. Await approval; do not execute rollout."),
+	], {}, { persist: true });
+	answers = { ...answers, drift: a("on_track"), task_status_5: a("actionable_now"), task_evidence_5: a("task:5"), work_evidence: a("task:5"),
+		task_board_5: a("accurate"), task_granularity_5: a("appropriate"), interaction: a("working") };
+	await h.emit("session_start"); h.hook(); await tick();
+	expect(requests).toHaveLength(1);
+	const packet = packetOf(requests[0]);
+	expect(packet.userBoundary).toBe("new-user");
+	expect(packet.records.filter((r: any) => r.kind === "user").map((r: any) => r.id)).toEqual(["old-user", "new-user"]);
+	expect(requests[0].state).toContain("Use CSV instead. Await approval");
+	expect(h.sent).toHaveLength(0); // Even a synthetic working opinion cannot turn reported task data into authority.
+});
+
+test("F4: reload after compaction restores the durable frontier and qualified brief; hidden origins stay gaps, never fabricated evidence", async () => {
+	const briefText = "Investigation done; XML chosen; awaiting approval.";
+	const briefed = { ...task, metadata: { auditBrief: { text: briefText, sources: ["user", "origin", "kept"], covers: ["kept"] } } };
+	const branch = [user("user", "Investigate #5; no rollout without approval."),
+		{ id: "origin", type: "message", message: { role: "assistant", content: "CHOSEN_FORMAT: XML after comparing both." } },
+		{ id: "kept", type: "message", message: { role: "assistant", content: "Kept public report: still blocked on approval." } },
+		snapshot([briefed]),
+		user("latest", "Re-check the XML choice; still awaiting approval.")];
+	const receipts = () => branch.filter((e: any) => e.customType === "jev-todo-audit-ledger" && e.data?.kind === "receipt");
+	const diags = () => branch.filter((e: any) => e.customType === "jev-todo-audit-ledger" && e.data?.kind === "diag").map((e: any) => e.data.diag);
+	answers = { ...answers, drift: a("on_track"), task_status_5: a("still_ongoing"), task_evidence_5: a("kept"), task_board_5: a("accurate"), task_granularity_5: a("appropriate") };
+	const first = setup(branch, {}, { persist: true });
+	await first.emit("session_start"); await first.manual();
+	expect(requests).toHaveLength(1);
+	expect(packetOf(requests[0]).factualMaterial["task:5"].valid).toBe(true);
+	expect(receipts().map((e: any) => e.data.receipt.through)).toEqual(["latest"]);
+	// Compaction + reload: the live context replaces raw history with a summary; the branch, receipts and board survive.
+	const compacted = [{ id: "compact", type: "compaction", summary: "Earlier work compacted; raw details unavailable." },
+		branch.find((e: any) => e.id === "kept"),
+		{ type: "message", message: { role: "user", content: "LEGACY_AUTHORITY: id-less user entry still decides." } },
+		branch.find((e: any) => e.id === "latest")];
+	const reloaded = setup(branch, {}, { persist: true });
+	reloaded.ctx.sessionManager.buildContextEntries = () => compacted;
+	await reloaded.emit("session_start"); await reloaded.manual();
+	expect(requests).toHaveLength(2);
+	const packet = packetOf(requests[1]);
+	const material = packet.factualMaterial["task:5"];
+	expect(material.role).toBe("reported"); expect(material.valid).toBe(false);
+	expect(material.sources).toContainEqual({ id: "origin", role: "unavailable" });
+	expect(material.sources).toContainEqual({ id: "kept", role: "assistant" });
+	for (const id of ["user", "origin"]) expect(material.gaps).toContainEqual({ id, reason: "source unavailable" });
+	expect(requests[1].state.split(briefText).length - 1).toBe(1); // qualified body persists once, as reported data
+	expect(requests[1].state).not.toContain("CHOSEN_FORMAT"); // the missing origin body is never reconstructed
+	expect(requests[1].questions.task_evidence_5.criteria).not.toHaveProperty("origin");
+	expect(requests[1].questions.task_evidence_5.criteria).toHaveProperty("kept");
+	// The durable receipt advanced the frontier: prior progress is on the wire, not replayed raw.
+	expect(packet.rolling?.progress.processedThrough).toBe("latest");
+	// The fixture still chooses the now-hidden old user for work_evidence. That invalid option keeps this
+	// new input incomplete; the old receipt restores progress, not answers to changed material.
+	expect(receipts()).toHaveLength(1);
+	expect(diags().at(-1)).toMatchObject({ outcome: "incomplete", range: { from: "latest", to: "latest" } });
+	// A legacy entry without an id remains a usable protected user record.
+	expect(packet.records.find((r: any) => r.text.includes("LEGACY_AUTHORITY"))).toMatchObject({ kind: "user", protected: true });
+	expect(reloaded.sent).toHaveLength(0); // no completion or wakeup is fabricated from summary, brief or replayed opinions
+	// Complete the genuinely missing pair. A projected id-less record still has no verifiable raw-branch cursor.
+	answers.work_evidence = a("latest");
+	await reloaded.manual();
+	expect(Object.keys(requests.at(-1)!.questions)).toEqual(["work_evidence"]);
+	expect(receipts()).toHaveLength(1);
+	expect(diags().at(-1).range).toEqual({ from: "latest", to: "latest" });
+	expect(reloaded.sent).toHaveLength(0);
+});
+
+test("F4: a partial-answer failure persists completed pairs; reload resumes with only the missing question, no false receipt or completion", async () => {
+	const h = setup(initial(), {}, { persist: true });
+	const receipts = () => h.branch.filter((e: any) => e.customType === "jev-todo-audit-ledger" && e.data?.kind === "receipt");
+	respond = async () => {
+		const asked = requests.at(-1)!;
+		const body = Object.fromEntries(Object.keys(asked.questions).filter((k) => k !== "task_granularity_5").map((k) => [k, answers[k as keyof typeof answers] ?? a("unclear")]));
+		return new Response(JSON.stringify({ answers: body }), { status: 200 });
+	};
+	await h.emit("session_start"); await h.manual();
+	expect(requests).toHaveLength(1);
+	expect(receipts()).toHaveLength(0); // an incomplete stage is not a durable range
+	// Characterization (task 2.3): only a terminal stop fails closed on the missing answer; a plain audit still
+	// emits the independently evidenced completion advice. Resume must never extend that partial stage into a receipt.
+	expect(h.sent).toHaveLength(1);
+	expect(h.sent[0].message.content).toContain("Evidence [user]");
+	// Reload on the same branch: completed (endpoint, model, state, question) pairs replay from the ledger.
+	const reloaded = setup(h.branch, {}, { persist: true });
+	answers.task_granularity_5 = a("appropriate");
+	respond = async () => response();
+	await reloaded.emit("session_start"); await reloaded.manual();
+	expect(requests).toHaveLength(2);
+	expect(Object.keys(requests[1].questions)).toEqual(["task_granularity_5"]); // exact completed pairs are not re-bought
+	expect(packetOf(requests[1]).records.find((r: any) => r.id === "user").kind).toBe("user"); // genuine public lineage, not summary/supplement
+	expect(receipts()).toHaveLength(1);
+	expect((receipts()[0] as any).data.receipt.through).toBe("board");
+	expect(reloaded.sent).toHaveLength(1);
+	expect(reloaded.sent[0].message.content).toContain("Evidence [user]"); // correction cites a genuine public record
+});
+
 test("periodic cadence and user cooldown work without a watchdog", async () => {
 	const h = setup(); await h.emit("session_start");
 	for (let i = 0; i < 19; i++) { h.branch.push({ type: "message", message: { role: "assistant", content: `Visible progress ${i}` } }); await h.emit("turn_end"); }

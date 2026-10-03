@@ -12,10 +12,10 @@ import { SettingsManager } from "@earendil-works/pi-coding-agent";
 import { existsSync } from "node:fs";
 import { randomUUID } from "node:crypto";
 import { agentConfigPath, legacyConfigPath, loadConfig, projectConfigPath, resolveAuditKey, type AuditConfig, type KeyRegistry } from "./config.js";
-import { replayBoardWithAges, staleTaskIds, unfinishedTasks, visibleTasks, inProgressTasks as inProgressBoardTasks } from "./board.js";
-import { collectContext, digest, object, redact } from "./context.js";
+import { replayBoardWithAges, isTaskDetails, staleTaskIds, unfinishedTasks, visibleTasks, inProgressTasks as inProgressBoardTasks } from "./board.js";
+import { collectContext, contextVersion, digest, object, redact } from "./context.js";
 import { freshCounter, onTurnEnd, onUserMessage, replayCounter, shouldAudit, type LoopCounter } from "./counter.js";
-import { JUDGMENT_VERSION, newEvaluationCache, type Attempt, type EvaluationCache, type TerminalStopInfo } from "./typesafe.js";
+import { buildAuditRequest, JUDGMENT_VERSION, newEvaluationCache, type Attempt, type EvaluationCache, type TerminalStopInfo } from "./typesafe.js";
 import { diagnose, isOwnBookkeeping, restoreLedger, writeLedger } from "./ledger.js";
 import { channelKey, newCapacityProfile, PI_PROVIDERS, PUBLISHED_LIMITS, restoreCapacity, type CapacityProfile } from "./capacity.js";
 import { processedEntries, reviewRolling, type Rolling } from "./rolling.js";
@@ -110,8 +110,9 @@ export default function (pi: ExtensionAPI, cfgOverride?: AuditConfig) {
 	let warnedBudget = false;
 	let lastStopKey = "";
 	const contextFor = (ctx: Ctx, apiKey: string, board = replayBoardWithAges(ctx.sessionManager.getBranch())) => {
-		return collectContext(
-			withoutBookkeeping(ctx.sessionManager.buildContextEntries?.() ?? ctx.sessionManager.getBranch()),
+		const entries = withoutBookkeeping(ctx.sessionManager.buildContextEntries?.() ?? ctx.sessionManager.getBranch());
+		const context = collectContext(
+			entries,
 			visibleTasks(board).map((task) => {
 				const origin = board.firstActive.get(task.id);
 				// Task-long macro span: first in_progress turn through now; updates/waits/resumes do not reset it.
@@ -128,6 +129,19 @@ export default function (pi: ExtensionAPI, cfgOverride?: AuditConfig) {
 			!!ctx.sessionManager.buildContextEntries,
 			[apiKey],
 		);
+		// Successful identical TODO snapshots are bookkeeping reads, not a new fact segment. Keep
+		// explicit references and all real revisions/errors; never classify unrelated tools by name.
+		const changed = new Set(board.revisions.map((r) => r.source));
+		const cited = new Set(Object.values(context.factualMaterial ?? {}).flatMap((m) => [...m.sources, ...m.covers].map((r) => r.id)));
+		const noops = new Set(entries.flatMap((raw) => {
+			const e = object(raw), m = object(e.message);
+			return typeof e.id === "string" && m.role === "toolResult" && m.toolName === "todo" && m.isError !== true &&
+				isTaskDetails(m.details) && !changed.has(e.id) && !cited.has(e.id) ? [e.id] : [];
+		}));
+		const calls = new Set(context.records.filter((r) => noops.has(r.id)).map((r) => r.callId));
+		context.records = context.records.filter((r) => !noops.has(r.id) &&
+			!(r.kind === "tool_call" && r.toolName === "todo" && calls.has(r.callId) && !cited.has(r.id)));
+		return context;
 	};
 	const evidenceVersionFor = (ctx: Ctx) => digest([...ctx.sessionManager.getBranch()].flatMap((raw) => {
 		const e = object(raw), m = e.type === "custom_message" ? e : object(e.message);
@@ -137,11 +151,7 @@ export default function (pi: ExtensionAPI, cfgOverride?: AuditConfig) {
 			return [[e.id, m.role, m.customType, m.content, m.command, m.output, m.exitCode, m.isError]];
 		return [];
 	}));
-	const boundaryFor = (ctx: Ctx) => {
-		const branch = withoutBookkeeping(ctx.sessionManager.getBranch());
-		return digest({ session: sid(ctx), board: replayBoardWithAges(branch).tasks,
-			entries: branch.map((raw) => { const e = object(raw); return [e.id, e.type, e.message?.role === "user" ? e.message.content : undefined]; }) });
-	};
+	const boundaryFor = (ctx: Ctx) => digest({ session: sid(ctx), facts: contextVersion(contextFor(ctx, "")) });
 	/** Entry id of the branch tip when the audit started; used to detect a branch switch. */
 	const leafId = (ctx: Ctx) => {
 		let id: string | undefined;
@@ -215,8 +225,11 @@ export default function (pi: ExtensionAPI, cfgOverride?: AuditConfig) {
 				// Only the flag enters the payload: an exact loop count would change every loop and defeat reuse.
 				if (record) record.text += `\nAge review flag=${staleIds.includes(task.id)}. Age alone does not justify splitting.`;
 			}
-			const inputKey = digest({ v: JUDGMENT_VERSION, endpoint: cfg.apiUrl, model: cfg.model, stop: opts.terminalStop, omissions: initialContext.omissions,
-				records: initialContext.records.map((r) => [r.id, r.text]) });
+			const definitions = buildAuditRequest(board, { ...initialContext, rolling: {
+				opinions: rolling?.opinions ?? {}, progress: { processedThrough: rolling?.through ?? null, final: true },
+			} }, cfg.model, opts.terminalStop).questions;
+			const inputKey = digest({ v: JUDGMENT_VERSION, endpoint: cfg.apiUrl, model: cfg.model, stop: opts.terminalStop,
+				facts: contextVersion(initialContext), questions: definitions });
 			const attempts: Attempt[] = [];
 			const channel = channelKey(cfg.apiUrl, cfg.model);
 			let presplits = 0;
@@ -230,7 +243,8 @@ export default function (pi: ExtensionAPI, cfgOverride?: AuditConfig) {
 					onReject: (envelope) => { if (current(lastCtx)) writeLedger(append, { kind: "rejected", envelope }); } },
 				// Progress advances only on a durable receipt written for this same session.
 				commit: (next) => {
-					if (!current(lastCtx) || !writeLedger(append, { kind: "receipt", receipt: next })) return false;
+					if (!current(lastCtx) || !processedEntries(lastCtx!.sessionManager.getBranch(), next.through) ||
+						!writeLedger(append, { kind: "receipt", receipt: next })) return false;
 					rollings.set(mySid, next);
 					return true;
 				} });
@@ -240,10 +254,29 @@ export default function (pi: ExtensionAPI, cfgOverride?: AuditConfig) {
 			// Accounting is recorded for every attempt, including failed, recovered and later-stale audits.
 			if (current(lastCtx)) writeLedger(append, { kind: "diag", diag: diagnose(`${mySid}:${LOAD_ID}:${++auditSeq}`, label, outcome.reuse,
 				{ from: rolling?.through ?? null, to: rollings.get(mySid)?.through ?? null },
-				outcome.unchanged ? "unchanged" : !res.ok ? "failed" : !(outcome.final && outcome.complete) ? "incomplete" : outcome.recovered ? "recovered" : "completed", attempts, { channel, presplits }) });
+				outcome.unchanged ? "unchanged" : !res.ok ? "failed" : !(outcome.final && outcome.complete) ? "incomplete" : outcome.recovered ? "recovered" : "completed", attempts, { channel, presplits, ...(res.withheld?.length ? { withheld: res.withheld } : {}) }) });
 			if (ac.signal.aborted || sid(lastCtx ?? ctx) !== mySid || boundaryFor(ctx) !== boundary) return;
 
+			if (res.withheld?.length) {
+				const key = digest([mySid, "choice-context-incomplete", inputKey, res.withheld]);
+				if (!sentKeys.has(key)) {
+					const scopes = res.withheld.map((w) => `${w.question}: ${w.count} options (limit ${w.limit}, including fallback)`).join("; ");
+					const text = `CHOICE CONTEXT INCOMPLETE: ${scopes}. These questions were withheld locally, with no model judgment or provider attempt for them.\nThis scope is incomplete: retain or provide genuine applicability information and any still-needed public primary sources. A legal metadata.auditBrief can expose facts and gaps, but sources is not an exclusive allowlist and covers cannot retire uncertain primary eligibility. Repeating the same brief does not guarantee a bounded set; if it remains over 255, leave this finding incomplete. Do not truncate candidates or remove necessary tasks. Independent supported findings remain eligible; this clarification claims no completion, continuation, status change or new permission.`;
+					pi.sendMessage({ customType: "jev-todo-audit", content: redact(text, [apiKey]), display: true, details: { auditKeys: [key] } }, { deliverAs: "steer" });
+					sentKeys.add(key);
+				}
+			}
 			if (!res.ok || !outcome.final) {
+				if (outcome.needsAccount) {
+					const key = digest([mySid, "factual-context-incomplete", inputKey]);
+					if (!sentKeys.has(key)) {
+						const tasks = unfinishedTasks(board).map((t) => `#${t.id}`).join(", ") || "current work";
+						const reports = initialContext.records.filter((r) => r.kind === "assistant" && r.complete && !r.advice).map((r) => r.id);
+						const text = `FACTUAL CONTEXT INCOMPLETE for ${tasks}: the required material could not be admitted even after progressing recovery. Completed answers/ranges remain recorded; no completion or continuation judgment is made.\nA concise current account in the task description or optional metadata.auditBrief = { text, sources, covers } can expose the needed decisions, outcomes, blockers and gaps, but does not by itself remove retained primary obligations or guarantee admission. Repeating the same account cannot promise recovery. A brief is reported data, not user permission or independent execution proof; do not replace user constraints.\nPermitted public report IDs available for declared coverage: ${reports.join(", ") || "none; do not invent origins"}. Coverage is an author's report, not verified semantic completeness. This clarification does not authorize new execution or task-status changes.`;
+						pi.sendMessage({ customType: "jev-todo-audit", content: redact(text, [apiKey]), display: true, details: { auditKeys: [key] } }, { deliverAs: "steer" });
+						sentKeys.add(key);
+					}
+				}
 				ctx.ui?.notify?.(`[jev audit ${label}] failed: ${redact(res.ok ? "review incomplete" : res.error, [apiKey])}`, "warning");
 				return;
 			}
@@ -384,7 +417,7 @@ export default function (pi: ExtensionAPI, cfgOverride?: AuditConfig) {
 			if (!cfg.enabled || !stop || !lastCtx) return;
 			// Wording/epoch is not new evidence. New user/work/board state is.
 			const board = replayBoardWithAges(lastCtx.sessionManager.getBranch());
-			const key = digest([sid(lastCtx), board.tasks, evidenceVersionFor(lastCtx)]);
+			const key = digest([sid(lastCtx), contextVersion(contextFor(lastCtx, "", board))]);
 			if (key === lastStopKey || key === pendingStop?.key) return;
 			if (inFlight) {
 				// Queue newest distinct epoch; single-level, no unbounded retries.

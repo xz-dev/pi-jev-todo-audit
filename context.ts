@@ -19,8 +19,19 @@ export interface EvidenceRecord {
 	fragment?: { of: string; start: number; end: number; total: number };
 }
 
+export interface FactualMaterial {
+	role: "reported";
+	/** Valid shape/references only, not verified factual accuracy or semantic coverage. */
+	valid: boolean;
+	sources: { id: string; role: string }[];
+	covers: { id: string; role: string }[];
+	gaps: { id: string; reason: string }[];
+}
+
 export interface AuditContext {
 	records: EvidenceRecord[];
+	/** The key is the containing task supplement; bodies remain in that record, once. */
+	factualMaterial?: Record<string, FactualMaterial>;
 	/** Latest public user boundary, retained even when new evidence is not text. */
 	userBoundary?: string;
 	omissions: { id: string; reason: string }[];
@@ -80,6 +91,15 @@ function visibleText(content: unknown): string {
 }
 
 export const digest = (v: unknown) => createHash("sha256").update(safeJson(v)).digest("hex");
+
+/** Canonical public task data; object-key order is immaterial, array/user chronology is not. */
+export function canonicalJson(value: unknown, secrets: readonly string[] = []): string {
+	const json = safeJson(value, secrets);
+	try {
+		return JSON.stringify(JSON.parse(json), (_key, v) => v && typeof v === "object" && !Array.isArray(v)
+			? Object.fromEntries(Object.keys(v).sort().map((k) => [k, v[k]])) : v);
+	} catch { return json; }
+}
 
 /**
  * Leader-level projection of the public session. JEV is a macro reviewer, not
@@ -162,7 +182,7 @@ export function collectContext(
 	for (let i = records.length - 1; i > lastReply; i--) if (records[i].advice) records.splice(i, 1);
 	for (const call of calls.values()) omissions.push({ id: call.id, reason: "tool result unavailable" });
 	for (const s of supplements) {
-		const text = safeJson(s.value, secrets);
+		const text = canonicalJson(s.value, secrets);
 		records.push({ id: s.id, kind: "supplement", text, group: s.id, view: "task", protected: true,
 			complete: !/\[REDACTED\]|\[unavailable:/.test(text) });
 	}
@@ -170,10 +190,55 @@ export function collectContext(
 		if (!r.complete) omissions.push({ id: r.id, reason: r.text.includes("[REDACTED]") ? "redacted evidence" : "unavailable: unsupported/serialization gap" });
 	}
 	if (!globalComplete) omissions.push({ id: "global", reason: "effective compaction-aware context unavailable" });
-	return { records, omissions, globalComplete, reduced: false, userBoundary: lastUser };
+	const material = projectBriefs(records);
+	return { records, omissions, globalComplete, reduced: false, userBoundary: lastUser,
+		...(Object.keys(material).length ? { factualMaterial: material } : {}) };
 }
 
-/** Advice/acknowledgments and board bookkeeping are not new execution evidence. */
+/** Index only the already sanitized public task text and permitted active-history identities. */
+function projectBriefs(records: EvidenceRecord[]): Record<string, FactualMaterial> {
+	const byId = new Map<string, EvidenceRecord[]>();
+	for (const r of records) byId.set(r.id, [...(byId.get(r.id) ?? []), r]);
+	const material: Record<string, FactualMaterial> = {};
+	for (const task of records.filter((r) => r.kind === "supplement")) {
+		let value: unknown;
+		try { value = JSON.parse(task.text); } catch { continue; } // The record already exposes the serialization gap.
+		const metadata = object(object(value).metadata);
+		if (!Object.hasOwn(metadata, "auditBrief")) continue;
+		const brief = object(metadata.auditBrief);
+		const gaps: FactualMaterial["gaps"] = [];
+		const gap = (id: string, reason: string) => {
+			if (!gaps.some((g) => g.id === id && g.reason === reason)) gaps.push({ id, reason });
+		};
+		if (typeof brief.text !== "string" || !brief.text.trim()) gap(task.id, "brief text unavailable");
+		else if (/\[REDACTED\]|\[unavailable:/.test(brief.text)) gap(task.id, "brief text redacted or unsupported");
+		const refs = (field: "sources" | "covers"): FactualMaterial["sources"] => {
+			if (!Array.isArray(brief[field])) { gap(task.id, `invalid ${field} list`); return []; }
+			const result: FactualMaterial["sources"] = [];
+			for (const id of new Set(brief[field])) {
+				if (typeof id !== "string" || !id.trim()) { gap(task.id, `invalid ${field} reference`); continue; }
+				const found = byId.get(id) ?? [];
+				const source = found.length === 1 ? found[0] : undefined;
+				result.push({ id, role: source?.kind ?? "unavailable" });
+				if (found.length > 1) gap(id, "ambiguous source identity");
+				else if (!source) gap(id, "source unavailable");
+				else if (!source.complete || source.advice || source.kind === "tool_call") gap(id, "source redacted or unsupported");
+				else if (field === "covers" && source.kind !== "assistant") gap(id, "coverage requires a public main-agent report");
+			}
+			return result;
+		};
+		const sources = refs("sources"), covers = refs("covers");
+		material[task.id] = { role: "reported", valid: !gaps.length, sources, covers, gaps };
+	}
+	return material;
+}
+
+/** Current supplied meaning, not opinions/progress; preserve user/source chronology. */
+export const contextVersion = (context: AuditContext): string => digest({ records: context.records,
+	factualMaterial: context.factualMaterial, userBoundary: context.userBoundary,
+	omissions: context.omissions, globalComplete: context.globalComplete, reduced: context.reduced });
+
+/** Execution-evidence lineage for correction deduplication, not current-input freshness. */
 export function workVersion(context: AuditContext, bookkeepingTools: ReadonlySet<string> = new Set()): string {
 	return digest({ userBoundary: context.userBoundary, records: context.records.filter((r) => r.kind === "user" ||
 		(r.kind === "tool_result" && !bookkeepingTools.has(r.toolName ?? "")) || r.kind === "shell" ||

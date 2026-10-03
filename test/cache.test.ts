@@ -1,6 +1,7 @@
 /** Uniform per-question evaluation reuse in the shared typesafe.ts path. */
 import { expect, test } from "bun:test";
-import { buildAuditRequest, evaluate, evaluationKey, newEvaluationCache, type AuditRequest, type Attempt } from "../typesafe.js";
+import { buildAuditRequest, evaluate, evaluateBatched, runAudit, evaluationKey, newEvaluationCache, type AuditRequest, type Attempt } from "../typesafe.js";
+import { newCapacityProfile } from "../capacity.js";
 
 const opts = { apiUrl: "https://x.test/v1/systemone", apiKey: "k", timeoutMs: 1000 };
 const board = { tasks: [{ id: 5, subject: "Parser", status: "in_progress" as const }, { id: 6, subject: "Docs", status: "pending" as const }], nextId: 7 };
@@ -14,6 +15,43 @@ function server(omit: string[] = []) {
 	};
 	return { sent, fetchFn };
 }
+
+for (const path of ["evaluate", "batch", "direct"]) test(`P1: ${path} admits 254+fallback but withholds 255+fallback without attempts or rejection training`, async () => {
+	const q = (n: number) => ({ type: "choice" as const, instructions: "Pick a complete supplied source", criteria: {
+		...Object.fromEntries(Array.from({ length: n }, (_, i) => [`source${i}`, "supplied source"])), insufficient_evidence: "No complete source",
+	} });
+	const s = server(), attempts: Attempt[] = [], cache = newEvaluationCache(), profile = newCapacityProfile();
+	const config = { ...opts, cache, fetchFn: s.fetchFn, onAttempt: (a: Attempt) => attempts.push(a), capacity: { profile } };
+	const small = { state: "S", model: "jev-latest", questions: { task_evidence_5: q(254) } };
+	const large = { ...small, questions: { task_evidence_5: q(255) } };
+	const run = (req: AuditRequest) => path === "direct" ? runAudit(req, config) : path === "batch" ? evaluateBatched(req, config) : evaluate(req, config);
+	await run(small); expect(s.sent).toHaveLength(1); expect(Object.keys(s.sent[0].questions.task_evidence_5.criteria)).toHaveLength(255);
+	const before = JSON.stringify(profile);
+	attempts.length = 0;
+	const blocked = await run(large);
+	expect(s.sent).toHaveLength(1); expect(attempts).toHaveLength(0); expect(JSON.stringify(profile)).toBe(before);
+	expect(cache.rejected.size).toBe(0); expect(cache.answers.has(evaluationKey(large, "task_evidence_5", opts.apiUrl))).toBe(false);
+	const result = "result" in blocked ? blocked.result : blocked;
+	expect(result.ok).toBe(true);
+	expect((result as any).withheld).toEqual([{ question: "task_evidence_5", count: 256, limit: 255 }]);
+	if (result.ok) expect(result.answers.evidence?.task_evidence_5).toBeUndefined();
+});
+
+test("P1/P3: cached valid siblings survive an oversized non-evidence Choice, with no empty request", async () => {
+	const cache = newEvaluationCache(), s = server();
+	const valid = { type: "choice" as const, instructions: "Valid independent finding", criteria: { yes: "yes", unclear: "unknown" } };
+	const req = { state: "S", model: "jev-latest", questions: { A: valid } };
+	await evaluate(req, { ...opts, cache, fetchFn: s.fetchFn });
+	const all = { ...req, questions: { ...req.questions, current_match: { ...valid, criteria: {
+		...Object.fromEntries(Array.from({ length: 255 }, (_, i) => [String(i), "task identity"])), not_on_board: "not on board",
+	} } } };
+	const result = await evaluateBatched(all, { ...opts, cache, fetchFn: s.fetchFn });
+	expect(s.sent).toHaveLength(1);
+	expect(result.reuse).toEqual({ hits: 1, joined: 0, sent: 0 });
+	expect(result.result.ok && (result.result.answers as any).A).toBeDefined();
+	expect(result.result.ok && result.result.answers.current_match).toBeUndefined();
+	expect((result.result as any).withheld).toEqual([{ question: "current_match", count: 256, limit: 255 }]);
+});
 
 test("every decision category (alignment, lifecycle, granularity, evidence, chunk) is reused with zero provider calls", async () => {
 	const cache = newEvaluationCache();

@@ -4,7 +4,7 @@ A [Pi](https://pi.dev) extension that checks whether the [`@juicesharp/rpiv-todo
 
 jev acts as a **macro-level engineering lead, not a worker**: it sees goals, task definitions, reported outcomes, broad progress, user decisions and open questions, not execution detail. The extension is advisory. It replays persisted `todo` snapshots, never mutates tasks directly, and asks the main agent to make any justified update.
 
-The design goal is **lower jev spend**: the same context and question is never paid for twice, and input already reviewed is carried forward as remembered structured conclusions instead of being resent. Persistence uses Pi `appendEntry` custom entries (non-context); there is no database, summarizer model or classifier model.
+The design goal is **lower jev spend**: completed evaluations are reused under their exact identities, while processed tool events need not be replayed. Reported facts, JEV conclusions and review progress remain separate; necessary public reports may still need to be resent. Persistence uses Pi `appendEntry` custom entries (non-context); there is no database, summarizer model or classifier model. Neither caching nor a compact task account guarantees lower live billing.
 
 ## Install
 
@@ -49,17 +49,39 @@ The collector uses Pi's public, compaction-aware `buildContextEntries()` and kee
 
 If the host lacks the effective-context API, the visible branch is used with an explicit incomplete-global-context marker; global-context-dependent splitting is disabled. Abandoned branches are not replayed.
 
-### Remembered conclusions instead of resent context
+### Reported facts and remembered conclusions
 
 Processed input is represented by a **rolling result** that keeps three things separate:
 
-- **Reported work:** user decisions, the latest host summary and the most recent main-agent reports from the processed range, re-sent as authored and labelled `retained from processed range`. All processed user messages are always retained — user constraints/authority are never silently dropped; in a very long uncompacted session they can eventually hit the provider limit, where the irreducible-scope diagnostic asks the main agent for a concise report. Reports are kept newest-first within a 4,000-character serialized-record budget (metadata counts — tiny reports still cost envelope bytes), so a short reply does not push out an earlier one; a report that alone exceeds the budget is not repeated and jev is told to ask the main agent for a concise account; any record that could only be reviewed in fragments is never repeated whole, because that would recreate the overflow. Plus current task records.
+- **Reported work:** permitted user decisions, the latest host summary and non-advice main-agent/custom reports from the processed range, re-sent as authored and labelled `retained from processed range`, plus current task records. User constraints are never silently dropped. A 4,000-character allowance, an old selected primary or a `covers` list does not establish that another report is dispensable. Reports with uncertain primary eligibility stay available, including the original permitted body after fragment processing. This can grow the required floor until admission is impossible; the diagnostic preserves completed work and discloses the incomplete scope rather than silently cropping it.
 - **jev opinions:** the latest validated answers, sent as `rolling.opinions` (derived and revisable).
 - **Progress:** the reviewed frontier `processedThrough`, stored as a receipt.
 
 Here "summary" means these stored typed answers and retained reports. It is **not** a free-form prose generation call: nothing asks jev or another model to write a summary.
 
-Every question is cached by *(rules version, endpoint, model, exact state, exact question)*. A later audit reuses a stored answer when those match and sends only the missing questions. Cached answers, receipts and rejected-request fingerprints are appended to the branch as non-context custom entries, so they survive reload and compaction. They stay within the same session branch; nothing is shared across sessions or tasks.
+Every question is cached by *(rules version, endpoint, model, exact state, exact question)*. A later audit reuses a stored answer when those match and sends only the missing questions. Canonical facts, source/coverage definitions, roles, gaps and actual Choice definitions participate in freshness: a changed fact or reference cannot inherit an answer merely because the previous labels or cursor are unchanged. Cached answers, receipts and rejected-request fingerprints are appended to the branch as non-context custom entries, so they survive reload and compaction. They stay within the same session branch; nothing is shared across sessions or tasks. Missing original material after compaction remains a gap, not a fact rebuilt from opinions.
+
+### Optional current task account
+
+Ordinary task descriptions and public reports remain useful without a new field. To expose a current account, the main agent can include `metadata.auditBrief` in a public TODO record:
+
+```json
+{
+  "metadata": {
+    "auditBrief": {
+      "text": "Parser acceptance checks are reported passed; rollout still awaits user approval.",
+      "sources": ["acceptance-report-id", "user-decision-id"],
+      "covers": ["investigation-report-id"]
+    }
+  }
+}
+```
+
+Use actual permitted source IDs from the active history or audit feedback, not the example placeholders or invented origins. The containing task provides object scope. `sources` lists supporting references, **not an exclusive evidence allowlist**; `covers` declares earlier main-agent reports represented by the account, **not that their primary eligibility has expired**. The body is serialized once in the task supplement. Its factual index preserves original source roles and reference gaps.
+
+The internal `factualMaterial.valid` means shape/reference validity only, not truth or semantic completeness. Missing, unsupported or unverifiable origins remain explicit. A brief is reported data, never independently verified execution or new user permission; a task supplement alone cannot anchor completion. Later user decisions and other tasks' needed facts remain protected.
+
+A legal brief can clarify facts and relationships, but does not automatically shrink state or bound candidates. If 260 reports may still be needed as primary sources, merely listing them in `covers` cannot make that evidence Choice usable. Repeating the same account does not guarantee admission or recovery.
 
 ### Privacy and missing information
 
@@ -112,6 +134,18 @@ These gates validate supplied judgments and prevent deterministic contradictions
 
 ## Provider limits, not application quotas
 
+### Choice definitions: at most 255 options
+
+Every outbound Choice is checked at the shared unresolved-question boundary and on direct calls, including automatic, manual and `full` paths. The 255 count includes all fallback entries: **254 candidates + one fallback is eligible; 255 + one is withheld locally**. Board matching follows the same rule; no task identities are silently removed to fit it.
+
+Per-finding manifests use supplied sources and explicit applicability. Known other-task supplements can be scoped out when there is no source/dependency relation; uncertain public report associations remain candidates. No keyword/title filtering, first/newest-254 crop, source-selection model call or probability-preserving paging is used.
+
+An over-limit question is not sent, tested with an admission probe or recorded as a context rejection. It gets no fabricated answer, confidence, token usage or successful affected receipt. Compatible exact cached answers and valid independent corrections remain usable; if no unresolved questions can be sent, there is no empty request.
+
+The existing steer channel reports `CHOICE CONTEXT INCOMPLETE` once for unchanged input, names the affected questions/counts and does not wake task execution. It asks for genuine scope information when available, not the deletion of necessary sources. A structurally valid account alone may be insufficient; repeating it is not promised to unlock the finding. The scope remains incomplete if a complete necessary candidate set still cannot be safely bounded.
+
+### Token admission and recovery
+
 The [official Models documentation](https://docs.typesafe.ai/models.md), checked 2026-09-27, maps `jev-latest` to `jev-1.13.0` and specifies two simultaneous limits:
 
 - state + **all questions combined**: **64k tokens**;
@@ -131,13 +165,13 @@ Input is first reduced by the projection (tool events only) and rolling results.
 2. split a single long text record into ordered, labelled fragments (each at least 1,000 characters; a surrogate pair is never split);
 3. batch independent questions over the same frozen state when the request-wide limit is responsible or context cannot shrink. Generic rejections compare candidate reductions without pretending the provider identified a dimension.
 
-Completed parts are cached and kept; a failure resumes only unfinished work. A mid-record fragment never advances the receipt, so resuming rebuilds identical fragments that hit the cache. Exact rejected requests are restored across reload and never resent unchanged. If fixed required state plus an irreducible fragment/question cannot be admitted, the scope stops before traversing remaining sibling combinations, asks for a concise current report, and keeps completed work. User constraints are not silently dropped and incomplete reviews do not become final advice. A recovered audit notifies `context overflow recovered by subdivision` instead of a failure.
+Completed parts are cached and kept; a failure resumes only unfinished work. A mid-record fragment never advances the receipt, so resuming rebuilds identical fragments that hit the cache. Exact rejected requests are restored across reload and never resent unchanged. If fixed required state plus an irreducible fragment/question cannot be admitted, the scope stops before traversing remaining sibling combinations, keeps completed work and reports `FACTUAL CONTEXT INCOMPLETE`. A concise current account can expose decisions and gaps but cannot by itself erase retained primary obligations or guarantee recovery. User constraints are not silently dropped and incomplete reviews do not become final advice. A recovered audit notifies `context overflow recovered by subdivision` instead of a failure.
 
 Ordinary validation, authentication, rate/quota, generic payload-size and unknown errors never subdivide. Recognition is deliberately conservative: the inspected [HTTP API docs](https://docs.typesafe.ai/api.md) do not specify a dedicated overflow schema, so an unfamiliar spelling is an ordinary isolated failure. Existing bounded transient-network retries remain separate.
 
 ## Cost diagnostics
 
-Each audit appends one non-context ledger entry (`customType: "jev-todo-audit-ledger"`, `kind: "diag"`) with: audit id and label, questions reused vs sent, the processed range before/after, the outcome (`unchanged`/`completed`/`recovered`/`incomplete`/`failed`), and one row per actual provider attempt (retries and overflow rejections included) with status, response model, request state/question size in **bytes**, and provider-reported input/output tokens, plus the channel digest and the pre-split count. A channel that reports a charge (OpenRouter `usage.cost`) also records `costUsd` per attempt and in total. Usage the provider did not report is recorded as `"unknown"` on its attempt. The audit total sums what was reported and adds `unreported` with the number of attempts missing each figure (e.g. overflow rejections carry no usage); when `unreported` is present the total is a lower bound, not a complete cost. A cache hit records zero attempts, so its original usage is not counted again. Diagnostics contain no transcript text and no credentials, and never trigger an evaluation. Bytes are request size, not tokens or cost.
+Each audit appends one non-context ledger entry (`customType: "jev-todo-audit-ledger"`, `kind: "diag"`) with: audit id and label, questions reused vs sent, the processed range before/after, the outcome (`unchanged`/`completed`/`recovered`/`incomplete`/`failed`), and one row per actual provider attempt (retries and overflow rejections included) with status, response model, request state/question size in **bytes**, and provider-reported input/output tokens, plus the channel digest and the pre-split count. A channel that reports a charge (OpenRouter `usage.cost`) also records `costUsd` per attempt and in total. Usage the provider did not report is recorded as `"unknown"` on its attempt. The audit total sums what was reported and adds `unreported` with the number of attempts missing each figure (e.g. overflow rejections carry no usage); when `unreported` is present the total is a lower bound, not a complete cost. A cache hit records zero attempts, so its original usage is not counted again. Local Choice withholding is recorded separately as question/count/limit diagnostics, not a provider attempt, capacity-learning observation or model judgment. Diagnostics contain no transcript text and no credentials, and never trigger an evaluation. Bytes are request size, not tokens or cost.
 
 ## Configuration
 
@@ -186,11 +220,12 @@ bun test
 bun run typecheck
 node "test/fixtures/node ownership.mjs"
 openspec validate prevent-audit-request-amplification --strict
+openspec validate improve-audit-context-fidelity --strict
 ```
 
-Tests use synthetic public Pi entries, captured requests and mocked Choice responses. They cover the tool-event projection, visible-text processing and replies, TODO segments and first-active origin, per-question reuse and reload, rolling results, overflow subdivision and resumption, manual modes, independent task decisions, repetition suppression and in-flight invalidation. Ownership tests drive the real extension registration and a native Node parent/child/grandchild fixture, without a shell. CI is configured for Linux and Windows with Node 26 and Bun 1.4.2; a Linux run or mocked Windows behavior does not substitute for executing the Windows job.
+Tests use synthetic public Pi entries, captured requests and mocked Choice responses. They cover the tool-event projection, visible-text processing and replies, TODO segments and first-active origin, per-question reuse and reload, rolling results, overflow subdivision and resumption, manual modes, independent task decisions, repetition suppression and in-flight invalidation. Ownership tests drive the real extension registration and a native Node parent/child/grandchild fixture, without a shell. CI is configured for Linux and Windows with Node 26 and Bun 1.4.2; a Linux run or mocked Windows behavior does not substitute for executing the Windows job. The predecessor passed both jobs in Actions run `36973608562` on `ddd7f9a`; the changed context-fidelity candidate has not yet obtained new platform CI or rollout acceptance.
 
-An offline replay corpus (`test/corpus.ts`) compares request counts and bytes against a mock capacity. `bun test/compare-workloads.ts --baseline` reads core modules from the committed `HEAD` without a checkout; `bun test/compare-workloads.ts` runs the candidate against the same corpus and retained-prefix workloads. These are request-shape measurements, **not** provider tokens or dollars, and they do not measure live JEV semantic accuracy. Live savings require a separately authorized live replay.
+An offline replay corpus (`test/corpus.ts`) compares request counts and bytes against a mock capacity. `bun test/compare-workloads.ts --baseline` reads committed `index`, `capacity`, `rolling` and `typesafe` modules at `HEAD`, without a checkout; other context/board/corpus helpers are current, so this is not a full historical build comparison. `bun test/compare-workloads.ts` runs the candidate against the same corpus and retained-prefix workloads. These are request-shape measurements, **not** provider tokens or dollars, and they do not measure live JEV semantic accuracy. Source presence in attempted/rejected packets is not completed review coverage; use answered fragments and durable frontiers. Preserving necessary legacy reports can increase traffic and stop a scope that an earlier crop appeared to complete. Easier admitted positive fixtures do not demonstrate recovery of that original difficult scope. Live savings require a separately authorized live replay.
 
 API/serialization/consumer failures remain isolated from the agent loop. The extension neither guarantees that the main agent obeys a steer nor provides a hard tool blocker. The current rpiv-todo persistence shape is the only private-data adapter; incompatible snapshots cannot be treated as authoritative task state.
 

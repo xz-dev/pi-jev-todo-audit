@@ -5,6 +5,8 @@
  * shape is the stable contract, module internals are not.
  */
 
+import { canonicalJson } from "./context.js";
+
 export interface BoardTask {
 	id: number;
 	subject: string;
@@ -92,7 +94,7 @@ export function replayBoardWithAges(branch: Iterable<unknown>): BoardWithAges {
 			tasks: msg.details.tasks.map((t) => ({ ...t })),
 			nextId: msg.details.nextId,
 		};
-		const records = new Map(result.tasks.map((t) => [t.id, JSON.stringify(t)]));
+		const records = new Map(result.tasks.map((t) => [t.id, canonicalJson(t)]));
 		const changed = [...new Set([...records.keys(), ...prevRecords.keys()])].filter((id) => records.get(id) !== prevRecords.get(id));
 		prevRecords = records;
 		if (changed.length) revisions.push({ source: e.id, turn: loops, changed });

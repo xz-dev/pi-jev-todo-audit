@@ -1,8 +1,8 @@
 /**
  * Rolling review: already processed input is represented by remembered
  * conclusions, not resent raw. Three parts stay distinct in each stage:
- *   - reported work: current task records (supplements) plus user decisions,
- *     the latest host summary and the latest main-agent report, as authored;
+ *   - reported work: current task records (supplements), user decisions,
+ *     the latest host summary and still-needed public reports, as authored;
  *   - JEV opinions: the latest validated answers (derived, revisable);
  *   - processing progress: the reviewed frontier and whether this is the final piece.
  * Every stage goes through the uniform evaluation cache. On an explicit context
@@ -12,16 +12,16 @@
  */
 import { overflowConstraint, sizeOf } from "./capacity.js";
 import type { BoardSnapshot } from "./board.js";
-import { safeJson, type AuditContext, type EvidenceRecord } from "./context.js";
+import { type AuditContext, type EvidenceRecord } from "./context.js";
 import { buildAuditRequest, evaluate, evaluateBatched, evaluationKey, flattenAnswers, groupAnswers, type AuditResult, type ChoiceAnswer, type EvaluateOptions, type Reuse, type TerminalStopInfo } from "./typesafe.js";
 
 /** Cumulative result of the latest completed stage (replaces, never accumulates). */
 export interface Rolling {
 	through?: string; inputKey: string; opinions: Record<string, ChoiceAnswer>; answerKeys: string[];
-	/** Processed entries that could only be reviewed in fragments: never retained whole (that would recreate the overflow). */
+	/** Entries previously reviewed in fragments; this is progress metadata, never factual coverage. */
 	oversized?: string[];
 }
-/** A retained main-agent report larger than this is not repeated; the leader asks for a concise account instead. */
+/** Historical report allowance, retained only for backward-compatible comparison fixtures; not an omission rule. */
 export const REPORT_RETAIN_CHARS = 4000;
 /** A text record is fragmented only while each half stays at least this long (finite, progress-making). */
 export const FRAGMENT_MIN_CHARS = 1000;
@@ -42,43 +42,17 @@ export function processedEntries(branch: Iterable<unknown>, through?: string): S
 	return undefined;
 }
 
-/** Reported work carried forward from processed records, each replaced by newer material. */
-function retainedFrom(processed: EvidenceRecord[], oversized: ReadonlySet<string>): { records: EvidenceRecord[]; note?: string } {
-	const users = processed.filter((r) => r.kind === "user");
+/** A coverage claim cannot retire uncertain primary eligibility; preserve permitted reports as authored. */
+function retainedFrom(processed: EvidenceRecord[]): { records: EvidenceRecord[] } {
 	const summary = processed.filter((r) => r.kind === "summary").at(-1);
-	// The most recent reports are kept (newest facts fit first); a short reply like "Acknowledged."
-	// must not silently replace a still-applicable earlier report.
-	const reports = processed.filter((r) => r.kind === "assistant" && !r.advice);
-	// A record that needed fragmenting is never repeated whole: that would recreate the overflow on every later
-	// audit; its reviewed content lives in the stored opinions. User decisions and summaries are always kept.
-	const fragmented = (r?: EvidenceRecord) => !!r && (!!r.fragment || oversized.has(entryOf(r)));
-	const keptReports = new Set<EvidenceRecord>();
-	// Budget the serialized record (metadata included), not only its text — tiny reports still cost envelope bytes.
-	const serial = (r: EvidenceRecord) => safeJson({ ...r, view: "global", selection: "retained from processed range" }).length;
-	let budget = REPORT_RETAIN_CHARS;
-	let omittedCount = 0;
-	for (const r of [...reports].reverse()) {
-		if (fragmented(r)) continue;
-		const cost = serial(r);
-		if (cost > budget) { omittedCount++; continue; }
-		budget -= cost;
-		keptReports.add(r);
-	}
-	const keep = new Set([...users, summary, ...keptReports].filter((r): r is EvidenceRecord => !!r && !fragmented(r)));
-	const latest = reports.at(-1);
-	const droppedReport = !!latest && !keptReports.has(latest);
-	const notes = [
-		...(droppedReport ? [latest.text.length > REPORT_RETAIN_CHARS
-			? `latest main-agent report ${latest.id} exceeds the compact size and is not repeated; ask the main agent for a concise current account if its facts are needed`
-			: fragmented(latest)
-				? `latest main-agent report ${latest.id} could only be reviewed in fragments and is not repeated whole; its reviewed content is reflected in the opinions`
-				: `latest main-agent report ${latest.id} does not fit the compact report budget and is not repeated`] : []),
-		...(omittedCount ? [`${omittedCount} older main-agent report${omittedCount > 1 ? "s" : ""} omitted by the compact report budget; their reviewed content is reflected in the opinions`] : []),
-		...[...users, summary].filter(fragmented).map((r) => `${r!.kind} ${r!.id} could only be reviewed in fragments and is not repeated whole; its reviewed content is reflected in the opinions`),
-	];
 	return {
-		records: processed.filter((r) => keep.has(r)).map((r) => ({ ...r, view: "global" as const, selection: "retained from processed range" })),
-		note: notes.length ? notes.join("; ") : undefined,
+		records: processed.filter((r) => r.kind === "user" || r === summary ||
+			((r.kind === "assistant" || r.kind === "custom") && !r.advice)).map((r) => {
+			// A prior fragment receipt is not an account of its facts. Needed original text is fixed state;
+			// if it cannot be admitted, recovery must stop honestly rather than inventing facts from opinions.
+			const { fragment, ...whole } = r;
+			return { ...whole, view: "global" as const, selection: "retained from processed range" };
+		}),
 	};
 }
 
@@ -108,6 +82,8 @@ export interface RollingOutcome {
 	complete: boolean;
 	/** Provider requests were avoided entirely because nothing new needed review. */
 	unchanged: boolean;
+	/** The necessary scope could not be admitted even at the irreducible leaf; request reported material, not execution. */
+	needsAccount?: boolean;
 	/** At least one overflow was met and the review still completed through subdivision. */
 	recovered: boolean;
 }
@@ -137,7 +113,7 @@ export async function reviewRolling(a: RollingArgs): Promise<RollingOutcome> {
 	let rolling = a.rolling;
 	const oversized = new Set(a.rolling?.oversized ?? []);
 	const stageContext = (piece: EvidenceRecord[], final: boolean): AuditContext => {
-		const retained = retainedFrom(processed, oversized);
+		const retained = retainedFrom(processed);
 		return {
 			...a.context,
 			// Gaps inside already processed ranges were reviewed with them; only current gaps are resent.
@@ -145,7 +121,6 @@ export async function reviewRolling(a: RollingArgs): Promise<RollingOutcome> {
 			records: [...retained.records, ...piece.map((r) => ({ ...r, view: "recent" as const })), ...supplements],
 			rolling: {
 				opinions: rolling?.opinions ?? {},
-				...(retained.note ? { reportNote: retained.note } : {}),
 				progress: { processedThrough: rolling?.through ?? null, final },
 			},
 		};
@@ -156,6 +131,7 @@ export async function reviewRolling(a: RollingArgs): Promise<RollingOutcome> {
 		return { result: { ok: true, answers: groupAnswers(rolling.opinions) }, context: stageContext([], true), reuse: total, final: true, complete: true, unchanged: true, recovered: false };
 	}
 	let recovered = false;
+	let needsAccount = false;
 	// A real rejection anywhere (including inside question batches) makes a completed review a recovery.
 	const opts: EvaluateOptions = { ...a.opts, onAttempt: (x) => { if (x.outcome === "overflow") recovered = true; a.opts.onAttempt?.(x); } };
 	let last: { result: AuditResult; context: AuditContext; complete?: boolean } | undefined;
@@ -185,7 +161,10 @@ export async function reviewRolling(a: RollingArgs): Promise<RollingOutcome> {
 			if (!result.ok && result.contextOverflow && halves && !a.opts.signal?.aborted) {
 				return await stage(halves[0], false) && await stage(halves[1], final);
 			}
-			if (!result.ok && result.contextOverflow) result = { ok: false, error: IRREDUCIBLE, contextOverflow: true };
+			if (!result.ok && result.contextOverflow) {
+				needsAccount = true;
+				result = { ok: false, error: IRREDUCIBLE, contextOverflow: true };
+			}
 		}
 		last = { result, context, complete: true };
 		if (!result.ok) { last.complete = false; return false; }
@@ -219,7 +198,8 @@ export async function reviewRolling(a: RollingArgs): Promise<RollingOutcome> {
 	const pieces = unprocessed.length ? (a.pieces?.(unprocessed) ?? [unprocessed]) : [[]];
 	for (const [i, piece] of pieces.entries()) {
 		if (!await stage(piece, i === pieces.length - 1)) {
-			return { ...last!, reuse: total, final: false, complete: false, unchanged: false, recovered: false };
+			return { ...last!, reuse: total, final: false, complete: false, unchanged: false, recovered: false,
+				...(needsAccount ? { needsAccount: true } : {}) };
 		}
 	}
 	return { result: last!.result, context: last!.context, reuse: total, final: true, complete: last!.complete !== false, unchanged: false, recovered };

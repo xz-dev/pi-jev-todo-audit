@@ -1,6 +1,6 @@
 /** Deterministic safety gates around advisory model judgments, not a second classifier. */
 import { inProgressTasks, unfinishedTasks, type BoardSnapshot, type BoardTask } from "./board.js";
-import { digest, redact, workVersion, type AuditContext, type EvidenceRecord } from "./context.js";
+import { canonicalJson, digest, redact, workVersion, type AuditContext, type EvidenceRecord } from "./context.js";
 import { evidenceKey, granularityKey, lifecycleKey, reconciliationKey, NOT_ON_BOARD, type AuditAnswers, type ChoiceAnswer } from "./typesafe.js";
 
 export interface Correction { key: string; text: string; bookkeeping: boolean; execution: boolean }
@@ -42,7 +42,10 @@ export function decide(answers: AuditAnswers, board: BoardSnapshot, threshold: n
 		const taskIdentity = action === "block" || action === "defer"
 			? task && { id: task.id, subject: task.subject, owner: task.owner, blockedBy: task.blockedBy }
 			: task;
-		const key = digest({ scope: opts.scopeKey, task: taskIdentity, action, evidenceVersion });
+		const key = digest({ scope: opts.scopeKey, task: taskIdentity && canonicalJson(taskIdentity), action, evidenceVersion,
+			source: { id: evidence.id, kind: evidence.kind, text: evidence.text, producer: evidence.producer,
+				request: evidence.request },
+			brief: task?.metadata?.auditBrief && canonicalJson(task.metadata.auditBrief), material: task && context?.factualMaterial?.[`task:${task.id}`] });
 		if (opts.suppressed?.has(key)) { suppressed = true; return; }
 		// Display-only excerpt; the model saw the entire selected source, without this cap.
 		const excerpt = evidence.text.length > 300 ? `${evidence.text.slice(0, 300)}… [excerpt]` : evidence.text;

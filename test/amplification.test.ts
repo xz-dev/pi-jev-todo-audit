@@ -3,7 +3,7 @@ import { expect, test } from "bun:test";
 import { reviewRolling, type Rolling } from "../rolling.js";
 import { evaluate, evaluateBatched, envelopeKey, newEvaluationCache, type AuditRequest, type EvaluateOptions } from "../typesafe.js";
 import { sizeOf, type ContextLimits } from "../capacity.js";
-import type { EvidenceRecord } from "../context.js";
+import { collectContext, type EvidenceRecord } from "../context.js";
 
 const record = (id: string, kind: string, text: string): EvidenceRecord => ({
 	id, kind, text, group: id, view: "recent", protected: kind === "user", complete: true,
@@ -51,7 +51,7 @@ const answered = (req: AuditRequest, inputTokens?: number) => new Response(JSON.
 	answers: Object.fromEntries(Object.entries(req.questions).map(([k, q]) => [k, { choice: Object.keys(q.criteria)[0], confidence: 0.9 }])),
 }));
 
-test("a disputed prediction followed by true overflow preserves ordered coverage and exact rejection guards", async () => {
+test("a disputed prediction followed by true overflow preserves admitted facts and stops at the primary floor", async () => {
 	const history = [record("u", "user", "context ".repeat(8000)),
 		...Array.from({ length: 4 }, (_, i) => record(`p${i}`, "assistant", `PIECE-${i}: ` + "detail ".repeat(1800)))];
 	const sent: { req: AuditRequest; status: number }[] = [], commits: Rolling[] = [];
@@ -63,12 +63,28 @@ test("a disputed prediction followed by true overflow preserves ordered coverage
 			sent.push({ req, status: tooBig ? 400 : 200 });
 			return tooBig ? new Response(OVERFLOW, { status: 400 }) : answered(req, Math.ceil((size.stateBytes + size.questionBytes) * 0.34));
 		} };
-	const out = await reviewRolling({ board, context: { records: history, omissions: [], globalComplete: true, reduced: false },
+	// Coverage is reported data and cannot retire the unpinned public reports' primary eligibility.
+	const context = collectContext(history.map((r) => ({ id: r.id, type: "message", message: { role: r.kind, content: r.text } })),
+		board.tasks.map((t) => ({ id: `task:${t.id}`, value: { ...t, metadata: { auditBrief: {
+			text: "Current reported account of PIECE-0 through PIECE-3; permission remains the user's constraint.", sources: ["u"], covers: ["p0", "p1", "p2", "p3"],
+		} } } })));
+	const out = await reviewRolling({ board, context,
 		processed: new Set(["u"]), rolling: { through: "u", inputKey: "old", opinions: {}, answerKeys: [] }, inputKey: "new", model: "m",
 		opts: options, commit: (r) => (commits.push(r), true) });
-	expect(sent[0].status).toBe(400); expect(out.recovered).toBe(true); expect(out.final && out.complete).toBe(true);
-	expect(commits.at(-1)?.through).toBe("p3");
-	for (const r of history) expect(sent.some((s) => s.status === 200 && s.req.state.includes(r.text))).toBe(true);
+	expect(sent[0].status).toBe(400); expect(out.recovered).toBe(false); // an incomplete scope is not recovered success
+	expect(out.final || out.complete).toBe(false); expect(out.needsAccount).toBe(true);
+	const through = commits.at(-1)?.through;
+	expect(through).toBeDefined(); expect(through).not.toBe("p3");
+	const processed = history.slice(0, history.findIndex((r) => r.id === through) + 1);
+	const packets = sent.filter((s) => s.status === 200).map((s) => JSON.parse(s.req.state.split("Macro-level evidence (tool activity is name/call/status only):\n")[1].split("\nInterpret evidence chronologically:")[0]));
+	for (const r of processed) {
+		const pieces = packets.flatMap((p) => p.records).filter((x: EvidenceRecord) => x.id === r.id || x.fragment?.of === r.id)
+			.map((x: EvidenceRecord) => ({ start: x.fragment?.start ?? 0, end: x.fragment?.end ?? r.text.length, text: x.text })).sort((a, b) => a.start - b.start);
+		let end = 0;
+		for (const p of pieces) { expect(p.start).toBeLessThanOrEqual(end); expect(p.text).toBe(r.text.slice(p.start, p.end)); end = Math.max(end, p.end); }
+		expect(end).toBe(r.text.length);
+		expect(sent.at(-1)!.req.state).toContain(r.text);
+	}
 	const before = sent.length;
 	const rejected = await evaluate(sent[0].req, { ...options, fixedState: sent[0].req.state, sendIrreducible: true });
 	expect(rejected.result.ok).toBe(false); expect(sent.length).toBe(before);

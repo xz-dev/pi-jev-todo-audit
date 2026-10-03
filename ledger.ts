@@ -5,7 +5,7 @@
  */
 import { object } from "./context.js";
 import type { Rolling } from "./rolling.js";
-import type { Attempt, ChoiceAnswer, EvaluationCache } from "./typesafe.js";
+import type { Attempt, ChoiceAnswer, EvaluationCache, WithheldChoice } from "./typesafe.js";
 
 export const LEDGER_TYPE = "jev-todo-audit-ledger";
 /** This extension's own bookkeeping: never evidence, never a freshness change. */
@@ -33,6 +33,8 @@ export interface AuditDiagnostics {
 	channel?: string;
 	/** Envelopes split before sending by the capacity estimate: not provider attempts, no usage. */
 	presplits?: number;
+	/** Locally blocked question definitions, not attempts, confidence, usage or learned capacity. */
+	withheld?: WithheldChoice[];
 	attempts: { n: number; outcome: Attempt["outcome"]; status?: number; model?: string; stateBytes?: number; questionBytes?: number; longestQuestionBytes?: number; inputTokens: number | "unknown"; outputTokens: number | "unknown"; costUsd?: number }[];
 	/**
 	 * Sums of what the provider reported. `unreported` counts attempts lacking each figure: when present the sum is
@@ -43,7 +45,7 @@ export interface AuditDiagnostics {
 
 /** Pure: builds diagnostics from observed attempts without sending anything. */
 export function diagnose(audit: string, label: string, reuse: { hits: number; joined: number; sent: number }, range: AuditDiagnostics["range"],
-	outcome: AuditDiagnostics["outcome"], attempts: Attempt[], capacity?: { channel: string; presplits: number }): AuditDiagnostics {
+	outcome: AuditDiagnostics["outcome"], attempts: Attempt[], capacity?: { channel: string; presplits: number; withheld?: WithheldChoice[] }): AuditDiagnostics {
 	const known = (v: number | undefined): number | "unknown" => v ?? "unknown";
 	type Figure = "inputTokens" | "outputTokens" | "costUsd";
 	const sum = (k: Figure) => attempts.reduce((s, a) => s + (a[k] ?? 0), 0);

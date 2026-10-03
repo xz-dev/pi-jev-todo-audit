@@ -7,6 +7,7 @@ import { collectContext } from "../context.js";
 import { restoreLedger } from "../ledger.js";
 import { reviewRolling, REPORT_RETAIN_CHARS, type Rolling } from "../rolling.js";
 import { newEvaluationCache, type AuditRequest, type EvaluateOptions } from "../typesafe.js";
+import { decide } from "../verdict.js";
 
 const OVERFLOW = JSON.stringify({ detail: { error_type: "max_tokens_exceeded" } });
 const user = (id: string, text: string) => ({ id, type: "message", message: { role: "user", content: text } });
@@ -17,7 +18,7 @@ const board = { tasks: [task], nextId: 5 };
 const supplements = [{ id: "task:4", value: task }];
 
 /** Mock provider: rejects when state + all asked questions exceed `capacity` bytes (explicit test contract, not a tokenizer). */
-function provider(capacity: number, opts: { stateCap?: number; fail?: (req: AuditRequest) => boolean } = {}) {
+function provider(capacity: number, opts: { stateCap?: number; fail?: (req: AuditRequest) => boolean; choices?: Record<string, string> } = {}) {
 	const requests: { req: AuditRequest; status: number }[] = [];
 	const fetchFn = async (_u: string, init?: RequestInit) => {
 		const req = JSON.parse(String(init!.body)) as AuditRequest;
@@ -26,12 +27,18 @@ function provider(capacity: number, opts: { stateCap?: number; fail?: (req: Audi
 		requests.push({ req, status });
 		if (status === 422) return new Response("invalid question", { status });
 		if (status === 400) return new Response(OVERFLOW, { status });
-		const answers = Object.fromEntries(Object.entries(req.questions).map(([k, q]) => [k, { choice: Object.keys(q.criteria).includes("unclear") ? "unclear" : Object.keys(q.criteria)[0], confidence: 0.9 }]));
+		const answers = Object.fromEntries(Object.entries(req.questions).map(([k, q]) => [k, { choice: opts.choices?.[k] && Object.hasOwn(q.criteria, opts.choices[k])
+			? opts.choices[k] : Object.keys(q.criteria).includes("unclear") ? "unclear" : Object.keys(q.criteria)[0], confidence: 0.9 }]));
 		return new Response(JSON.stringify({ answers, model: "jev-mock" }));
 	};
 	const opts2: EvaluateOptions = { apiUrl: "http://jev", apiKey: "sk-capacity-test", timeoutMs: 1000, cache: newEvaluationCache(), fetchFn };
 	return { requests, opts: opts2 };
 }
+const scopedTask = (history: unknown[]) => ({ ...task, metadata: { auditBrief: {
+	text: "Current authored account of the supplied design findings; analysis only, no implementation permission.",
+	sources: (history as any[]).filter((e) => e.message?.role === "user").map((e) => e.id),
+	covers: (history as any[]).filter((e) => e.message?.role === "assistant" && typeof e.message.content === "string").map((e) => e.id),
+} } });
 const review = (history: unknown[], p: ReturnType<typeof provider>, extra: Partial<Parameters<typeof reviewRolling>[0]> = {}) => {
 	const commits: Rolling[] = [];
 	return reviewRolling({ board, context: collectContext(history, supplements), processed: new Set(), inputKey: "k", model: "m", opts: p.opts,
@@ -39,17 +46,88 @@ const review = (history: unknown[], p: ReturnType<typeof provider>, extra: Parti
 };
 const longHistory = () => [user("u", "Review the design document in depth; analysis only."), ...Array.from({ length: 12 }, (_, i) => say(`a${i}`, pad(`TEXT_LG_${i}`, 4000)))];
 
-test("the exact 400 envelope on a long text-only history recovers with complete ordered coverage and bounded requests", async () => {
+test("F1/F2: legacy and covered primary facts stop at the same irreducible floor; a bounded account remains useful", async () => {
+	for (const format of ["XML", "CSV"]) {
+	const facts = `Format ${format}; malformed input rejected; rollout awaits explicit user approval.`;
+	const history = [user("u", "Investigate the parser, analysis only. No rollout without approval."),
+		say("decision", facts + " Technical detail. ".repeat(350)),
+		say("primary", "Reported acceptance result: malformed input is rejected; rollout still awaits approval."),
+		...Array.from({ length: 3 }, (_, i) => say(`routine${i}`, "Routine review detail. ".repeat(220))),
+		say("last", "Current report: investigation complete, rollout not authorized."),
+	];
+	const admitted = provider(80_000);
+	const first = await review(history, admitted);
+	expect(first.final && first.complete).toBe(true);
+	const next = [...history, say("new", "Recheck the format and approval boundary.")];
+	const compatible = await review(next, admitted, { processed: new Set(history.map((e) => e.id)), rolling: first.commits.at(-1), inputKey: "next" });
+	expect(compatible.final && compatible.complete).toBe(true);
+	expect(admitted.requests.at(-1)!.req.state).toContain(facts);
+
+	const constrained = provider(12_000);
+	const stopped = await review(history, constrained);
+	expect(stopped.final || stopped.complete).toBe(false);
+	expect(stopped.result.ok).toBe(false);
+	expect(stopped.commits.length).toBeGreaterThan(0);
+	expect(stopped.commits.at(-1)?.through).not.toBe("last");
+	if (!stopped.result.ok) expect(stopped.result.error).toContain("concise current report");
+
+	// Same reports and boundary: coverage cannot remove possible primary evidence to create admission.
+	const current = { ...task, metadata: { auditBrief: { text: facts + " Investigation complete; no execution is requested.",
+		sources: ["u", "primary"], covers: history.filter((e) => e.message.role === "assistant").map((e) => e.id),
+	} } };
+	const covered = provider(12_000);
+	const stillStopped = await review(history, covered, { context: collectContext(history, [{ id: "task:4", value: current }]) });
+	expect(stillStopped.final || stillStopped.complete).toBe(false);
+	expect(stillStopped.needsAccount).toBe(true);
+	expect(stillStopped.commits.at(-1)?.through).not.toBe("last");
+
+	// Separate positive workload: supplied public report already contains the bounded goal and outcome.
+	const bounded = [history[0], say("primary", facts + " Investigation complete; rollout not authorized.")];
+	const scoped = provider(12_000, { choices: { task_status_4: "blocked", task_evidence_4: "primary", task_board_4: "needs_reconciliation", interaction: "waiting_user" } });
+	const boundedTask = { ...task, metadata: { auditBrief: { text: facts, sources: ["u", "primary"], covers: ["primary"] } } };
+	const recovered = await review(bounded, scoped, { context: collectContext(bounded, [{ id: "task:4", value: boundedTask }]) });
+	expect(recovered.final && recovered.complete).toBe(true);
+	expect(recovered.commits.at(-1)?.through).toBe("primary");
+	const final = scoped.requests.at(-1)!.req;
+	for (const fact of [`Format ${format}`, "malformed input rejected", "rollout awaits explicit user approval"]) expect(final.state).toContain(fact);
+	expect(final.questions.task_evidence_4.criteria).toHaveProperty("primary");
+	const packets = scoped.requests.filter((r) => r.status === 200).map((r) => JSON.parse(r.req.state.split("Macro-level evidence (tool activity is name/call/status only):\n")[1].split("\nInterpret evidence chronologically:")[0]));
+	for (const e of bounded) {
+		const supplied = packets.flatMap((p) => p.records).find((r: any) => r.id === e.id);
+		expect(supplied?.text).toBe(e.message.content);
+	}
+	if (recovered.result.ok) {
+		const action = decide(recovered.result.answers, board, 0.8, 1, [], { context: recovered.context, terminalStop: true });
+		expect(action.kind).toBe("inject");
+		if (action.kind === "inject") {
+			expect(action.text).toContain("pending and record the evidenced blocker");
+			expect(action.text).toContain("Evidence [primary]");
+			expect(action.text).toContain("BOARD ONLY");
+			expect(action.corrections.every((c) => c.bookkeeping && !c.execution)).toBe(true);
+		}
+	}
+	}
+});
+
+test("covered long history still stops when retained primary obligations cannot fit", async () => {
 	const p = provider(24_000);
-	const out = await review(longHistory(), p);
-	expect(out.final).toBe(true); expect(out.recovered).toBe(true); expect(out.result.ok).toBe(true);
-	const seen = p.requests.filter((r) => r.status === 200).map((r) => r.req.state).join("\n");
-	for (let i = 0; i < 12; i++) expect(seen).toContain(`TEXT_LG_${i}`); // nothing silently dropped
-	expect(out.commits.at(-1)).toMatchObject({ through: "a11", inputKey: "k" });
-	expect(p.requests.length).toBeLessThanOrEqual(20);
-	// State-dominated overflow never resends the same oversized state with fewer questions.
-	const rejectedStates = p.requests.filter((r) => r.status === 400).map((r) => r.req.state);
-	expect(new Set(rejectedStates).size).toBe(rejectedStates.length);
+	const history = longHistory();
+	const context = collectContext(history, [{ id: "task:4", value: scopedTask(history) }]);
+	const out = await review(history, p, { context });
+	expect(out.final).toBe(false); expect(out.needsAccount).toBe(true); expect(out.result.ok).toBe(false);
+	expect(out.commits.length).toBeGreaterThan(0);
+	const through = out.commits.at(-1)!.through!;
+	expect(through).not.toBe("a11");
+	const last = p.requests.at(-1)!.req;
+	for (const e of history.slice(1, history.findIndex((e) => e.id === through) + 1)) {
+		expect(last.state).toContain(e.message.content);
+	}
+	// Only answered recent packets establish coverage; rejected packets cannot complete later reports.
+	const packets = p.requests.filter((r) => r.status === 200).map((r) => JSON.parse(r.req.state.split("Macro-level evidence (tool activity is name/call/status only):\n")[1].split("\nInterpret evidence chronologically:")[0]));
+	expect(packets.flatMap((p) => p.records).some((r: any) => r.id === "a11" && r.view === "recent")).toBe(false);
+	const envelope = (r: typeof p.requests[number]) => JSON.stringify([r.req.state, r.req.questions]);
+	const rejected = p.requests.filter((r) => r.status === 400).map(envelope);
+	expect(new Set(rejected).size).toBe(rejected.length);
 });
 
 test("one oversized message is covered by ordered labelled fragments and counts as processed only after its last fragment", async () => {
@@ -67,22 +145,23 @@ test("one oversized message is covered by ordered labelled fragments and counts 
 	expect(p.requests.filter((r) => r.status === 200).every((r) => !r.req.state.includes(big))).toBe(true);
 });
 
-test("a fragmented huge user record is not re-sent whole when later input is reviewed", async () => {
+test("F2: a fragmented user constraint cannot disappear to make later work fit", async () => {
 	const p = provider(14_000);
 	const big = Array.from({ length: 40 }, (_, i) => `USER_PART_${String(i).padStart(2, "0")} ` + "detail ".repeat(60)).join("");
 	const first = [user("huge-user", big), say("a1", "Working on it.")];
 	const out = await review(first, p);
-	expect(out.final).toBe(true);
+	expect(out.final).toBe(false); // The user was reviewed in fragments, but later required work cannot fit with its constraint.
 	const receipt = out.commits.at(-1)!;
+	expect(receipt.through).toBe("huge-user");
 	const before = p.requests.length;
 	const second = await review([...first, say("a2", "Design analysis finished.")], p,
-		{ processed: new Set(["huge-user", "a1"]), rolling: receipt, inputKey: "k2" });
-	expect(second.final).toBe(true); expect(second.result.ok).toBe(true);
+		{ processed: new Set(["huge-user"]), rolling: receipt, inputKey: "k2" });
+	expect(second.final).toBe(false); expect(second.result.ok).toBe(false);
 	const later = p.requests.slice(before);
-	expect(later.every((r) => !r.req.state.includes(big))).toBe(true); // never recreates the overflow
-	expect(later.filter((r) => r.status === 400)).toHaveLength(0);
-	expect(second.context.rolling?.reportNote).toContain("user huge-user could only be reviewed in fragments");
-	expect(receipt.oversized).toEqual(["huge-user"]); // durable, so it also holds after reload
+	expect(later.length).toBeGreaterThan(0);
+	expect(later.every((r) => r.req.state.includes(big))).toBe(true);
+	if (!second.result.ok) expect(second.result.error).toContain("concise current report");
+	expect(receipt.oversized).toEqual(["huge-user"]); // Progress metadata cannot cover or supersede a user constraint.
 });
 
 test("a long user constraint that fits is still retained on later audits", async () => {
@@ -122,9 +201,10 @@ test("fixed state or a single question that cannot fit terminates with an action
 
 test("a later piece failure never re-buys earlier admitted pieces; resumption pays only the unfinished work", async () => {
 	let failing = true;
-	const p = provider(24_000, { fail: (req) => failing && req.state.includes("TEXT_LG_9") });
+	const p = provider(80_000, { fail: (req) => failing && req.state.includes("TEXT_LG_9") });
 	const history = longHistory();
-	const first = await review(history, p);
+	const context = collectContext(history, [{ id: "task:4", value: scopedTask(history) }]);
+	const first = await review(history, p, { context, pieces: (rs) => rs.map((r) => [r]) });
 	expect(first.final).toBe(false);
 	const paidBefore = p.requests.filter((r) => r.status === 200).flatMap((r) => [...r.req.state.matchAll(/TEXT_LG_(\d+)/g)].map((m) => m[1]));
 	expect(paidBefore).toContain("0");
@@ -132,10 +212,12 @@ test("a later piece failure never re-buys earlier admitted pieces; resumption pa
 	const through = first.commits.at(-1)!.through!;
 	const processed = new Set(history.map((e) => e.id).slice(0, history.findIndex((e) => e.id === through) + 1));
 	const n = p.requests.length;
-	const second = await review(history, p, { processed, rolling: first.commits.at(-1) });
+	const admitted = p.requests.filter((r) => r.status === 200).map((r) => JSON.stringify([r.req.state, r.req.questions]));
+	const second = await review(history, p, { context, processed, rolling: first.commits.at(-1), pieces: (rs) => rs.map((r) => [r]) });
 	expect(second.final).toBe(true);
+	for (const r of p.requests.slice(n)) expect(admitted).not.toContain(JSON.stringify([r.req.state, r.req.questions]));
 	const resent = p.requests.slice(n).map((r) => r.req.state).join("\n");
-	for (const id of new Set(paidBefore)) if (Number(id) < 8) expect(resent).not.toContain(`${pad(`TEXT_LG_${id}`, 4000)}`);
+	for (const id of new Set(paidBefore)) if (Number(id) < 8) expect(resent).toContain(`${pad(`TEXT_LG_${id}`, 4000)}`); // needed facts remain, completed pairs are not rebought
 	expect(resent).toContain("TEXT_LG_9"); expect(resent).toContain("TEXT_LG_11");
 });
 
@@ -191,8 +273,10 @@ test("a failure in a later fragment of one record resumes without re-paying earl
 });
 
 test("host: a recovered overflow is reported as recovered success, never as the initial 400", async () => {
-	const branch: unknown[] = [...longHistory(), { id: "b", type: "message", message: { role: "toolResult", toolName: "todo", content: "ok", details: board } }];
-	const p = provider(24_000);
+	const big = Array.from({ length: 40 }, (_, i) => `PART_${String(i).padStart(2, "0")} ` + "detail ".repeat(60)).join("");
+	const history = [user("u", "Analyse this."), say("huge", big)];
+	const branch: unknown[] = [{ id: "b", type: "message", message: { role: "toolResult", toolName: "todo", content: "ok", details: { ...board, tasks: [scopedTask(history)] } } }, ...history];
+	const p = provider(14_000);
 	const original = globalThis.fetch;
 	globalThis.fetch = ((u: string, init?: RequestInit) => p.opts.fetchFn!(u, init)) as unknown as typeof fetch;
 	process.env.JEV_CAPACITY_KEY = "sk-capacity-host";
@@ -215,28 +299,34 @@ test("host: a recovered overflow is reported as recovered success, never as the 
 	expect(notes.some((n) => n.includes("failed"))).toBe(false);
 });
 
-test("many tiny retained reports are bounded by serialized record cost, not text length", async () => {
-	// 160 two-char reports: text-only budgeting undercounts the per-record envelope (~163 bytes serialized).
-	const p = provider(24_000);
+test("admitted covered tiny reports retain every primary candidate, not a newest-first crop", async () => {
+	const p = provider(80_000);
 	const history = [user("u", "Do the design review."), ...Array.from({ length: 160 }, (_, i) => say(`a${i}`, "ok"))];
-	const first = await review(history, p);
+	const context = collectContext(history, [{ id: "task:4", value: scopedTask(history) }]);
+	const first = await review(history, p, { context });
 	expect(first.final).toBe(true);
 	const before = p.requests.length;
 	const second = await review([...history, say("new", "Design review finished.")], p,
-		{ processed: new Set(history.map((e) => e.id)), rolling: first.commits.at(-1)!, inputKey: "k2" });
+		{ context: collectContext([...history, say("new", "Design review finished.")], [{ id: "task:4", value: scopedTask(history) }]),
+			processed: new Set(history.map((e) => e.id)), rolling: first.commits.at(-1)!, inputKey: "k2" });
 	expect(second.final).toBe(true); expect(second.result.ok).toBe(true);
 	const later = p.requests.slice(before);
 	expect(later.filter((r) => r.status === 400)).toHaveLength(0); // fits the capacity that text-only budgeting blew past
 	const retained = later.filter((r) => r.status === 200).map((r) => r.req.state).join("\n");
-	expect(retained).toContain('a159'); // newest reports keep fitting first
-	expect(retained).toContain("omitted by the compact report budget"); // the omission is disclosed
+	for (let i = 0; i < 160; i++) {
+		expect(retained).toContain(`\"id\":\"a${i}\"`);
+		expect(later.at(-1)!.req.questions.task_evidence_4.criteria).toHaveProperty(`a${i}`);
+	}
+	expect(retained).not.toContain("declared-covered ancillary reports");
 	expect(retained).toContain("Design review finished.");
 });
 
 test("host: an interrupted `full` review retries only its unfinished stages", async () => {
-	const branch: unknown[] = [...longHistory(), { id: "b", type: "message", message: { role: "toolResult", toolName: "todo", content: "ok", details: board } }];
+	const big = Array.from({ length: 40 }, (_, i) => `PART_${String(i).padStart(2, "0")} ` + "detail ".repeat(60)).join("");
+	const history = [user("u", "Analyse this."), say("huge", big)];
+	const branch: unknown[] = [{ id: "b", type: "message", message: { role: "toolResult", toolName: "todo", content: "ok", details: { ...board, tasks: [scopedTask(history)] } } }, ...history];
 	let failing = true;
-	const p = provider(24_000, { fail: (req) => failing && req.state.includes("TEXT_LG_11") });
+	const p = provider(14_000, { fail: (req) => failing && req.state.includes("PART_39") });
 	const original = globalThis.fetch;
 	globalThis.fetch = ((u: string, init?: RequestInit) => p.opts.fetchFn!(u, init)) as unknown as typeof fetch;
 	process.env.JEV_CAPACITY_KEY = "sk-capacity-host";
@@ -261,7 +351,7 @@ test("host: an interrupted `full` review retries only its unfinished stages", as
 		const retry = p.requests.slice(n);
 		expect(retry.length).toBeGreaterThan(0);
 		for (const r of retry) expect(paid).not.toContain(r.req.state); // no completed stage bought twice
-		expect(retry.every((r) => !r.req.state.includes("TEXT_LG_0 "))).toBe(true); // resumed past completed stages
-		expect(retry.some((r) => r.req.state.includes("TEXT_LG_11"))).toBe(true);
+		expect(retry.every((r) => !r.req.state.includes("PART_00 "))).toBe(true); // resumed past completed stages
+		expect(retry.some((r) => r.req.state.includes("PART_39"))).toBe(true);
 	} finally { globalThis.fetch = original; }
 });

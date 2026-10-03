@@ -39,6 +39,47 @@ const board = { tasks: [task], nextId: 6 };
 const supplements = [{ id: "task:5", value: task }];
 const opts = () => ({ apiUrl: "http://jev", apiKey: "sk-rolling-direct", timeoutMs: 1000, cache: newEvaluationCache() });
 
+test("F1: XML and CSV remain distinguishable in the next packet after routine reports exceed 4K", async () => {
+	const next: AuditRequest[] = [];
+	for (const format of ["XML", "CSV"]) {
+		const history = [user("u", "Compare formats for #5; rollout requires approval."),
+			say("format", `Chosen format: ${format}. ` + "Detailed findings. ".repeat(110)),
+			...Array.from({ length: 4 }, (_, i) => say(`routine${i}`, "Routine progress update. ".repeat(100))),
+		];
+		const first = await review(history);
+		const prior = first.commits.at(-1)!;
+		const second = await review([...history, say("new", "Check whether the account still fits the agreed format.")], {
+			processed: new Set(history.map((e) => e.id)), rolling: prior, inputKey: "next",
+		});
+		expect(second.final && second.complete).toBe(true);
+		const request = requests.at(-1)!;
+		expect(request.state).toContain(`Chosen format: ${format}.`);
+		expect(request.questions.task_evidence_5.criteria).toHaveProperty("format");
+		next.push(request);
+	}
+	expect(next[0].state).not.toBe(next[1].state);
+});
+
+test("F2: an old brief cannot erase a later user decision, another task or a needed primary report", async () => {
+	const history = [user("u", "Analyse both tasks; report only."), say("anchor", "PRIMARY_REPORT: investigation complete, schema still XML." + "x".repeat(4500)),
+		say("other", "OTHER_TASK_FACT: task 6 requires a distinct schema." + "y".repeat(4500)), user("latest", "Use CSV for #5 and await approval. Do not change #6."), say("new", "Reviewing the updated scope.")];
+	const first = await review(history);
+	const scoped = { ...task, metadata: { auditBrief: { text: "Older report: XML and ready.", sources: ["u"], covers: ["anchor", "other"] } } };
+	const other = { ...task, id: 6, description: "OTHER_TASK_CURRENT", status: "pending" as const };
+	const context = collectContext(history, [{ id: "task:5", value: scoped }, { id: "task:6", value: other }]);
+	const prior = { ...first.commits.at(-1)!, opinions: { ...first.commits.at(-1)!.opinions, task_evidence_5: { choice: "anchor", confidence: 0.95 } } };
+	await review([], { board: { tasks: [scoped, other], nextId: 7 }, context, processed: new Set(["u", "anchor", "other", "latest"]), rolling: prior, inputKey: "updated" });
+	const state = requests.at(-1)!.state;
+	for (const text of ["PRIMARY_REPORT", "OTHER_TASK_FACT", "OTHER_TASK_CURRENT", "Use CSV for #5 and await approval"]) expect(state).toContain(text);
+	expect(state.indexOf("Use CSV for #5 and await approval")).toBeGreaterThan(state.indexOf("PRIMARY_REPORT"));
+	expect(state).toContain("later user scope/permission decisions supersede earlier plans");
+	// Even when all task accounts declare coverage, the prior primary anchor must remain supplied.
+	const single = collectContext(history, [{ id: "task:5", value: scoped }]);
+	await review([], { context: single, processed: new Set(["u", "anchor", "other", "latest"]), rolling: prior, inputKey: "primary" });
+	expect(requests.at(-1)!.state).toContain("PRIMARY_REPORT");
+	expect(requests.at(-1)!.questions.task_evidence_5.criteria).toHaveProperty("anchor");
+});
+
 test("an earlier reported blocker and user decision survive a later opinion update; opinions and progress stay separate", async () => {
 	const first = [user("u1", "Only analyse; do not deploy."), say("r1", "Stage 1 done. Blocker: schema approval pending from owner.")];
 	const commits: Rolling[] = [];
@@ -60,15 +101,15 @@ test("an earlier reported blocker and user decision survive a later opinion upda
 	expect(state).not.toContain("SECRET_TOOL_BODY");
 });
 
-test("processed raw ranges are not appended again: the oversized report is dropped as a clarification note", async () => {
+test("F1: a processed uncovered report is retained even beyond the ancillary budget", async () => {
 	const big = "x".repeat(REPORT_RETAIN_CHARS + 1);
 	const history = [user("u1", "Analyse caches."), say("a1", "Old analysis ONE."), say("a2", "Old analysis TWO."), say("a3", `Huge report ${big}`), say("a4", "New piece.")];
 	const run = await reviewRolling({ board, context: collectContext(history, supplements), processed: new Set(["u1", "a1", "a2", "a3"]),
 		rolling: { through: "a3", inputKey: "old", opinions: {}, answerKeys: [] }, inputKey: "new", model: "m", opts: opts(), commit: () => true });
 	const state = requests[0].state;
-	expect(state).not.toContain(big);
+	expect(state).toContain(big);
 	expect(state).toContain("New piece."); expect(state).toContain("Analyse caches.");
-	expect(run.context.rolling?.reportNote).toContain("ask the main agent for a concise current account");
+	expect(run.context.rolling?.reportNote).toBeUndefined();
 });
 
 test("unchanged input sends nothing; a failed receipt write does not advance progress", async () => {
@@ -89,9 +130,12 @@ test("unchanged input sends nothing; a failed receipt write does not advance pro
 	expect(requests.length).toBe(before);
 });
 
-test("chunk 3 failure keeps chunks 1/2; resumption sends only unresolved work and no intermediate result is final", async () => {
-	const history = [user("u1", "Analyse."), say("p1", "PIECE-ONE"), say("p2", "PIECE-TWO"), say("p3", "PIECE-THREE")];
-	const context = collectContext(history, supplements);
+test("F4: chunk 3 failure keeps completed ranges, qualified facts and gaps; resumption sends only unresolved work", async () => {
+	const history = [user("u1", "Analyse; do not deploy."), say("p1", "PIECE-ONE: XML chosen."),
+		say("p2", "PIECE-TWO: malformed input rejected."), say("p3", "PIECE-THREE: rollout awaits approval.")];
+	const text = "XML chosen; malformed input rejected; rollout awaits approval.";
+	const scoped = { ...task, metadata: { auditBrief: { text, sources: ["u1", "p1", "gone"], covers: ["p1", "p2"] } } };
+	const context = collectContext(history, [{ id: "task:5", value: scoped }]);
 	const pieces = (rs: any[]) => rs.map((r) => [r]);
 	const commits: Rolling[] = [];
 	const o = opts();
@@ -107,7 +151,12 @@ test("chunk 3 failure keeps chunks 1/2; resumption sends only unresolved work an
 	const sent = requests.slice(before);
 	expect(sent).toHaveLength(1);
 	expect(sent[0].state).toContain("PIECE-THREE");
-	// Retained reports are re-sent as the compact account; the fragmented large piece is never repeated whole.
+	for (const fact of ["XML chosen", "malformed input rejected", "rollout awaits approval"]) expect(sent[0].state).toContain(fact);
+	for (const req of requests) {
+		expect(req.state.split(text).length - 1).toBe(1);
+		expect(req.state).toContain('"role":"reported","valid":false');
+		expect(req.state).toContain('"id":"gone","reason":"source unavailable"');
+	}
 	expect(commits.at(-1)).toMatchObject({ through: "p3", inputKey: "k" });
 });
 
@@ -175,10 +224,8 @@ test("a short reply does not silently replace a still-applicable earlier report"
 	expect(second.context.rolling?.reportNote).toBeUndefined();
 });
 
-test("only the reports that fit the compact budget are retained, newest first", async () => {
-	// The budget covers the serialized record (metadata included): ~2,100 bytes of envelope per report
-	// here, so only the newest fits inside REPORT_RETAIN_CHARS; the rest are disclosed as omitted.
-	const pad = (s: string) => s + " " + "x".repeat(REPORT_RETAIN_CHARS / 2 - 50); // ~half the TEXT budget each
+test("P1/F1: processed covered reports retain potential primary eligibility without a prior pin", async () => {
+	const pad = (s: string) => s + " " + "x".repeat(REPORT_RETAIN_CHARS / 2 - 50);
 	const reports = [
 		user("u", "Analyse; report only."),
 		say("r1", pad("report one has many findings.")),
@@ -186,11 +233,17 @@ test("only the reports that fit the compact budget are retained, newest first", 
 		say("r3", pad("report three newest findings.")),
 	];
 	const first = await review(reports);
-	const second = await review([...reports, say("a9", "new small report.")], {
+	const scoped = { ...task, metadata: { auditBrief: { text: "Current account represents all three reported findings; awaiting approval.", sources: ["u"], covers: ["r1", "r2", "r3"] } } };
+	const context = collectContext([...reports, say("a9", "new small report.")], [{ id: "task:5", value: scoped }]);
+	const second = await review([], { context,
 		processed: new Set(reports.map((r) => r.id)), rolling: first.commits.at(-1)!, inputKey: "k2",
 	});
-	const state = JSON.stringify(second.context.records);
+	const state = requests.at(-1)!.state;
 	expect(state).toContain("new small report."); expect(state).toContain("report three newest findings.");
-	expect(state).not.toContain("report one has many findings."); expect(state).not.toContain("report two has more findings.");
-	expect(second.context.rolling?.reportNote).toContain("omitted by the compact report budget");
+	for (const [id, text] of [["r1", "report one has many findings."], ["r2", "report two has more findings."], ["r3", "report three newest findings."]]) {
+		expect(state).toContain(text);
+		expect(requests.at(-1)!.questions.task_evidence_5.criteria).toHaveProperty(id);
+	}
+	expect(state).toContain("Current account represents all three reported findings");
+	expect(second.context.rolling?.reportNote).toBeUndefined();
 });
