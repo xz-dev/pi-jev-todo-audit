@@ -2,7 +2,7 @@
 
 ## Current disposition
 
-**Source approved with explicit residual risk; new platform CI and final product acceptance pending.** Independent follow-up `dc1ce3ba-4b19-42cd-91f0-0bfcb6e47f1b` closed the original P1 in both candidate selection and processed-report retention. It found no remaining P1/P2 in the repaired blast radius. This is not approval for publication, activation, paid inference or archive.
+**Source approved with explicit residual risk; actual new Linux/Windows CI passed; final product acceptance pending.** Independent follow-up `dc1ce3ba-4b19-42cd-91f0-0bfcb6e47f1b` closed the original P1 in both candidate selection and processed-report retention. It found no remaining P1/P2 in the repaired blast radius. This is not approval for publication, activation, paid inference or archive.
 
 The user confirmed F1–F4/P1–P3/I1/R1 and optional `metadata.auditBrief = { text, sources, covers }` on 2026-10-02, then explicitly chose conservative primary retention and precise P2 applicability after the independent finding: `sources` is supporting references, not an exclusive allowlist; `covers` does not prove primary evidence dispensable. A legal brief alone cannot guarantee that 260 potentially needed reports form a bounded Choice. Complete safely bounded sets remain usable; other affected findings are locally incomplete. No new classifier, model/store, metadata protocol, question hierarchy or scope migration was introduced.
 
@@ -110,12 +110,25 @@ Independent packet/effect inspection confirms the candidate stops through `TEXT_
 
 This remains a finite necessary-floor retention tradeoff, not another demonstrated source defect. **It is not savings or proof of optimal traffic.** `textSeen=12/12` includes rejected requests, not completed coverage. Easier positive fixtures cannot be substituted as improvement evidence for this unchanged difficult workload.
 
+## Actual candidate Linux/Windows CI
+
+Published directly on the user-requested `master`: **`0bfc13d67783b683d1923741e8b698dd39d6696d`**. The committed seven-file production digest matches independent review **`c33f469e9da831572159762386d8256be6f01e71a88eff77e179aeec5d60c963`**. Only the selected 18 public source/test/doc/planning files were committed; `.serena/`, private sessions and scratch material were excluded. The user explicitly authorized `--no-gpg-sign` for this candidate and its CI records after normal GPG signing timed out without a commit. `commit.gpgsign` remains `true`; no credential/signing configuration was changed.
+
+Actual push-triggered run: **[37097142774](https://github.com/xz-dev/pi-jev-todo-audit/actions/runs/37097142774)**, `headSha` exactly the candidate above, conclusion **success**. Workflow `test.yml`, Node 26 / Bun 1.4.2:
+
+| Job | Job ID | Install / typecheck | Full tests | Native Node execution |
+| --- | --- | --- | --- | --- |
+| `test (ubuntu-latest)` | `111129269622` | `npm ci`, `bun run typecheck`: success | 313 passed, 0 failed, 2,615 assertions | v26.10.0 parent/reload allowed; child/grandchild denied |
+| `test (windows-latest)` | `111129269512` | `npm ci`, `bun run typecheck`: success | 313 passed, 0 failed, 2,615 assertions | v26.10.0 parent/reload allowed; child/grandchild denied |
+
+Retrieved both job/step conclusions and actual logs, including test counts and native parent/child/grandchild JSON. No Linux result, mocked Windows behavior or predecessor run was substituted. This closes task 4.2 for the candidate source, not real-model semantics/cost, product acceptance or activation.
+
 ## Documentation and remaining gates
 
 README now documents the optional account, roles/qualification, conservative legacy retention, final 255-option withholding, honest clarification/deduplication, exact reuse, and unmeasured quality/cost. It removes the old 4K/covered-account recovery guarantee. The historical contradictory omission claims in this evidence file were replaced with current candidate-bound observations.
 
 - Source/functional review: **approved with explicit residual risk**, P1 closed; source bound above.
 - Local integration checks: passed; implementation mechanics are distinct from model quality.
-- New actual GitHub Actions Linux/Windows candidate execution: **pending**. Workflow configuration, local Linux or predecessor CI do not satisfy it. The user has now authorized development/publication on the repository's `master`, not a separate CI branch. After a GPG signing timeout produced no commit, the user explicitly authorized `--no-gpg-sign` only for this candidate and its CI acceptance records; repository/global signing configuration remains unchanged. No new platform result is claimed before the run finishes.
+- New actual GitHub Actions Linux/Windows candidate execution: **passed**, bound to `0bfc13d67783b683d1923741e8b698dd39d6696d` and run `37097142774` above; separate from predecessor acceptance.
 - Real JEV semantic completeness/quality and live tokens/billing: **unmeasured**; no paid experiment authorized.
 - Final user acceptance and any rollout/install/reload, version release, spec synchronization/archive: **pending and separately authorized**. Main-branch commit/push for this candidate's CI is authorized; it does not authorize activation, paid JEV calls or a package release.
