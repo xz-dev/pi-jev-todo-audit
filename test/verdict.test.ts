@@ -183,8 +183,9 @@ describe("evidence-grounded verdict", () => {
 	test("claim requires supported actionable matching task; drift needs its own confidence", () => {
 		const patch = { alignment: a("not_aligned"), current_match: a("7"), lifecycle: { task_status_7: a("actionable_now") } };
 		expect(text(run(patch))).toContain('set #7 "Wire endpoint" in_progress');
-		expect(text(run({ ...patch, drift: a("drifted") }))).toContain("STOP");
-		expect(text(run({ ...patch, drift: a("drifted", 0.1) }))).not.toContain("STOP");
+		expect(text(run({ ...patch, drift: a("drifted") }))).toContain("consider returning");
+		expect(text(run({ ...patch, drift: a("drifted") }))).not.toContain("STOP the");
+		expect(text(run({ ...patch, drift: a("drifted", 0.1) }))).not.toContain("consider returning");
 	});
 	test("unchanged issue suppressed; blocker bookkeeping does not re-arm it", () => {
 		const patch = { lifecycle: { task_status_5: a("blocked") }, reconciliation: { task_board_5: a("needs_reconciliation") } };
@@ -206,7 +207,9 @@ describe("leader evidence contract", () => {
 		const out = text(run({ lifecycle: { task_status_5: a("actually_completed") } }));
 		expect(out).toContain("main-agent report"); expect(out).toContain("not independently verified");
 		expect(out).toContain("not independent verification of execution"); expect(out).not.toMatch(/JEV verified/);
-		expect(out).toContain("reply briefly with the reason"); // the main agent can correct the leader
+		expect(out).toContain("No separate reply is needed");
+		expect(out).toContain("normal task progress"); // feedback remains possible without interrupting the task
+		expect(out).not.toContain("reply briefly");
 	});
 	test("a main-agent report cannot cancel scope or create execution permission", () => {
 		expect(run({ lifecycle: { task_status_5: a("cancelled") } }).kind).not.toBe("inject");

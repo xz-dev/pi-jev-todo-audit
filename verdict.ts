@@ -102,10 +102,10 @@ export function decide(answers: AuditAnswers, board: BoardSnapshot, threshold: n
 		if (life.choice !== "actionable_now" || !ready || !anchor || !warrantAllows) continue;
 		if (opts.terminalStop) {
 			if (task.status === "in_progress" && !strong(granularity)) { uncertain.push(task.id); continue; }
-			add(task, "continue", task.status === "pending" ? `set ${label} in_progress and CONTINUE its authorized next action` : `CONTINUE the authorized next action for ${label}`, anchor, false, true);
+			add(task, "continue", task.status === "pending" ? `consider whether to set ${label} in_progress and CONTINUE its already-authorized next action` : `consider whether to CONTINUE the already-authorized next action for ${label}`, anchor, false, true);
 		} else if ((alignment === "not_aligned" || alignment === "no_in_progress_task") && matched === String(task.id)) {
 			if (strong(answers.drift) && answers.drift.choice === "drifted")
-				add(task, "return", `STOP the evidenced off-plan activity and return to the authorized next action for ${label}`, workSource!, false, true);
+				add(task, "return", `at a natural checkpoint, consider returning from the reported off-plan activity to the authorized next action for ${label}, if this assessment still matches the user's latest instructions`, workSource!, false, true);
 			else if (task.status === "pending") add(task, "claim", `set ${label} in_progress with an accurate activeForm`, anchor, false, true);
 		}
 	}
@@ -119,11 +119,11 @@ export function decide(answers: AuditAnswers, board: BoardSnapshot, threshold: n
 		if (opts.terminalStop && !mayWake) return { kind: "notify", text: "[jev audit] task-level planning advice available; no restart authorized by split/clarification alone" };
 		const boardOnly = opts.terminalStop && !corrections.some((c) => c.execution);
 		return { kind: "inject", corrections, mayWake, text: [
-			`[jev audit ${trigger}] Leader review of the supplied reports and board (macro level; not independent verification of execution).`,
-			boardOnly ? "BOARD ONLY: reconcile the listed facts via todo, then return control to the user. This is NOT permission to execute tasks or bypass a wait." : "Reconcile only the following supported changes via the todo tool:",
+			`[jev audit ${trigger}] Advisory review of the supplied reports and board (macro level; not independent verification of execution).`,
+			boardOnly ? "BOARD ONLY: if the listed facts still apply, consider reconciling them via todo, then return control to the user. This is NOT permission to execute tasks or bypass a wait." : "Suggested board updates to consider via todo at a natural checkpoint, if still applicable:",
 			...corrections.map((c, i) => `${i + 1}. ${c.text}`),
 			...(uncertain.length ? [`(not touched: ${uncertain.map((id) => `#${id}`).join(", ")} — evidence uncertain)`] : []),
-			"If a point is mistaken or already covered, reply briefly with the reason; the next review takes your explanation into account.",
+			"If a point is mistaken or already covered, it may be disregarded. No separate reply is needed; any explanation included in normal task progress can inform the next review.",
 		].join("\n") };
 	}
 	if (suppressed || ((warrant === "idle" || warrant === "trivial") && !inProgressTasks(board).length)) return { kind: "silent" };

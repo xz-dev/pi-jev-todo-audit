@@ -46,6 +46,14 @@ function setup(branch: unknown[] = initial(), config = {}, opts: { persist?: boo
 	return { branch, ctx, sent, emit, hook, handlers, commands, listeners, manual: () => commands.get("jev-audit").handler("", ctx) as Promise<void> };
 }
 const tick = () => new Promise((r) => setTimeout(r, 0));
+function expectPluginAdvisory(content: string) {
+	expect(content).toStartWith("[pi-jev-todo-audit plugin advisory]");
+	expect(content).toContain("not a user message");
+	expect(content).toContain("not a user instruction or new authorization");
+	expect(content).toContain("do not interrupt or switch tasks solely because of this message");
+	expect(content).toContain("natural checkpoint");
+	expect(content).toContain("No separate reply or acknowledgment is needed");
+}
 
 const fidelityInput = () => {
 	const brief = { text: "XML chosen; all checks reported passed.", sources: ["origin"], covers: ["other"] };
@@ -191,6 +199,7 @@ for (const mode of ["", "full"]) for (const withBrief of [false, true]) test(`P2
 	const clarifications = () => h.sent.filter((s) => s.message.content.includes("CHOICE CONTEXT INCOMPLETE"));
 	expect(clarifications()).toHaveLength(1);
 	expect(h.sent).toHaveLength(1); expect(clarifications()[0].options.triggerTurn).not.toBe(true);
+	expectPluginAdvisory(clarifications()[0].message.content);
 	expect(clarifications()[0].message.content).toContain("Repeating the same brief does not guarantee a bounded set");
 	const diag = () => h.branch.filter((e: any) => e.data?.kind === "diag").at(-1) as any;
 	expect(diag().data.diag.withheld.some((w: any) => w.question === "task_evidence_5" && w.count > 255)).toBe(true);
@@ -215,7 +224,7 @@ test("P3: an oversized task evidence set withholds only that finding; a supporte
 	expect(requests[0].questions).not.toHaveProperty("task_evidence_5");
 	expect(requests[0].questions.task_evidence_6.criteria).toHaveProperty("six-report");
 	expect(packetOf(requests[0]).records.some((r: any) => r.id === "task:269")).toBe(true);
-	const changes = h.sent.filter((s) => s.message.content.includes("Reconcile only the following"));
+	const changes = h.sent.filter((s) => s.message.content.includes("Evidence ["));
 	expect(changes).toHaveLength(1); expect(changes[0].message.content).toContain('mark #6 "Separate accepted outcome" completed');
 	expect(changes[0].message.content).not.toContain('mark #5'); expect(changes[0].message.content).toContain("Evidence [six-report]");
 	expect(h.branch.some((e: any) => e.data?.kind === "receipt")).toBe(false);
@@ -233,7 +242,7 @@ test("P3: an oversized board-matching Choice loses no tasks and grants no work f
 	expect(requests[0].questions).not.toHaveProperty("current_match");
 	for (const q of Object.values(requests[0].questions)) expect(Object.keys(q.criteria).length).toBeLessThanOrEqual(255);
 	expect(packetOf(requests[0]).records.filter((r: any) => r.kind === "supplement")).toHaveLength(256);
-	const changes = h.sent.filter((s) => s.message.content.includes("Reconcile only the following"));
+	const changes = h.sent.filter((s) => s.message.content.includes("Evidence ["));
 	expect(changes).toHaveLength(1); expect(changes[0].message.content).toContain('mark #5 "Parser" completed');
 	expect(changes[0].message.content).not.toContain("CONTINUE"); expect(changes[0].message.content).not.toContain("CREATE");
 	expect(h.branch.some((e: any) => e.data?.kind === "receipt")).toBe(false);
@@ -345,6 +354,7 @@ test("F2: an irreducible necessary floor asks once for a scoped account, without
 	expect(receipts()).toHaveLength(prior);
 	expect(h.sent).toHaveLength(1);
 	expect(h.sent[0].message.content).toContain("FACTUAL CONTEXT INCOMPLETE");
+	expectPluginAdvisory(h.sent[0].message.content);
 	expect(h.sent[0].message.content).toContain("#5");
 	expect(h.sent[0].message.content).toContain("needed");
 	expect(h.sent[0].message.content).toContain("metadata.auditBrief");
@@ -469,8 +479,10 @@ test("periodic cadence and user cooldown work without a watchdog", async () => {
 test("manual bypasses cadence, terminal reconciliation wakes for board work only", async () => {
 	const h = setup(); await h.emit("session_start"); await h.manual();
 	expect(h.sent).toHaveLength(1); expect(h.sent[0].options).toEqual({ deliverAs: "steer" });
+	expectPluginAdvisory(h.sent[0].message.content);
 	const second = setup(); await second.emit("session_start"); second.hook(); await tick();
 	expect(second.sent).toHaveLength(1); expect(second.sent[0].options.triggerTurn).toBe(true);
+	expectPluginAdvisory(second.sent[0].message.content);
 	expect(second.sent[0].message.content).toContain("BOARD ONLY"); expect(second.sent[0].message.content).toContain("return control");
 });
 
@@ -479,6 +491,7 @@ test("explicit actionable-now with current authorization can wake for execution"
 	answers = { ...answers, task_status_5: a("actionable_now"), task_granularity_5: a("appropriate"), interaction: a("working") };
 	await h.emit("session_start"); h.hook(); await tick();
 	expect(h.sent).toHaveLength(1); expect(h.sent[0].message.content).toContain("CONTINUE"); expect(h.sent[0].options.triggerTurn).toBe(true);
+	expectPluginAdvisory(h.sent[0].message.content);
 });
 
 test("an incomplete terminal review cannot wake the agent for an active task", async () => {
