@@ -33,15 +33,26 @@ test("native Node independent parents and inherited descendants preserve ownersh
 
 let saved: string | undefined;
 const originalFetch = globalThis.fetch;
+const serviceKey = Symbol.for("pi-llm-as-jev:service");
+const services = globalThis as Record<symbol, unknown>;
+const originalService = services[serviceKey];
 beforeEach(() => { saved = process.env[OWNER]; delete process.env[OWNER]; });
 afterEach(() => {
 	if (saved === undefined) delete process.env[OWNER]; else process.env[OWNER] = saved;
 	globalThis.fetch = originalFetch;
+	if (originalService === undefined) delete services[serviceKey]; else services[serviceKey] = originalService;
 });
 
 function host() {
 	const handlers = new Map<string, any[]>(), commands = new Map<string, any>(), bus = new Map<string, any[]>();
-	let keys = 0, requests = 0, injected = 0, written = 0, configReads = 0;
+	let keys = 0, requests = 0, reviews = 0, injected = 0, written = 0, configReads = 0;
+	services[serviceKey] = { version: 1, reviewVersion: 1, review: async () => {
+		reviews++;
+		// Ownership tests stop at the service port; no transport or inference is simulated.
+		return { answers: {}, dropped: [], backend: "llm", model: "fixture/offline", stopReason: "error", errorMessage: "scripted no-provider result",
+			reuse: { hits: 0, joined: 0, sent: 0 }, progress: { stages: [] }, unresolved: [],
+			diagnostics: { attempts: [], attemptCount: 0, observationCoverage: "complete", usage: { inputTokens: { knownSum: 0, missing: 0 }, outputTokens: { knownSum: 0, missing: 0 }, costUsd: { knownSum: 0, missing: 0 } } } };
+	} };
 	const branch: any[] = [
 		{ id: "u", type: "message", message: { role: "user", content: "Analyse only; do not deploy." } },
 		{ id: "b", type: "message", message: { role: "toolResult", toolName: "todo", content: "ok", details: {
@@ -65,7 +76,7 @@ function host() {
 	}) as typeof fetch;
 	const emit = async (name: string, event: unknown = {}) => { for (const h of handlers.get(name) ?? []) await h(event, ctx); };
 	return { pi, cfg, ctx, commands, handlers, bus, emit,
-		counts: () => ({ keys, requests, injected, written, configReads }) };
+		counts: () => ({ keys, requests, reviews, injected, written, configReads }) };
 }
 
 for (const marker of [undefined, "", String(process.pid)]) test(`main claims/reuses ownership with marker ${String(marker)}`, async () => {
@@ -74,14 +85,16 @@ for (const marker of [undefined, "", String(process.pid)]) test(`main claims/reu
 	expect(process.env[OWNER]).toBe(String(process.pid));
 	await h.emit("session_start");
 	await h.commands.get("jev-audit").handler("", h.ctx);
-	expect(h.counts().requests).toBe(1);
+	expect(h.counts().reviews).toBe(1);
+	expect(h.counts().requests).toBe(0); expect(h.counts().keys).toBe(0);
 	await h.emit("session_shutdown");
 	expect(process.env[OWNER]).toBe(String(process.pid));
 	const reload = host(); makeExtension(reload.pi, reload.cfg);
 	expect(reload.commands.has("jev-audit")).toBe(true);
 	await reload.emit("session_start");
 	await reload.commands.get("jev-audit").handler("full", reload.ctx);
-	expect(reload.counts().requests).toBe(1);
+	expect(reload.counts().reviews).toBe(1);
+	expect(reload.counts().requests).toBe(0); expect(reload.counts().keys).toBe(0);
 });
 
 for (const marker of [String(process.pid + 1), "not-a-pid", "0", ` ${process.pid}`, `${process.pid}.0`]) {
@@ -92,7 +105,7 @@ for (const marker of [String(process.pid + 1), "not-a-pid", "0", ` ${process.pid
 		for (let i = 0; i < 20; i++) await h.emit("turn_end");
 		for (const handler of h.bus.get("pi:semantic-hook:v1") ?? []) handler({ version: 1, name: "user-ready", values: { STOP_KIND: "AI_UNLOCK" } });
 		for (const mode of ["", "full"]) await h.commands.get("jev-audit")?.handler(mode, h.ctx);
-		expect(h.counts()).toEqual({ keys: 0, requests: 0, injected: 0, written: 0, configReads: 0 });
+		expect(h.counts()).toEqual({ keys: 0, requests: 0, reviews: 0, injected: 0, written: 0, configReads: 0 });
 		expect(h.handlers.size).toBe(0); expect(h.commands.size).toBe(0); expect(h.bus.size).toBe(0);
 		expect(process.env[OWNER]).toBe(marker);
 	});

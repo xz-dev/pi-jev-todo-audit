@@ -1,12 +1,10 @@
-/** Resumable capacity recovery: subdivide the dominant dimension with progress; never re-buy completed parts. */
+/** Legacy-engine comparison only; production capacity belongs to the shared service.
+ * Migrated host assertions: real-wire R01 (rejections), classifier/none (recovery diagnostics),
+ * classifier/http/full + R06 (full retry/fragments). See regression-map.md. */
 import { expect, test } from "bun:test";
-import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
-import makeExtension from "../index.js";
-import { DEFAULT_CONFIG } from "../config.js";
 import { collectContext } from "../context.js";
-import { restoreLedger } from "../ledger.js";
-import { reviewRolling, REPORT_RETAIN_CHARS, type Rolling } from "../rolling.js";
-import { newEvaluationCache, type AuditRequest, type EvaluateOptions } from "../typesafe.js";
+import { reviewRolling, REPORT_RETAIN_CHARS, type Rolling } from "./legacy/rolling.js";
+import { newEvaluationCache, type AuditRequest, type EvaluateOptions } from "./legacy/typesafe.js";
 import { decide } from "../verdict.js";
 
 const OVERFLOW = JSON.stringify({ detail: { error_type: "max_tokens_exceeded" } });
@@ -221,35 +219,6 @@ test("a later piece failure never re-buys earlier admitted pieces; resumption pa
 	expect(resent).toContain("TEXT_LG_9"); expect(resent).toContain("TEXT_LG_11");
 });
 
-test("known-rejected envelopes are persisted and not retried unchanged after reload", async () => {
-	const branch: unknown[] = [user("u", "Tiny."), { id: "b", type: "message", message: { role: "toolResult", toolName: "todo", content: "ok", details: board } }];
-	let calls = 0;
-	const original = globalThis.fetch;
-	globalThis.fetch = (async () => { calls++; return new Response(OVERFLOW, { status: 400 }); }) as unknown as typeof fetch;
-	process.env.JEV_CAPACITY_KEY = "sk-capacity-host";
-	try {
-		const run = async () => {
-			const handlers = new Map<string, any[]>(), commands = new Map<string, any>();
-			const pi = {
-				on: (n: string, h: any) => handlers.set(n, [...(handlers.get(n) ?? []), h]),
-				registerCommand: (n: string, c: any) => commands.set(n, c), sendMessage: () => {},
-				appendEntry: (customType: string, data: unknown) => branch.push({ id: `c${branch.length}`, type: "custom", customType, data }),
-				events: { on: () => () => {} },
-			} as unknown as ExtensionAPI;
-			const ctx = { sessionManager: { getSessionId: () => "s", getBranch: () => branch, buildContextEntries: () => branch }, ui: { notify: () => {} } };
-			makeExtension(pi, { ...DEFAULT_CONFIG, apiKeyEnvVar: "JEV_CAPACITY_KEY" });
-			for (const h of handlers.get("session_start") ?? []) await h({}, ctx);
-			await commands.get("jev-audit").handler("", ctx);
-		};
-		await run();
-		const firstCalls = calls;
-		expect(firstCalls).toBeGreaterThan(0);
-		const cache = newEvaluationCache(); restoreLedger(branch, cache);
-		expect(cache.rejected.size).toBe(firstCalls);
-		await run(); // reload: same input
-		expect(calls).toBe(firstCalls);
-	} finally { globalThis.fetch = original; }
-});
 
 test("a failure in a later fragment of one record resumes without re-paying earlier fragments", async () => {
 	const big = Array.from({ length: 40 }, (_, i) => `PART_${String(i).padStart(2, "0")} ` + "detail ".repeat(60)).join("");
@@ -272,32 +241,6 @@ test("a failure in a later fragment of one record resumes without re-paying earl
 	expect(second.commits.at(-1)).toMatchObject({ through: "huge", inputKey: "k" });
 });
 
-test("host: a recovered overflow is reported as recovered success, never as the initial 400", async () => {
-	const big = Array.from({ length: 40 }, (_, i) => `PART_${String(i).padStart(2, "0")} ` + "detail ".repeat(60)).join("");
-	const history = [user("u", "Analyse this."), say("huge", big)];
-	const branch: unknown[] = [{ id: "b", type: "message", message: { role: "toolResult", toolName: "todo", content: "ok", details: { ...board, tasks: [scopedTask(history)] } } }, ...history];
-	const p = provider(14_000);
-	const original = globalThis.fetch;
-	globalThis.fetch = ((u: string, init?: RequestInit) => p.opts.fetchFn!(u, init)) as unknown as typeof fetch;
-	process.env.JEV_CAPACITY_KEY = "sk-capacity-host";
-	const notes: string[] = [];
-	try {
-		const handlers = new Map<string, any[]>(), commands = new Map<string, any>();
-		const pi = {
-			on: (n: string, h: any) => handlers.set(n, [...(handlers.get(n) ?? []), h]),
-			registerCommand: (n: string, c: any) => commands.set(n, c), sendMessage: () => {},
-			appendEntry: (customType: string, data: unknown) => branch.push({ id: `c${branch.length}`, type: "custom", customType, data }),
-			events: { on: () => () => {} },
-		} as unknown as ExtensionAPI;
-		const ctx = { sessionManager: { getSessionId: () => "s", getBranch: () => branch, buildContextEntries: () => branch }, ui: { notify: (m: string) => notes.push(m) } };
-		makeExtension(pi, { ...DEFAULT_CONFIG, apiKeyEnvVar: "JEV_CAPACITY_KEY" });
-		for (const h of handlers.get("session_start") ?? []) await h({}, ctx);
-		await commands.get("jev-audit").handler("", ctx);
-	} finally { globalThis.fetch = original; }
-	expect(p.requests.some((r) => r.status === 400)).toBe(true);
-	expect(notes.some((n) => n.includes("recovered by subdivision"))).toBe(true);
-	expect(notes.some((n) => n.includes("failed"))).toBe(false);
-});
 
 test("admitted covered tiny reports retain every primary candidate, not a newest-first crop", async () => {
 	const p = provider(80_000);
@@ -319,39 +262,4 @@ test("admitted covered tiny reports retain every primary candidate, not a newest
 	}
 	expect(retained).not.toContain("declared-covered ancillary reports");
 	expect(retained).toContain("Design review finished.");
-});
-
-test("host: an interrupted `full` review retries only its unfinished stages", async () => {
-	const big = Array.from({ length: 40 }, (_, i) => `PART_${String(i).padStart(2, "0")} ` + "detail ".repeat(60)).join("");
-	const history = [user("u", "Analyse this."), say("huge", big)];
-	const branch: unknown[] = [{ id: "b", type: "message", message: { role: "toolResult", toolName: "todo", content: "ok", details: { ...board, tasks: [scopedTask(history)] } } }, ...history];
-	let failing = true;
-	const p = provider(14_000, { fail: (req) => failing && req.state.includes("PART_39") });
-	const original = globalThis.fetch;
-	globalThis.fetch = ((u: string, init?: RequestInit) => p.opts.fetchFn!(u, init)) as unknown as typeof fetch;
-	process.env.JEV_CAPACITY_KEY = "sk-capacity-host";
-	try {
-		const handlers = new Map<string, any[]>(), commands = new Map<string, any>();
-		const pi = {
-			on: (n: string, h: any) => handlers.set(n, [...(handlers.get(n) ?? []), h]),
-			registerCommand: (n: string, c: any) => commands.set(n, c), sendMessage: () => {},
-			appendEntry: (customType: string, data: unknown) => branch.push({ id: `c${branch.length}`, type: "custom", customType, data }),
-			events: { on: () => () => {} },
-		} as unknown as ExtensionAPI;
-		const ctx = { sessionManager: { getSessionId: () => "s", getBranch: () => branch, buildContextEntries: () => branch }, ui: { notify: () => {} } };
-		makeExtension(pi, { ...DEFAULT_CONFIG, apiKeyEnvVar: "JEV_CAPACITY_KEY" });
-		for (const h of handlers.get("session_start") ?? []) await h({}, ctx);
-		await commands.get("jev-audit").handler("full", ctx);
-		const paid = p.requests.filter((r) => r.status === 200).map((r) => r.req.state);
-		expect(paid.length).toBeGreaterThan(0); // earlier stages really completed
-		expect(p.requests.some((r) => r.status === 422)).toBe(true); // a later stage failed
-		failing = false;
-		const n = p.requests.length;
-		await commands.get("jev-audit").handler("full", ctx);
-		const retry = p.requests.slice(n);
-		expect(retry.length).toBeGreaterThan(0);
-		for (const r of retry) expect(paid).not.toContain(r.req.state); // no completed stage bought twice
-		expect(retry.every((r) => !r.req.state.includes("PART_00 "))).toBe(true); // resumed past completed stages
-		expect(retry.some((r) => r.req.state.includes("PART_39"))).toBe(true);
-	} finally { globalThis.fetch = original; }
 });

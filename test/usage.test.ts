@@ -1,7 +1,7 @@
 /** Actual-attempt accounting: model/usage retained independently of answer validity. */
 import { expect, test } from "bun:test";
-import { auditWithContext, buildAuditRequest, runAudit, type Attempt } from "../typesafe.js";
-import { sizeOf } from "../capacity.js";
+import { auditWithContext, buildAuditRequest, runAudit, type Attempt } from "./legacy/typesafe.js";
+import { sizeOf } from "./legacy/capacity.js";
 import { collectContext } from "../context.js";
 
 const opts = { apiUrl: "https://x.test/v1/systemone", apiKey: "k", timeoutMs: 1000, baseDelayMs: 1 };

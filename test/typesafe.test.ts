@@ -1,5 +1,6 @@
 import { describe, expect, mock, test } from "bun:test";
-import { buildAuditRequest, runAudit, NOT_ON_BOARD, type AuditRequest } from "../typesafe.js";
+import { buildAuditRequest, NOT_ON_BOARD, type AuditRequest } from "../typesafe.js";
+import { runAudit } from "./legacy/typesafe.js";
 import type { BoardSnapshot } from "../board.js";
 
 const board: BoardSnapshot = {

@@ -1,8 +1,8 @@
 /** Admissible retained state must not multiply work by records × questions. All admissions here are synthetic. */
 import { expect, test } from "bun:test";
-import { reviewRolling, type Rolling } from "../rolling.js";
-import { evaluate, evaluateBatched, envelopeKey, newEvaluationCache, type AuditRequest, type EvaluateOptions } from "../typesafe.js";
-import { sizeOf, type ContextLimits } from "../capacity.js";
+import { reviewRolling, type Rolling } from "./legacy/rolling.js";
+import { evaluate, evaluateBatched, envelopeKey, newEvaluationCache, type AuditRequest, type EvaluateOptions } from "./legacy/typesafe.js";
+import { sizeOf, type ContextLimits } from "./legacy/capacity.js";
 import { collectContext, type EvidenceRecord } from "../context.js";
 
 const record = (id: string, kind: string, text: string): EvidenceRecord => ({

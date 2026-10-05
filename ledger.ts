@@ -4,8 +4,9 @@
  * abandoned branches never become current. Not a database, not model context.
  */
 import { object } from "./context.js";
+import type { ReviewDiagnostics } from "./judgment-client.js";
 import type { Rolling } from "./rolling.js";
-import type { Attempt, ChoiceAnswer, EvaluationCache, WithheldChoice } from "./typesafe.js";
+import type { Attempt, ChoiceAnswer, WithheldChoice } from "./typesafe.js";
 
 export const LEDGER_TYPE = "jev-todo-audit-ledger";
 /** This extension's own bookkeeping: never evidence, never a freshness change. */
@@ -22,6 +23,8 @@ export type LedgerRecord =
 
 /** One audit's observable cost. Bytes are request shape, not tokens; missing usage is "unknown", never zero. */
 export interface AuditDiagnostics {
+	/** Authoritative service-owned identities, unfinished attempts and presence-aware totals. */
+	service?: ReviewDiagnostics;
 	audit: string;
 	label: string;
 	/** Questions answered locally (cache/joined) versus sent to the provider. */
@@ -29,13 +32,13 @@ export interface AuditDiagnostics {
 	/** Processed-range receipt before and after this audit. */
 	range: { from: string | null; to: string | null };
 	outcome: "unchanged" | "completed" | "recovered" | "incomplete" | "failed";
-	/** Capacity channel (endpoint + requested model digest); attempts on it calibrate later predictions. */
+	/** Service-owned transport-scoped capacity channel digest, when reported. */
 	channel?: string;
 	/** Envelopes split before sending by the capacity estimate: not provider attempts, no usage. */
 	presplits?: number;
 	/** Locally blocked question definitions, not attempts, confidence, usage or learned capacity. */
 	withheld?: WithheldChoice[];
-	attempts: { n: number; outcome: Attempt["outcome"]; status?: number; model?: string; stateBytes?: number; questionBytes?: number; longestQuestionBytes?: number; inputTokens: number | "unknown"; outputTokens: number | "unknown"; costUsd?: number }[];
+	attempts: { id?: string; phase?: "start" | "end"; n: number; outcome: Attempt["outcome"]; status?: number; model?: string; stateBytes?: number; questionBytes?: number; longestQuestionBytes?: number; inputTokens: number | "unknown"; outputTokens: number | "unknown"; costUsd?: number }[];
 	/**
 	 * Sums of what the provider reported. `unreported` counts attempts lacking each figure: when present the sum is
 	 * a lower bound, never a complete total. `costUsd` only on channels that report a charge.
@@ -45,7 +48,7 @@ export interface AuditDiagnostics {
 
 /** Pure: builds diagnostics from observed attempts without sending anything. */
 export function diagnose(audit: string, label: string, reuse: { hits: number; joined: number; sent: number }, range: AuditDiagnostics["range"],
-	outcome: AuditDiagnostics["outcome"], attempts: Attempt[], capacity?: { channel: string; presplits: number; withheld?: WithheldChoice[] }): AuditDiagnostics {
+	outcome: AuditDiagnostics["outcome"], attempts: Attempt[], capacity?: { channel?: string; presplits?: number; withheld?: WithheldChoice[]; service?: ReviewDiagnostics }): AuditDiagnostics {
 	const known = (v: number | undefined): number | "unknown" => v ?? "unknown";
 	type Figure = "inputTokens" | "outputTokens" | "costUsd";
 	const sum = (k: Figure) => attempts.reduce((s, a) => s + (a[k] ?? 0), 0);
@@ -53,7 +56,7 @@ export function diagnose(audit: string, label: string, reuse: { hits: number; jo
 	const figures: Figure[] = charged ? ["inputTokens", "outputTokens", "costUsd"] : ["inputTokens", "outputTokens"];
 	const unreported = Object.fromEntries(figures.map((k) => [k, attempts.filter((a) => a[k] === undefined).length]).filter(([, n]) => n));
 	return { audit, label, hits: reuse.hits + reuse.joined, misses: reuse.sent, range, outcome, ...capacity,
-		attempts: attempts.map((a, i) => ({ n: i + 1, outcome: a.outcome, status: a.status, model: a.model, stateBytes: a.stateBytes, questionBytes: a.questionBytes, longestQuestionBytes: a.longestQuestionBytes,
+		attempts: attempts.map((a, i) => ({ n: i + 1, ...(a.id ? { id: a.id, phase: a.phase } : {}), outcome: a.outcome, status: a.status, model: a.model, stateBytes: a.stateBytes, questionBytes: a.questionBytes, longestQuestionBytes: a.longestQuestionBytes,
 			inputTokens: known(a.inputTokens), outputTokens: known(a.outputTokens), ...(a.costUsd === undefined ? {} : { costUsd: a.costUsd }) })),
 		usage: { inputTokens: sum("inputTokens"), outputTokens: sum("outputTokens"), ...(charged ? { costUsd: sum("costUsd") } : {}),
 			...(Object.keys(unreported).length ? { unreported } : {}) } };
@@ -74,20 +77,25 @@ export function writeLedger(append: ((type: string, data: LedgerRecord) => void)
  * Replay compatible records from the active branch into memory and return the
  * latest receipt. A receipt counts only when all its required answers were recorded.
  */
-export function restoreLedger(branch: Iterable<unknown>, cache: EvaluationCache): Rolling | undefined {
+export function restoreLedger(branch: Iterable<unknown>): Rolling | undefined {
+	// Historical eval ids validate old receipts only. They never become a service cache.
+	const recorded = new Set<string>();
 	let latest: Rolling | undefined;
 	for (const raw of branch) {
 		if (!isOwnBookkeeping(raw)) continue;
 		const d = object(object(raw).data);
 		if (d.kind === "eval") {
-			for (const [key, answer] of Object.entries(object(d.answers))) if (validAnswer(answer)) cache.answers.set(key, { choice: answer.choice, confidence: answer.confidence });
-		} else if (d.kind === "rejected") {
-			if (typeof d.envelope === "string") cache.rejected.add(d.envelope);
+			for (const [key, answer] of Object.entries(object(d.answers))) if (validAnswer(answer)) recorded.add(key);
 		} else if (d.kind === "receipt") {
 			const r = object(d.receipt), opinions = object(r.opinions);
+			const validShared = typeof r.serviceCheckpoint === "string" && /^[a-f0-9]{64}$/.test(r.serviceCheckpoint);
+			const origin = object(r.reviewOrigin);
+			const validOrigin = typeof origin.inputKey === "string" && (origin.checkpoint === undefined || (typeof origin.checkpoint === "string" && /^[a-f0-9]{64}$/.test(origin.checkpoint))) && (origin.through === undefined || typeof origin.through === "string");
 			if ((r.through === undefined || typeof r.through === "string") && typeof r.inputKey === "string" && Array.isArray(r.answerKeys) &&
-				r.answerKeys.every((k: unknown) => typeof k === "string" && cache.answers.has(k)) && Object.values(opinions).every(validAnswer))
+				r.answerKeys.every((k: unknown) => typeof k === "string" && recorded.has(k)) && Object.values(opinions).every(validAnswer))
 				latest = { through: r.through, inputKey: r.inputKey, opinions, answerKeys: r.answerKeys,
+					...(validShared ? { serviceCheckpoint: r.serviceCheckpoint } : {}),
+					...(validShared && validOrigin ? { reviewOrigin: { inputKey: origin.inputKey, checkpoint: origin.checkpoint, through: origin.through } } : {}),
 					...(Array.isArray(r.oversized) && r.oversized.every((k: unknown) => typeof k === "string") ? { oversized: r.oversized } : {}) };
 		}
 	}

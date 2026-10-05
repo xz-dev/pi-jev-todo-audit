@@ -6,10 +6,8 @@
  *   2. `<agentDir>/jev-todo-audit.json`   — global, agentDir = PI_CODING_AGENT_DIR or ~/.pi/agent
  *   3. `<cwd>/.pi/jev-todo-audit.json`    — project, only when ctx.isProjectTrusted()
  *
- * `apiKey` / `apiKeyEnvVar` are global-layer only — project files can never
- * inject secrets into a repo. API key resolution (resolveAuditKey): Pi's key
- * for the endpoint's provider first, then env var (named by `apiKeyEnvVar`),
- * then file `apiKey`. Empty/whitespace = absent.
+ * Legacy transport/auth fields load only for migration notices and redaction.
+ * They never select credentials or dispatch. Pi and the shared service own auth.
  *
  * Missing or malformed files → all defaults, never throws.
  */
@@ -17,26 +15,30 @@
 import { existsSync, readFileSync } from "node:fs";
 import { join } from "node:path";
 import { CONFIG_DIR_NAME, getAgentDir } from "@earendil-works/pi-coding-agent";
-import { PI_PROVIDERS, type ContextLimits } from "./capacity.js";
+import type { ContextLimits } from "./capacity.js";
 
 export interface AuditConfig {
+	/** Explicit legacy keys, for field-name-only migration notices (not dispatch). */
+	legacyFields?: string[];
+	/** Keys already read from allowed config layers, retained solely for redaction. */
+	legacySecrets?: string[];
 	/** Trigger an audit every Nth completed loop. */
 	interval: number;
 	/** Skip an audit when this many or fewer loops have run since the last user message. */
 	cooldownLoops: number;
 	/** Minimum jev confidence required to inject a corrective message. */
 	confidenceThreshold: number;
-	/** TypeSafe model id. */
+	/** Deprecated selection fields; loaded but ignored for dispatch. */
 	model: string;
-	/** Name of the env var checked first for the API key. */
+	/** Deprecated credential location; used for redaction only. */
 	apiKeyEnvVar: string;
-	/** API key written straight into the config file (pi-style). Env var wins when both set. */
+	/** Deprecated credential value; used for redaction only. */
 	apiKey?: string;
 	/** Master switch. */
 	enabled: boolean;
 	/** Notify the user on aligned audits too. */
 	notifyOnAligned: boolean;
-	/** TypeSafe endpoint. */
+	/** Deprecated endpoint; loaded but never used for dispatch. */
 	apiUrl: string;
 	/** Request timeout in ms. */
 	timeoutMs: number;
@@ -44,7 +46,7 @@ export interface AuditConfig {
 	activityBudgetChars?: number;
 	/** Audits an in_progress task may span before being flagged stale. */
 	staleAuditSpans: number;
-	/** Token limits of a non-built-in channel (overrides the published table for apiUrl). */
+	/** Deprecated limits; service-owned configuration replaces them. */
 	contextLimits?: ContextLimits;
 }
 
@@ -130,8 +132,13 @@ function projectFilter(raw: Record<string, unknown>): Record<string, unknown> {
 	return out;
 }
 
-function applyLayer(cfg: AuditConfig, o: Record<string, unknown>): AuditConfig {
+function applyLayer(cfg: AuditConfig, o: Record<string, unknown>, readLayer = o): AuditConfig {
+	const legacyFields = [...new Set([...(cfg.legacyFields ?? []), ...["model", "apiUrl", "apiKey", "apiKeyEnvVar", "contextLimits"].filter((key) => Object.hasOwn(readLayer, key))])];
+	const key = str(readLayer.apiKey);
+	const legacySecrets = [...new Set([...(cfg.legacySecrets ?? []), ...(key ? [key] : [])])];
 	return {
+		...(legacyFields.length ? { legacyFields } : {}),
+		...(legacySecrets.length ? { legacySecrets } : {}),
 		interval: num(o.interval, cfg.interval, 1),
 		cooldownLoops: num(o.cooldownLoops, cfg.cooldownLoops, 0),
 		confidenceThreshold: num(o.confidenceThreshold, cfg.confidenceThreshold, 0),
@@ -162,46 +169,8 @@ export function loadConfig(input: LoadConfigInput | string = {}): AuditConfig {
 	const opts: LoadConfigInput = typeof input === "string" ? { globalPath: input } : input;
 	let cfg = applyLayer(DEFAULT_CONFIG, readJsonFile(opts.globalPath ?? agentConfigPath()));
 	if (opts.projectPath && opts.projectTrusted) {
-		cfg = applyLayer(cfg, projectFilter(readJsonFile(opts.projectPath)));
+		const readLayer = readJsonFile(opts.projectPath);
+		cfg = applyLayer(cfg, projectFilter(readLayer), readLayer);
 	}
 	return cfg;
-}
-
-/** Extension-only key: env var first, config `apiKey` fallback. Blank = absent. */
-export function resolveApiKey(cfg: AuditConfig): string | undefined {
-	const env = process.env[cfg.apiKeyEnvVar];
-	if (env && env.trim()) return env.trim();
-	return cfg.apiKey;
-}
-
-/** The slice of Pi's ModelRegistry used for key lookup. */
-export interface KeyRegistry {
-	getProvider?(provider: string): unknown;
-	getApiKeyForProvider?(provider: string): Promise<string | undefined>;
-}
-
-export interface ResolvedKey {
-	key?: string;
-	source: "pi" | "fallback" | "none";
-	/** Mapped Pi provider registered in this Pi; set with `fallback` it means the key should move into Pi. */
-	provider?: string;
-}
-
-/** Pi's key for the endpoint's provider first, then the extension's own sources. Never throws. */
-export async function resolveAuditKey(cfg: AuditConfig, registry?: KeyRegistry): Promise<ResolvedKey> {
-	const mapped = PI_PROVIDERS[cfg.apiUrl];
-	let provider: string | undefined;
-	if (mapped && registry) {
-		try {
-			if (registry.getProvider?.(mapped)) {
-				provider = mapped;
-				const key = str(await registry.getApiKeyForProvider?.(mapped));
-				if (key) return { key, source: "pi", provider };
-			}
-		} catch {
-			// Pi lookup unavailable → extension fallback.
-		}
-	}
-	const key = resolveApiKey(cfg);
-	return key ? { key, source: "fallback", provider } : { source: "none", provider };
 }

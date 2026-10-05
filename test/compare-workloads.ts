@@ -11,18 +11,24 @@ const root = fileURLToPath(new URL("../", import.meta.url));
 const baseline = process.argv.includes("--baseline");
 const revision = execFileSync("git", ["rev-parse", "HEAD"], { cwd: root, encoding: "utf8" }).trim();
 if (baseline) plugin({ name: "read-only-baseline", setup(build) {
-	build.onLoad({ filter: /(?:index|capacity|rolling|typesafe)\.ts$/ }, ({ path }) => {
+	build.onLoad({ filter: /\.ts$/ }, ({ path }) => {
 		const name = relative(root, path);
-		if (!/^(index|capacity|rolling|typesafe)\.ts$/.test(name)) return;
+		if (!/^(?:[^/]+\.ts|test\/corpus\.ts)$/.test(name)) return;
 		return { contents: execFileSync("git", ["show", `${revision}:${name}`], { cwd: root, encoding: "utf8" }), loader: "ts" };
 	});
 } });
-const { runCorpus } = await import("./corpus.ts");
-const { reviewRolling } = await import("../rolling.ts");
-const { newEvaluationCache } = await import("../typesafe.ts");
+// This standalone offline benchmark is its own main process, not an audit child.
+process.env.PI_JEV_TODO_AUDIT_OWNER_PID = String(process.pid);
+const { runCorpus } = await import(baseline ? "./corpus.ts" : "./shared-service-corpus.ts");
 const corpus = await runCorpus();
 console.log(JSON.stringify({ mode: baseline ? "baseline" : "candidate", baselineRevision: revision, corpus: corpus.rows }));
 
+// Retained-prefix legacy measurements are historical only. The candidate's
+// corresponding 1/6/69-record admissions run in shared-service-boundary.integration.test.ts.
+if (baseline) {
+const rollingPath = "../rolling.ts", typesafePath = "../typesafe.ts";
+const { reviewRolling } = await import(rollingPath) as typeof import("./legacy/rolling.js");
+const { newEvaluationCache } = await import(typesafePath) as typeof import("./legacy/typesafe.js");
 const board = { tasks: [{ id: 1, subject: "Current task", status: "in_progress" as const },
 	{ id: 2, subject: "Next task", status: "pending" as const }], nextId: 3 };
 const record = (id: string, kind: string, text: string): EvidenceRecord => ({ id, kind, text, group: id, view: "recent", protected: kind === "user", complete: true });
@@ -43,4 +49,5 @@ for (const count of [1, 6, 69]) {
 	console.log(JSON.stringify({ case: `retained-prefix-${count}`, requests: sent.length, presplits, stateBytes, questionBytes, receipts: receipts.length,
 		complete: outcome.complete && outcome.final, through: receipts.at(-1)?.through,
 		recordsSeen: records.filter((r) => sent.some((s) => s.state.includes(r.text))).length, recordsTotal: records.length }));
+}
 }

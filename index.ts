@@ -8,17 +8,17 @@
  */
 
 import type { ExtensionAPI, ExtensionCommandContext } from "@earendil-works/pi-coding-agent";
-import { SettingsManager } from "@earendil-works/pi-coding-agent";
 import { existsSync } from "node:fs";
 import { randomUUID } from "node:crypto";
-import { agentConfigPath, legacyConfigPath, loadConfig, projectConfigPath, resolveAuditKey, type AuditConfig, type KeyRegistry } from "./config.js";
+import { agentConfigPath, legacyConfigPath, loadConfig, projectConfigPath, type AuditConfig } from "./config.js";
 import { replayBoardWithAges, isTaskDetails, staleTaskIds, unfinishedTasks, visibleTasks, inProgressTasks as inProgressBoardTasks } from "./board.js";
 import { collectContext, contextVersion, digest, object, redact } from "./context.js";
 import { freshCounter, onTurnEnd, onUserMessage, replayCounter, shouldAudit, type LoopCounter } from "./counter.js";
-import { buildAuditRequest, JUDGMENT_VERSION, newEvaluationCache, type Attempt, type EvaluationCache, type TerminalStopInfo } from "./typesafe.js";
+import { buildAuditRequest, type Attempt, type TerminalStopInfo } from "./typesafe.js";
 import { diagnose, isOwnBookkeeping, restoreLedger, writeLedger } from "./ledger.js";
-import { channelKey, newCapacityProfile, PI_PROVIDERS, PUBLISHED_LIMITS, restoreCapacity, type CapacityProfile } from "./capacity.js";
-import { processedEntries, reviewRolling, type Rolling } from "./rolling.js";
+import { processedEntries, type Rolling } from "./rolling.js";
+import { getJudgmentService, type ReviewService } from "./judgment-client.js";
+import { reviewShared } from "./shared-review.js";
 import { decide } from "./verdict.js";
 import { claimAuditProcess } from "./ownership.js";
 
@@ -50,29 +50,8 @@ function parseUserReady(data: unknown): TerminalStopInfo | undefined {
 	return out;
 }
 
-type Ctx = { sessionManager: { getSessionId(): string; getBranch(): Iterable<unknown>; buildContextEntries?: () => Iterable<unknown> }; cwd?: string; isProjectTrusted?: () => boolean; signal?: AbortSignal; modelRegistry?: KeyRegistry };
+type Ctx = { sessionManager: { getSessionId(): string; getBranch(): Iterable<unknown>; buildContextEntries?: () => Iterable<unknown> }; cwd?: string; isProjectTrusted?: () => boolean; signal?: AbortSignal; modelRegistry?: unknown };
 const sid = (ctx: Ctx) => ctx.sessionManager.getSessionId() ?? "";
-
-/** Where to put a key so Pi, not this extension, owns it. */
-const PI_KEY_HINT: Record<string, string> = {
-	openrouter: "run /login openrouter or set OPENROUTER_API_KEY",
-	typesafe: "set TYPESAFE_API_KEY or add a typesafe entry to Pi's auth.json",
-};
-const noKeyMessage = (cfg: AuditConfig, provider?: string) =>
-	`no API key: ${provider ? `configure Pi auth for ${provider} (${PI_KEY_HINT[provider] ?? "see Pi provider docs"}), or ` : ""}set ${cfg.apiKeyEnvVar} or apiKey in ${agentConfigPath()}`;
-
-/** Same retry settings the agent loop uses (settings.json `retry` block). */
-function retrySettingsFor(ctx: Ctx): { maxRetries: number; baseDelayMs: number } {
-	const fallback = { maxRetries: 0, baseDelayMs: 2_000 };
-	try {
-		const s = SettingsManager.create(ctx.cwd ?? process.cwd(), undefined, {
-			projectTrusted: ctx.isProjectTrusted?.() ?? false,
-		}).getRetrySettings();
-		return s.enabled ? { maxRetries: s.maxRetries, baseDelayMs: s.baseDelayMs } : { ...fallback, baseDelayMs: s.baseDelayMs };
-	} catch {
-		return fallback;
-	}
-}
 
 
 export default function (pi: ExtensionAPI, cfgOverride?: AuditConfig) {
@@ -83,9 +62,6 @@ export default function (pi: ExtensionAPI, cfgOverride?: AuditConfig) {
 	if (!cfg.enabled) return;
 
 	const counters = new Map<string, LoopCounter>();
-	/** Same-session evaluation memory; never shared across sessions. */
-	const caches = new Map<string, EvaluationCache>();
-	const cacheFor = (id: string) => caches.get(id) ?? (caches.set(id, newEvaluationCache()), caches.get(id)!);
 	/** Latest durable processing receipt per session (cumulative; replaced, never accumulated). */
 	const rollings = new Map<string, Rolling | undefined>();
 	/** Per-load prefix: the sequence restarts on reload, so ids stay unique within a session branch. */
@@ -93,22 +69,13 @@ export default function (pi: ExtensionAPI, cfgOverride?: AuditConfig) {
 	let auditSeq = 0;
 	/** Token of an unfinished `/jev-audit full` per session. */
 	const fullReviews = new Map<string, string>();
-	/** Same-session per-channel capacity learning (endpoint + requested model). */
-	const capacities = new Map<string, Map<string, CapacityProfile>>();
-	const capacityFor = (id: string, channel: string) => {
-		const byChannel = capacities.get(id) ?? (capacities.set(id, new Map()), capacities.get(id)!);
-		return byChannel.get(channel) ?? (byChannel.set(channel, newCapacityProfile()), byChannel.get(channel)!);
-	};
 	/** Rebuild same-session memory from the active branch (reload, compaction, tree navigation). */
 	const restoreMemory = (ctx: Ctx) => {
-		const cache = newEvaluationCache();
-		rollings.set(sid(ctx), restoreLedger(ctx.sessionManager.getBranch(), cache));
-		caches.set(sid(ctx), cache);
-		capacities.set(sid(ctx), restoreCapacity(ctx.sessionManager.getBranch(), isOwnBookkeeping));
+		rollings.set(sid(ctx), restoreLedger(ctx.sessionManager.getBranch()));
 	};
 	const append = (pi as { appendEntry?: ExtensionAPI["appendEntry"] }).appendEntry?.bind(pi);
 	/** Own ledger entries are neither evidence nor a boundary change. */
-	const withoutBookkeeping = (entries: Iterable<unknown>) => [...entries].filter((e) => !isOwnBookkeeping(e));
+	const withoutBookkeeping = (entries: Iterable<unknown>) => [...entries].filter((e) => !isOwnBookkeeping(e) && !(object(e).type === "custom" && object(e).customType === "llm-as-jev-ledger"));
 	const counterFor = (id: string) => counters.get(id) ?? freshCounter();
 	let inFlight = false;
 	let projectMerged = false;
@@ -136,7 +103,7 @@ export default function (pi: ExtensionAPI, cfgOverride?: AuditConfig) {
 				return { id: `task:${task.id}`, value: { ...task, trajectory } };
 			}),
 			!!ctx.sessionManager.buildContextEntries,
-			[apiKey],
+			[apiKey, cfg.apiKey ?? "", process.env[cfg.apiKeyEnvVar] ?? "", ...(cfg.legacySecrets ?? [])],
 		);
 		// Successful identical TODO snapshots are bookkeeping reads, not a new fact segment. Keep
 		// explicit references and all real revisions/errors; never classify unrelated tools by name.
@@ -191,7 +158,7 @@ export default function (pi: ExtensionAPI, cfgOverride?: AuditConfig) {
 		if (!cfg.enabled || inFlight) return;
 		const c = counterFor(sid(ctx));
 		inFlight = true;
-		let apiKey = "";
+		const legacySecrets = [cfg.apiKey ?? "", process.env[cfg.apiKeyEnvVar] ?? "", ...(cfg.legacySecrets ?? [])]; // Redaction only, never authentication.
 		const ac = new AbortController();
 		// Compose user/agent abort (ctx.signal) with the session-lifecycle abort.
 		// Handler must be removable — once:true only fires on abort, completed
@@ -218,15 +185,19 @@ export default function (pi: ExtensionAPI, cfgOverride?: AuditConfig) {
 			let rolling = fresh ? undefined : rollings.get(mySid);
 			let processed = processedEntries(ctx.sessionManager.getBranch(), rolling?.through);
 			if (!processed) { rolling = undefined; processed = new Set(); }
-			// Resolved after the snapshot above, so changes during the lookup are caught by the staleness guards.
-			const resolved = await resolveAuditKey(cfg, ctx.modelRegistry);
-			if (ac.signal.aborted) return;
-			if (!resolved.key) {
-				ctx.ui?.notify?.(`[jev audit] ${noKeyMessage(cfg, resolved.provider ?? PI_PROVIDERS[cfg.apiUrl])}`, "warning");
+			// Recheck discovery at the actual inference boundary; never fall back to HTTP.
+			const service = getJudgmentService() as Partial<ReviewService> | undefined;
+			if (service?.version !== 1 || service.reviewVersion !== 1 || typeof service.review !== "function") {
+				const key = `dependency:${mySid}:${service ? "incompatible" : "missing"}`;
+				const manual = label === "manual" || label === "manual full";
+				if (manual || !noticeKeys.has(key)) {
+					ctx.ui?.notify?.("[jev audit] requires pi-llm-as-jev reviewVersion 1; load/update the shared service. Audit skipped; TODO remains available.", manual ? "error" : "warning");
+					noticeKeys.add(key);
+				}
 				return;
 			}
-			apiKey = resolved.key;
-			const initialContext = contextFor(ctx, apiKey, board);
+			if (ac.signal.aborted) return;
+			const initialContext = contextFor(ctx, "", board);
 			const staleIds = staleTaskIds(board, c.totalLoops, cfg.interval, cfg.staleAuditSpans);
 			// Diagnostic age, not a split decision or a task-size threshold.
 			for (const task of inProgressBoardTasks(board)) {
@@ -234,36 +205,32 @@ export default function (pi: ExtensionAPI, cfgOverride?: AuditConfig) {
 				// Only the flag enters the payload: an exact loop count would change every loop and defeat reuse.
 				if (record) record.text += `\nAge review flag=${staleIds.includes(task.id)}. Age alone does not justify splitting.`;
 			}
+			// Current advisory source selections affect candidate membership. Hash the
+			// resulting definitions, not every opinion: unchanged scopes retain reuse.
 			const definitions = buildAuditRequest(board, { ...initialContext, rolling: {
 				opinions: rolling?.opinions ?? {}, progress: { processedThrough: rolling?.through ?? null, final: true },
-			} }, cfg.model, opts.terminalStop).questions;
-			const inputKey = digest({ v: JUDGMENT_VERSION, endpoint: cfg.apiUrl, model: cfg.model, stop: opts.terminalStop,
+			} }, "shared-service", opts.terminalStop).questions;
+			const inputKey = digest({ v: "shared-audit/1", stop: opts.terminalStop,
 				facts: contextVersion(initialContext), questions: definitions });
-			const attempts: Attempt[] = [];
-			const channel = channelKey(cfg.apiUrl, cfg.model);
-			let presplits = 0;
-			const outcome = await reviewRolling({ board, context: initialContext, processed, rolling, inputKey, model: cfg.model, stop: opts.terminalStop,
-				opts: { apiUrl: cfg.apiUrl, apiKey, timeoutMs: cfg.timeoutMs, signal: ac.signal, cache: cacheFor(mySid), fresh, ...retrySettingsFor(ctx),
-					capacity: { profile: capacityFor(mySid, channel), limits: cfg.contextLimits ?? PUBLISHED_LIMITS[cfg.apiUrl] },
-					onPresplit: () => presplits++,
-					onAttempt: (a) => attempts.push(a),
-					// Answers are immutable facts about their captured input; persist even if delivery later becomes stale.
-					onStore: (answers, { model }) => { if (current(lastCtx)) writeLedger(append, { kind: "eval", answers, model }); },
-					onReject: (envelope) => { if (current(lastCtx)) writeLedger(append, { kind: "rejected", envelope }); } },
+			const outcome = await reviewShared({ service: service as ReviewService, board, context: initialContext, inputKey, stop: opts.terminalStop, rolling, processed,
+				threshold: cfg.confidenceThreshold, timeoutMs: cfg.timeoutMs, signal: ac.signal, fresh, secrets: legacySecrets,
 				// Progress advances only on a durable receipt written for this same session.
 				commit: (next) => {
-					if (!current(lastCtx) || !processedEntries(lastCtx!.sessionManager.getBranch(), next.through) ||
+					if (!current(lastCtx) || boundaryFor(lastCtx!) !== boundary || !processedEntries(lastCtx!.sessionManager.getBranch(), next.through) ||
 						!writeLedger(append, { kind: "receipt", receipt: next })) return false;
 					rollings.set(mySid, next);
 					return true;
 				} });
 			const { result: res, context } = outcome;
+			const attempts: Attempt[] = outcome.review.diagnostics.attempts.map((a) => ({ ...a,
+				outcome: a.phase === "start" ? "unfinished" : a.outcome === "aborted" ? "aborted" : a.errorCategory === "overflow" ? "overflow" : a.outcome !== "response" ? "network_error" : a.errorCategory === "response" ? "malformed" : a.status === 200 ? "answered" : "http_error" }));
+			const { channel, presplits } = outcome.review.diagnostics;
 			// A completed forced review is the ordinary baseline from now on.
 			if (fresh && outcome.final && outcome.complete && res.ok) fullReviews.delete(mySid);
 			// Accounting is recorded for every attempt, including failed, recovered and later-stale audits.
 			if (current(lastCtx)) writeLedger(append, { kind: "diag", diag: diagnose(`${mySid}:${LOAD_ID}:${++auditSeq}`, label, outcome.reuse,
 				{ from: rolling?.through ?? null, to: rollings.get(mySid)?.through ?? null },
-				outcome.unchanged ? "unchanged" : !res.ok ? "failed" : !(outcome.final && outcome.complete) ? "incomplete" : outcome.recovered ? "recovered" : "completed", attempts, { channel, presplits, ...(res.withheld?.length ? { withheld: res.withheld } : {}) }) });
+				outcome.unchanged ? "unchanged" : !res.ok ? "failed" : !(outcome.final && outcome.complete) ? "incomplete" : outcome.recovered ? "recovered" : "completed", attempts, { service: outcome.review.diagnostics, channel, presplits, ...(res.withheld?.length ? { withheld: res.withheld } : {}) }) });
 			if (ac.signal.aborted || sid(lastCtx ?? ctx) !== mySid || boundaryFor(ctx) !== boundary) return;
 
 			if (res.withheld?.length) {
@@ -271,7 +238,7 @@ export default function (pi: ExtensionAPI, cfgOverride?: AuditConfig) {
 				if (!sentKeys.has(key)) {
 					const scopes = res.withheld.map((w) => `${w.question}: ${w.count} options (limit ${w.limit}, including fallback)`).join("; ");
 					const text = `CHOICE CONTEXT INCOMPLETE: ${scopes}. These questions were withheld locally, with no model judgment or provider attempt for them.\nThis scope is incomplete: retain or provide genuine applicability information and any still-needed public primary sources. A legal metadata.auditBrief can expose facts and gaps, but sources is not an exclusive allowlist and covers cannot retire uncertain primary eligibility. Repeating the same brief does not guarantee a bounded set; if it remains over 255, leave this finding incomplete. Do not truncate candidates or remove necessary tasks. Independent supported findings remain eligible; this clarification claims no completion, continuation, status change or new permission.`;
-					pi.sendMessage({ customType: "jev-todo-audit", content: PLUGIN_ADVISORY + redact(text, [apiKey]), display: true, details: { auditKeys: [key] } }, { deliverAs: "steer" });
+					pi.sendMessage({ customType: "jev-todo-audit", content: PLUGIN_ADVISORY + redact(text, legacySecrets), display: true, details: { auditKeys: [key] } }, { deliverAs: "steer" });
 					sentKeys.add(key);
 				}
 			}
@@ -282,11 +249,11 @@ export default function (pi: ExtensionAPI, cfgOverride?: AuditConfig) {
 						const tasks = unfinishedTasks(board).map((t) => `#${t.id}`).join(", ") || "current work";
 						const reports = initialContext.records.filter((r) => r.kind === "assistant" && r.complete && !r.advice).map((r) => r.id);
 						const text = `FACTUAL CONTEXT INCOMPLETE for ${tasks}: the required material could not be admitted even after progressing recovery. Completed answers/ranges remain recorded; no completion or continuation judgment is made.\nA concise current account in the task description or optional metadata.auditBrief = { text, sources, covers } can expose the needed decisions, outcomes, blockers and gaps, but does not by itself remove retained primary obligations or guarantee admission. Repeating the same account cannot promise recovery. A brief is reported data, not user permission or independent execution proof; do not replace user constraints.\nPermitted public report IDs available for declared coverage: ${reports.join(", ") || "none; do not invent origins"}. Coverage is an author's report, not verified semantic completeness. This clarification does not authorize new execution or task-status changes.`;
-						pi.sendMessage({ customType: "jev-todo-audit", content: PLUGIN_ADVISORY + redact(text, [apiKey]), display: true, details: { auditKeys: [key] } }, { deliverAs: "steer" });
+						pi.sendMessage({ customType: "jev-todo-audit", content: PLUGIN_ADVISORY + redact(text, legacySecrets), display: true, details: { auditKeys: [key] } }, { deliverAs: "steer" });
 						sentKeys.add(key);
 					}
 				}
-				ctx.ui?.notify?.(`[jev audit ${label}] failed: ${redact(res.ok ? "review incomplete" : res.error, [apiKey])}`, "warning");
+				ctx.ui?.notify?.(`[jev audit ${label}] failed: ${redact(res.ok ? "review incomplete" : res.error, legacySecrets)}`, "warning");
 				return;
 			}
 			// The initial overflow is not the final outcome when subdivision completed the review.
@@ -294,10 +261,10 @@ export default function (pi: ExtensionAPI, cfgOverride?: AuditConfig) {
 
 			restoreKeys(ctx);
 			const action = decide(res.answers, board, cfg.confidenceThreshold, c.totalLoops, staleIds,
-				{ terminalStop: !!opts.terminalStop, context, suppressed: sentKeys, scopeKey: mySid, evidenceVersion });
+				{ serviceAccepted: true, terminalStop: !!opts.terminalStop, context, suppressed: sentKeys, scopeKey: mySid, evidenceVersion });
 			if (action.kind === "notify") {
 				const key = digest([mySid, evidenceVersion, action.text]);
-				if (!noticeKeys.has(key)) { ctx.ui?.notify?.(action.text, "info"); noticeKeys.add(key); }
+				if (!noticeKeys.has(key)) { ctx.ui?.notify?.(redact(action.text, legacySecrets), "info"); noticeKeys.add(key); }
 			} else if (action.kind === "inject") {
 				// Re-check session identity right before the side effect — the only
 				// await between the earlier guard and here is none, but shutdown can
@@ -305,20 +272,19 @@ export default function (pi: ExtensionAPI, cfgOverride?: AuditConfig) {
 				if (ac.signal.aborted || sid(lastCtx ?? ctx) !== mySid) return;
 				const auditKeys = action.corrections.map((item) => item.key);
 				pi.sendMessage(
-					{ customType: "jev-todo-audit", content: PLUGIN_ADVISORY + action.text, display: true, details: { auditKeys } },
+					{ customType: "jev-todo-audit", content: PLUGIN_ADVISORY + redact(action.text, legacySecrets), display: true, details: { auditKeys } },
 					opts.terminalStop && action.mayWake ? { deliverAs: "steer", triggerTurn: true } : { deliverAs: "steer" },
 				);
 				for (const key of auditKeys) sentKeys.add(key);
 				if (cfg.notifyOnAligned === false) {
 					ctx.ui?.notify?.(`[jev audit ${label}] correction injected`, "info");
 				}
-			} else if (cfg.notifyOnAligned && res.answers.alignment?.choice === "aligned" &&
-				(res.answers.alignment.confidence ?? 0) >= cfg.confidenceThreshold) {
+			} else if (cfg.notifyOnAligned && res.answers.alignment?.choice === "aligned") {
 				ctx.ui?.notify?.(`[jev audit ${label}] board aligned ✓`, "info");
 			}
 		} catch (err) {
 			if (!ac.signal.aborted) {
-				ctx.ui?.notify?.(`[jev audit ${label}] error: ${redact(err instanceof Error ? err.message : String(err), [apiKey])}`, "warning");
+				ctx.ui?.notify?.(`[jev audit ${label}] error: ${redact(err instanceof Error ? err.message : String(err), legacySecrets)}`, "warning");
 			}
 		} finally {
 			ctx.signal?.removeEventListener("abort", onCtxAbort);
@@ -361,13 +327,8 @@ export default function (pi: ExtensionAPI, cfgOverride?: AuditConfig) {
 		restoreKeys(ctx);
 		restoreMemory(ctx);
 		counters.set(sid(ctx), replayCounter(ctx.sessionManager.getBranch()));
-		// Background audit is useless without a key — warn once at session start.
-		const resolved = await resolveAuditKey(cfg, ctx.modelRegistry);
-		if (!resolved.key) {
-			ctx.ui?.notify?.(`[jev-todo-audit] ${noKeyMessage(cfg, resolved.provider ?? PI_PROVIDERS[cfg.apiUrl])}`, "warning");
-		} else if (resolved.source === "fallback" && resolved.provider) {
-			ctx.ui?.notify?.(`[jev-todo-audit] API key comes from this extension's config; prefer Pi auth for ${resolved.provider}: ${PI_KEY_HINT[resolved.provider] ?? "see Pi provider docs"}`, "warning");
-		}
+		const legacyFields = cfg.legacyFields ?? (cfgOverride ? ["model", "apiUrl", "apiKey", "apiKeyEnvVar", "contextLimits"].filter((key) => Object.hasOwn(cfgOverride, key)) : []);
+		if (legacyFields.length) ctx.ui?.notify?.(`[jev-todo-audit] ignored legacy fields: ${legacyFields.join(", ")}. Configure models/limits in pi-llm-as-jev and credentials/endpoints in Pi.`, "warning");
 	});
 	pi.on("session_compact", async (_e, ctx) => {
 		if (!cfg.enabled) return;
@@ -390,7 +351,6 @@ export default function (pi: ExtensionAPI, cfgOverride?: AuditConfig) {
 	});
 	pi.on("session_shutdown", async (_e, ctx) => {
 		counters.delete(sid(ctx));
-		caches.delete(sid(ctx));
 		rollings.delete(sid(ctx));
 		fullReviews.delete(sid(ctx));
 		auditAbort?.abort();

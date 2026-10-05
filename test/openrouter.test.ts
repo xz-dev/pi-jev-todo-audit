@@ -1,7 +1,7 @@
 /** OpenRouter System One endpoint: documented wire shapes only (offline; no live OpenRouter call). */
 import { expect, test } from "bun:test";
-import { buildAuditRequest, isContextOverflow, runAudit, type Attempt } from "../typesafe.js";
-import { newCapacityProfile, predictOverflow, PUBLISHED_LIMITS, sizeOf } from "../capacity.js";
+import { buildAuditRequest, isContextOverflow, runAudit, type Attempt } from "./legacy/typesafe.js";
+import { newCapacityProfile, predictOverflow, PUBLISHED_LIMITS, sizeOf } from "./legacy/capacity.js";
 import { diagnose } from "../ledger.js";
 
 const OPENROUTER = "https://openrouter.ai/api/v1/systemone";

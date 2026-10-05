@@ -1,5 +1,5 @@
 import { expect, test } from "bun:test";
-import { auditWithContext, buildAuditRequest, isContextOverflow, runAudit, type AuditRequest } from "../typesafe.js";
+import { auditWithContext, buildAuditRequest, isContextOverflow, runAudit, type AuditRequest } from "./legacy/typesafe.js";
 import { collectContext } from "../context.js";
 const options = { apiUrl: "https://example.invalid/v1/systemone", apiKey: "test-key", timeoutMs: 1000 };
 const board = { tasks: [{ id: 5, subject: "Check parser", status: "in_progress" as const }], nextId: 6 };

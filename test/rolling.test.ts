@@ -1,11 +1,9 @@
-/** Rolling review: processed input is remembered as conclusions, not resent raw. */
+/** Legacy rolling-engine comparison; production uses reviewShared and the service.
+ * The migrated incremental/failed-stage host guarantee runs as both real-wire R16 cases. */
 import { beforeEach, expect, test } from "bun:test";
-import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
-import makeExtension from "../index.js";
-import { DEFAULT_CONFIG } from "../config.js";
 import { collectContext } from "../context.js";
-import { reviewRolling, REPORT_RETAIN_CHARS, type Rolling } from "../rolling.js";
-import { newEvaluationCache, type AuditRequest } from "../typesafe.js";
+import { reviewRolling, REPORT_RETAIN_CHARS, type Rolling } from "./legacy/rolling.js";
+import { newEvaluationCache, type AuditRequest } from "./legacy/typesafe.js";
 
 let requests: AuditRequest[] = [];
 let failWhen: ((req: AuditRequest) => boolean) | undefined;
@@ -173,38 +171,6 @@ test("partial answers keep completed ones, do not advance, and a retry sends onl
 	expect(commits).toHaveLength(1);
 });
 
-test("host: later audits send only new records plus retained reports; a failed stage delivers nothing and resumes from the durable frontier", async () => {
-	const branch: unknown[] = [user("u1", "Implement parser."), boardEntry, say("a1", "OLD-ANALYSIS about approach A."), ...tool("t1", "BODY")];
-	const handlers = new Map<string, any[]>(), commands = new Map<string, any>(), sent: unknown[] = [];
-	const pi = {
-		on: (n: string, h: any) => handlers.set(n, [...(handlers.get(n) ?? []), h]),
-		registerCommand: (n: string, c: any) => commands.set(n, c),
-		sendMessage: (m: unknown) => sent.push(m),
-		appendEntry: (customType: string, data: unknown) => branch.push({ id: `c${branch.length}`, type: "custom", customType, data }),
-		events: { on: () => () => {} },
-	} as unknown as ExtensionAPI;
-	const ctx = { sessionManager: { getSessionId: () => "s", getBranch: () => branch, buildContextEntries: () => branch }, ui: { notify: () => {} } };
-	makeExtension(pi, { ...DEFAULT_CONFIG, apiKeyEnvVar: "JEV_ROLLING_KEY" });
-	for (const h of handlers.get("session_start") ?? []) await h({}, ctx);
-	await commands.get("jev-audit").handler("", ctx);
-	branch.push(say("a2", "NEW-ANALYSIS about approach B."));
-	await commands.get("jev-audit").handler("", ctx);
-	expect(requests).toHaveLength(2);
-	expect(requests[1].state).toContain("NEW-ANALYSIS"); expect(requests[1].state).toContain("Implement parser.");
-	expect(requests[1].state).not.toContain('"tool":"bash","call":"t1c"'); // processed tool activity is not resent
-	// A failed stage delivers nothing and does not advance the durable frontier.
-	const receipts = () => branch.filter((e: any) => e.type === "custom" && e.data?.kind === "receipt").length;
-	const before = receipts();
-	branch.push(say("a3", "LATER-WORK."));
-	failWhen = () => true;
-	await commands.get("jev-audit").handler("", ctx);
-	expect(sent).toHaveLength(0); expect(receipts()).toBe(before);
-	failWhen = undefined;
-	await commands.get("jev-audit").handler("", ctx);
-	const retry = requests.at(-1)!.state;
-	expect(retry).toContain("LATER-WORK."); // only unreviewed input is new; earlier small reports are retained as the compact account
-	expect(receipts()).toBe(before + 1);
-});
 
 test("a short reply does not silently replace a still-applicable earlier report", async () => {
 	const reports = [

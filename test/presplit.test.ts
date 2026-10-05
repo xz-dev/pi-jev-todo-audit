@@ -1,13 +1,11 @@
-/** Per-channel pre-split: predict overflow before sending, use each channel's real limits, learn from real attempts. */
+/** Legacy predictor comparison, not proof of production service behavior.
+ * The migrated reload/full/learned-channel host guarantee runs as real-wire R15. */
 import { expect, test } from "bun:test";
-import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
-import makeExtension from "../index.js";
-import { DEFAULT_CONFIG } from "../config.js";
 import { collectContext } from "../context.js";
 import { isOwnBookkeeping, LEDGER_TYPE } from "../ledger.js";
-import { reviewRolling } from "../rolling.js";
-import { newCapacityProfile, observe, predictOverflow, PUBLISHED_LIMITS, restoreCapacity, sizeOf, type EnvelopeSize } from "../capacity.js";
-import { auditWithContext, evaluate, newEvaluationCache, type Attempt, type AuditRequest, type EvaluateOptions } from "../typesafe.js";
+import { reviewRolling } from "./legacy/rolling.js";
+import { newCapacityProfile, observe, predictOverflow, PUBLISHED_LIMITS, restoreCapacity, sizeOf, type EnvelopeSize } from "./legacy/capacity.js";
+import { auditWithContext, evaluate, newEvaluationCache, type Attempt, type AuditRequest, type EvaluateOptions } from "./legacy/typesafe.js";
 
 const TYPESAFE = PUBLISHED_LIMITS["https://api.typesafe.ai/v1/systemone"];
 const env = (stateBytes: number, questionBytes: number, longestQuestionBytes = Math.min(questionBytes, 1800)): EnvelopeSize => ({ stateBytes, questionBytes, longestQuestionBytes });
@@ -150,52 +148,4 @@ test("a direct context evaluation still sends single questions for admission ins
 	expect(out.result.ok).toBe(true);
 	expect(sent.length).toBeGreaterThan(0);
 	expect(sent.every((r) => Object.keys(r.questions).length === 1)).toBe(true);
-});
-
-test("host: a recorded rejection is restored after reload and the next audit pre-splits instead of buying a new 400", async () => {
-	const OVERFLOW = JSON.stringify({ detail: { error_type: "max_tokens_exceeded" } });
-	const say = (id: string, text: string) => ({ id, type: "message", message: { role: "assistant", content: text } });
-	const branch: unknown[] = [{ id: "u", type: "message", message: { role: "user", content: "Review the design; analysis only." } },
-		...Array.from({ length: 8 }, (_, i) => say(`a${i}`, `TEXT_${i} ` + "analysis sentence. ".repeat(200))),
-		{ id: "b", type: "message", message: { role: "toolResult", toolName: "todo", content: "ok", details: board } }];
-	const statuses: number[] = [];
-	const original = globalThis.fetch;
-	globalThis.fetch = (async (_u: string, init?: RequestInit) => {
-		const r = JSON.parse(String(init!.body)) as AuditRequest;
-		const bytes = Buffer.byteLength(r.state) + Buffer.byteLength(JSON.stringify(r.questions));
-		if (bytes > 20_000) { statuses.push(400); return new Response(OVERFLOW, { status: 400 }); }
-		statuses.push(200);
-		return new Response(JSON.stringify({ model: "jev-mock", usage: { input_tokens: Math.round(bytes / 4), output_tokens: 1 },
-			answers: Object.fromEntries(Object.entries(r.questions).map(([k, q]) => [k, { choice: Object.keys(q.criteria).includes("unclear") ? "unclear" : Object.keys(q.criteria)[0], confidence: 0.9 }])) }));
-	}) as unknown as typeof fetch;
-	process.env.JEV_PRESPLIT_KEY = "sk-presplit";
-	const cfg = { ...DEFAULT_CONFIG, apiUrl: "http://custom-jev", apiKeyEnvVar: "JEV_PRESPLIT_KEY" };
-	const run = async (arg: string) => {
-		const handlers = new Map<string, any[]>(), commands = new Map<string, any>();
-		const pi = {
-			on: (n: string, h: any) => handlers.set(n, [...(handlers.get(n) ?? []), h]),
-			registerCommand: (n: string, c: any) => commands.set(n, c), sendMessage: () => {},
-			appendEntry: (customType: string, data: unknown) => branch.push({ id: `c${branch.length}`, type: "custom", customType, data }),
-			events: { on: () => () => {} },
-		} as unknown as ExtensionAPI;
-		const ctx = { sessionManager: { getSessionId: () => "s", getBranch: () => branch, buildContextEntries: () => branch }, ui: { notify: () => {} } };
-		makeExtension(pi, cfg);
-		for (const h of handlers.get("session_start") ?? []) await h({}, ctx);
-		await commands.get("jev-audit").handler(arg, ctx);
-	};
-	try {
-		await run("");
-		expect(statuses).toContain(400); // unknown channel: the first audit has to learn by a real rejection
-		const firstRejects = statuses.filter((s) => s === 400).length;
-		statuses.length = 0;
-		await run("full"); // reload (new extension instance) and re-assess everything from scratch
-		expect(statuses.length).toBeGreaterThan(0);
-		expect(statuses.filter((s) => s === 400).length).toBeLessThan(firstRejects);
-		const diags = branch.filter((e: any) => e.customType === LEDGER_TYPE && e.data.kind === "diag").map((e: any) => e.data.diag);
-		expect(diags.at(-1).presplits).toBeGreaterThan(0);
-		expect(typeof diags.at(-1).channel).toBe("string");
-		// Restore is derived from the diagnostics alone.
-		const restored = restoreCapacity(branch, isOwnBookkeeping).get(diags.at(-1).channel)!;
-		expect(restored.rejections.length).toBeGreaterThan(0); expect(restored.tokensPerByte).toBeGreaterThan(0);
-	} finally { globalThis.fetch = original; }
 });

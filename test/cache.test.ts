@@ -1,7 +1,7 @@
 /** Uniform per-question evaluation reuse in the shared typesafe.ts path. */
 import { expect, test } from "bun:test";
-import { buildAuditRequest, evaluate, evaluateBatched, runAudit, evaluationKey, newEvaluationCache, type AuditRequest, type Attempt } from "../typesafe.js";
-import { newCapacityProfile } from "../capacity.js";
+import { buildAuditRequest, evaluate, evaluateBatched, runAudit, evaluationKey, newEvaluationCache, type AuditRequest, type Attempt } from "./legacy/typesafe.js";
+import { newCapacityProfile } from "./legacy/capacity.js";
 
 const opts = { apiUrl: "https://x.test/v1/systemone", apiKey: "k", timeoutMs: 1000 };
 const board = { tasks: [{ id: 5, subject: "Parser", status: "in_progress" as const }, { id: 6, subject: "Docs", status: "pending" as const }], nextId: 7 };

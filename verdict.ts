@@ -11,6 +11,8 @@ export type VerdictAction =
 	| { kind: "inject"; text: string; corrections: Correction[]; mayWake: boolean }
 	| { kind: "notify"; text: string };
 export interface DecideOptions {
+	/** Answers already filtered by the shared service; never re-gate LLM compatibility numbers. */
+	serviceAccepted?: boolean;
 	terminalStop?: boolean;
 	context?: AuditContext;
 	suppressed?: ReadonlySet<string>;
@@ -18,10 +20,14 @@ export interface DecideOptions {
 	scopeKey?: string;
 }
 export function decide(answers: AuditAnswers, board: BoardSnapshot, threshold: number, loop: number, _staleIds: number[] = [], opts: DecideOptions = {}): VerdictAction {
-	const strong = (a?: ChoiceAnswer): a is ChoiceAnswer => !!a && typeof a.confidence === "number" && Number.isFinite(a.confidence) && a.confidence >= threshold && a.confidence <= 1 && a.confidence >= 0;
+	const strong = (a?: ChoiceAnswer): a is ChoiceAnswer => !!a && (opts.serviceAccepted === true || (typeof a.confidence === "number" && Number.isFinite(a.confidence) && a.confidence >= threshold && a.confidence <= 1 && a.confidence >= 0));
 	const source = (a?: ChoiceAnswer): EvidenceRecord | undefined => strong(a)
 		? opts.context?.records.find((r) => r.id === a.choice && r.complete && !r.advice && r.kind !== "tool_call") : undefined;
 	const context = opts.context;
+	// Visiting all fragments is processing progress, not proof that this final
+	// judgment contains earlier factual constraints. An unscoped partial public
+	// source cannot be assumed unrelated to any task, even with a confident answer.
+	if (context?.records.some((record) => record.fragment)) return { kind: "notify", text: "[jev audit] final review contains source fragments, not all source facts — no correction or continuation authorized" };
 	const workSource = source(answers.work_evidence);
 	const globallyUsable = !!context?.globalComplete && !context.reduced && !context.records.some((r) =>
 		(r.kind === "user" || r.kind === "summary") && !r.complete);

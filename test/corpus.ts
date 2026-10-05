@@ -1,15 +1,10 @@
 /**
- * Representative captured-request replay corpus. Offline only: requests go to a
- * mock endpoint. MOCK_CAPACITY is an explicit test contract measured in JSON
- * bytes (state + longest question); it is NOT the provider's tokenizer or its
- * real 32k/64k token limits.
+ * Representative workload data, shared by projection and actual-wire checks.
+ * MOCK_CAPACITY is an explicit fixture limit on serialized state/envelope plus
+ * longest question bytes, not a real tokenizer or a provider 32k/64k limit.
  */
-import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
-import makeExtension from "../index.js";
-import { DEFAULT_CONFIG } from "../config.js";
 
 export const MOCK_CAPACITY = 24_000;
-type Req = { state: string; model: string; questions: Record<string, { criteria: Record<string, unknown> }> };
 export interface CaseMetrics {
 	requests: number; presplits: number; receipts: number; rejected: number; failed: number; bytes: number; stateBytes: number; questionBytes: number; maxStatePlusQuestion: number;
 	questionsAsked: number; textSeen: number; textTotal: number; toolBodyLeaks: number;
@@ -81,82 +76,4 @@ export function corpus(): Case[] {
 		{ name: "mixed-cached", ordinary: true, steps: mixed, textMarkers: ["TEXT_MX_0"] },
 		{ name: "failed-later-chunk", ordinary: false, steps: failedChunk, textMarkers: longMarks },
 	];
-}
-
-/** Neutral valid answers so replay measures request shape, not correction delivery. */
-const PREFERRED = ["unclear", "insufficient_evidence", "appropriate", "accurate", "aligned", "on_track", "idle", "not_on_board"];
-const pick = (criteria: Record<string, unknown>) => PREFERRED.find((k) => Object.hasOwn(criteria, k)) ?? Object.keys(criteria)[0];
-
-export async function runCase(c: Case): Promise<CaseMetrics> {
-	const branch: unknown[] = [];
-	const bodies: string[] = [];
-	const m: CaseMetrics = { requests: 0, presplits: 0, receipts: 0, rejected: 0, failed: 0, bytes: 0, stateBytes: 0, questionBytes: 0, maxStatePlusQuestion: 0, questionsAsked: 0, textSeen: 0, textTotal: c.textMarkers.length, toolBodyLeaks: 0, resentBytes: 0, rollingBytes: 0, auditsWithoutRequest: 0 };
-	const seen = new Set<string>();
-	let pendingIds: string[] = [];
-	let omit: RegExp | undefined, failAt = 0;
-	const fetchFn = async (_url: unknown, init: any): Promise<Response> => {
-		const body = String(init.body), req = JSON.parse(body) as Req;
-		m.requests++; bodies.push(body); (globalThis as any).__cap?.push(body); m.bytes += body.length;
-		const state = Buffer.byteLength(req.state), qs = Object.values(req.questions).map((q) => Buffer.byteLength(JSON.stringify(q)));
-		m.stateBytes += state; m.questionBytes += qs.reduce((a, b) => a + b, 0); m.questionsAsked += qs.length;
-		m.maxStatePlusQuestion = Math.max(m.maxStatePlusQuestion, state + Math.max(0, ...qs));
-		// Per-record accounting: parse the evidence packet embedded in state (JSON object starting at {"records").
-		const start = req.state.indexOf('{"records"'), end = req.state.indexOf("\nInterpret evidence", start);
-		if (start >= 0 && end > start) {
-			try {
-				const packet = JSON.parse(req.state.slice(start, end));
-				// Only records of an answered request count as already bought; resending after a rejection is not re-buying.
-				for (const r of packet.records ?? []) if (r.kind !== "supplement" && seen.has(r.id)) m.resentBytes += Buffer.byteLength(r.text ?? "");
-				pendingIds = (packet.records ?? []).filter((r: any) => r.kind !== "supplement").map((r: any) => r.id);
-				if (packet.rolling) m.rollingBytes += Buffer.byteLength(JSON.stringify(packet.rolling));
-			} catch { /* unparsable packet: accounted as zero, visible in bytes */ }
-		}
-		if (failAt && m.requests === failAt) { failAt = 0; m.failed++; return new Response("invalid question", { status: 422 }); }
-		if (state + Math.max(0, ...qs) > MOCK_CAPACITY) { m.rejected++; return new Response(JSON.stringify({ detail: { error_type: "max_tokens_exceeded" } }), { status: 400 }); }
-		const answers: Record<string, unknown> = {};
-		for (const [k, q] of Object.entries(req.questions)) if (!omit?.test(k)) answers[k] = { choice: pick(q.criteria), confidence: 0.9 };
-		for (const id of pendingIds) seen.add(id);
-		return new Response(JSON.stringify({ answers, model: "jev-mock", usage: { input_tokens: Math.ceil(body.length / 4), output_tokens: 0 } }));
-	};
-	const original = globalThis.fetch;
-	globalThis.fetch = fetchFn as typeof fetch;
-	process.env.JEV_CORPUS_KEY = "sk-corpus-test-key";
-	try {
-		const commands = new Map<string, any>(), handlers = new Map<string, any[]>();
-		const pi = {
-			on: (name: string, h: any) => handlers.set(name, [...(handlers.get(name) ?? []), h]),
-			registerCommand: (name: string, cmd: any) => commands.set(name, cmd),
-			sendMessage: (message: any) => branch.push({ id: id("jev"), type: "custom_message", ...message }),
-			appendEntry: (customType: string, data: unknown) => {
-				branch.push({ id: id("custom"), type: "custom", customType, data });
-				const entry = data as { kind?: string; diag?: { presplits?: number } };
-				if (entry.kind === "receipt") m.receipts++;
-				if (entry.kind === "diag") m.presplits += entry.diag?.presplits ?? 0;
-			},
-			events: { on: () => () => {} },
-		} as unknown as ExtensionAPI;
-		const ctx = { sessionManager: { getSessionId: () => `corpus-${c.name}`, getBranch: () => branch, buildContextEntries: () => branch }, ui: { notify: () => {} } };
-		// Mock failures (422 validation, 400 overflow) are non-retryable, so host retry settings add no attempts.
-		makeExtension(pi, { ...DEFAULT_CONFIG, apiKeyEnvVar: "JEV_CORPUS_KEY" });
-		for (const h of handlers.get("session_start") ?? []) await h({}, ctx);
-		for (const step of c.steps) {
-			if ("push" in step) branch.push(...step.push);
-			else if ("failNext" in step) failAt = m.requests + step.failNext;
-			else if ("omit" in step) omit = step.omit;
-			else if ("answerAll" in step) omit = undefined;
-			else { const before = m.requests; await commands.get("jev-audit").handler(step.audit, ctx); if (m.requests === before) m.auditsWithoutRequest++; }
-		}
-	} finally { globalThis.fetch = original; }
-	const all = bodies.join("\n");
-	m.textSeen = c.textMarkers.filter((mark) => all.includes(mark)).length;
-	m.toolBodyLeaks = all.split(TOOL_BODY).length - 1;
-	return m;
-}
-
-export async function runCorpus() {
-	const rows: Record<string, CaseMetrics> = {};
-	for (const c of corpus()) rows[c.name] = await runCase(c);
-	const ordinary = Object.entries(rows).filter(([k]) => corpus().find((c) => c.name === k)!.ordinary).map(([, v]) => v);
-	const sum = (key: keyof CaseMetrics) => ordinary.reduce((a, r) => a + r[key], 0);
-	return { rows, aggregateOrdinary: { requests: sum("requests"), bytes: sum("bytes"), stateBytes: sum("stateBytes"), questionBytes: sum("questionBytes"), questionsAsked: sum("questionsAsked") } };
 }
