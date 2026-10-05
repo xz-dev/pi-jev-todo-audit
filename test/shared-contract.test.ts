@@ -3,6 +3,7 @@ import { afterEach, beforeEach, expect, test } from "bun:test";
 import makeExtension from "../index.js";
 import { DEFAULT_CONFIG, loadConfig } from "../config.js";
 import { mkdtempSync, readFileSync, writeFileSync, rmSync } from "node:fs";
+import { tmpdir } from "node:os";
 import { join } from "node:path";
 import type { ClassifierChoiceAnswer, JudgeRequest, ReviewOptions, ReviewResult } from "../judgment-client.js";
 
@@ -105,7 +106,7 @@ test("service-accepted LLM choices with zero compatibility numbers still reconci
 
 test("old audit credentials remain redacted data, never auth or service configuration", async () => {
 	const secret = "obsoleteopaquecredentialforfixture", projectSecret = "ignoredprojectcredentialforfixture";
-	const dir = mkdtempSync("/var/tmp/jev-legacy-config-");
+	const dir = mkdtempSync(join(tmpdir(), "jev-legacy-config-"));
 	const globalPath = join(dir, "global.json"), projectPath = join(dir, "project.json");
 	const globalText = JSON.stringify({ apiKey: secret, model: "old/model", apiUrl: "https://legacy.invalid" });
 	const projectText = JSON.stringify({ apiKey: projectSecret, apiKeyEnvVar: "IGNORED_PROJECT_ENV" });
