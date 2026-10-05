@@ -9,10 +9,11 @@ The design goal is to avoid paying again for unchanged judgments without hiding 
 ## Install
 
 ```sh
+pi install git:github.com/xz-dev/pi-llm-as-jev
 pi install git:github.com/xz-dev/pi-jev-todo-audit
 ```
 
-This development migration also requires a loaded **pi-llm-as-jev service with `version: 1`, `reviewVersion: 1` and `review()`**, plus the selected Pi adapter's observation support. Configure model selection in the shared service and credentials/endpoints in Pi (see [Configuration](#configuration)). An already-loaded extension continues running its old code until reloaded/restarted; this change has **not** been rolled out to an installed host.
+Requires a loaded **pi-llm-as-jev service with `version: 1`, `reviewVersion: 1` and `review()`**. Native reviews use the xz-dev fork's released classifier API and public `fetch` option; no private Pi observation patch is required. Configure model selection in the shared service and credentials/endpoints in Pi (see [Configuration](#configuration)). An already-loaded extension continues running its old code until reloaded/restarted; updating files alone does not validate the running process.
 
 Discovery happens at each eligible audit. If the service is absent or older, automatic auditing skips with a bounded dependency notice and manual auditing reports a clear error. It neither disables ordinary TODO/main-agent work nor sends a probe or falls back to direct HTTP. Loading the compatible service later permits the next normally scheduled/manual audit.
 
@@ -283,11 +284,11 @@ openspec validate prevent-audit-request-amplification --strict
 openspec validate improve-audit-context-fidelity --strict
 ```
 
-Tests separate **business-port contracts** (explicit scripted public replies, no transport/cache/recovery engine) from **real offline owner integration**. Historical engine comparisons live only under `test/legacy/`, are labelled as such and are excluded from the package; their passing counts are not shared-service evidence. The real suites use audit activation and/or its projection adapter, the actual service, and patched Pi adapters with fake transport. They require explicit source roots, never an unconditional sibling dependency:
+Tests separate **business-port contracts** (explicit scripted public replies, no transport/cache/recovery engine) from **real offline owner integration**. Historical engine comparisons live only under `test/legacy/`, are labelled as such and are excluded from the package; their passing counts are not shared-service evidence. The real suites use audit activation and/or its projection adapter, the actual service, and Pi adapters using public fetch hooks with fake transport. They require explicit source roots, never an unconditional sibling dependency:
 
 ```sh
 PI_JUDGMENT_SOURCE="/path/to/pi-llm-as-jev" \
-PI_CLASSIFIER_SOURCE="/path/to/patched-pi" \
+PI_CLASSIFIER_SOURCE="/path/to/pi-with-released-classifier-api" \
 bun test test/shared-service.integration.test.ts \
   test/shared-service-boundary.integration.test.ts \
   test/shared-service-llm.integration.test.ts \
@@ -300,7 +301,7 @@ Run tests as their own main process: remove an inherited `PI_JEV_TODO_AUDIT_OWNE
 
 Ownership tests also drive the native Node parent/child/grandchild fixture. CI's Linux/Windows configuration and historical predecessor runs do not establish that this migration candidate has executed on Windows. See [the regression map](openspec/changes/use-shared-judgment-service/regression-map.md) for original-assertion ownership and bounded evidence.
 
-`PI_JUDGMENT_SOURCE=... PI_CLASSIFIER_SOURCE=... bun test/compare-workloads.ts` uses the actual owner path. `bun test/compare-workloads.ts --baseline` reads the committed historical core/corpus without checkout; it is not a full historical build. Serialization/byte accounting differs, so neither those measurements nor synthetic model answers prove token savings, live billing, model accuracy, installed activation or publication. No new live replay or installed rollout was performed for this migration.
+`PI_JUDGMENT_SOURCE=... PI_CLASSIFIER_SOURCE=... bun test/compare-workloads.ts` uses the actual owner path. `bun test/compare-workloads.ts --baseline` reads the committed historical core/corpus without checkout; it is not a full historical build. Serialization/byte accounting differs, so neither those measurements nor synthetic model answers prove token savings, live billing, model accuracy, installed activation or publication. These offline suites perform no live inference; installed-host validation is recorded separately.
 
 API/serialization/consumer failures remain isolated from the agent loop. The extension neither guarantees that the main agent obeys a steer nor provides a hard tool blocker. The current rpiv-todo persistence shape is the only private-data adapter; incompatible snapshots cannot be treated as authoritative task state.
 

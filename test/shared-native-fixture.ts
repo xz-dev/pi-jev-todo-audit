@@ -13,19 +13,25 @@ export async function nativeFixture(reply: (body: any, raw: string) => Response 
 	const model = { type: "classifier", provider: "typesafe", id: "jev-latest", name: "Offline", api: "typesafe-system-one", baseUrl: "https://fixture.invalid/v1", input: ["text"], contextWindow: window, cost: { input: 1, output: 1, cacheRead: 0, cacheWrite: 0 }, ...settings.model };
 	let config = validateConfig({ mode: "classifier", classifierModel: `${model.provider}/${model.id}`, timeoutMs: 3000, ...settings.config }).config;
 	let writeFailure = false;
+	const localFetch = (async (url: unknown, init?: RequestInit): Promise<Response> => {
+		// Only this fake transport runs; Pi still builds, retries and parses the request.
+		if (String(url) !== new URL("systemone", `${model.baseUrl.replace(/\/+$/, "")}/`).href) throw new Error("Unexpected transport target");
+		const raw = String(init?.body), body = JSON.parse(raw); signals.push(init?.signal as AbortSignal); wire.push({ body, bytes: Buffer.byteLength(raw), raw }); return reply(body, raw);
+	}) as typeof globalThis.fetch;
 	const service: ReviewService & { refreshBranch(): void } = createJudgmentService({
+		nativeFetch: localFetch,
 		config: () => config,
-		ledger: { branch: () => rows, append: (customType: string, data: unknown) => {
+		ledger: { branch: () => rows, append: (customType: string, data: any) => {
+			if (data.kind === "review-attempt") events.push(structuredClone(data.attempt));
 			if (writeFailure) throw new Error("disk full");
 			rows.push({ id: `service-${rows.length}`, type: "custom", customType, data });
 		} },
 		registry: { getAvailableOfType: async () => [model], getModel: () => undefined, getProviders: () => [], getAuth: async () => undefined,
 			streamSimple: () => { throw new Error("must remain native"); },
-			classify: (_m: unknown, context: unknown, options: any = {}) => classify(model, context, { ...options, apiKey: "offline-key", fetch: async (url: unknown, init: any) => {
-				// This injected function never opens a socket, even for a catalog URL.
-				if (String(url) !== new URL("systemone", `${model.baseUrl.replace(/\/+$/, "")}/`).href) throw new Error("Unexpected transport target");
-				const raw = String(init.body), body = JSON.parse(raw); signals.push(init.signal); wire.push({ body, bytes: Buffer.byteLength(raw), raw }); return reply(body, raw);
-			}, onAttempt: (e: unknown) => { events.push(structuredClone(e)); options.onAttempt?.(e); } }),
+			classify: (_m: unknown, context: unknown, options: any = {}) => {
+				if ("observe" in options || "onAttempt" in options) throw new Error("Private Pi observation options are forbidden");
+				return classify(model, context, { ...options, apiKey: "offline-key", fetch: options.fetch ?? localFetch });
+			},
 		},
 	});
 	return { service, wire, events, rows, signals, model, setConfig: (raw: Record<string, unknown>) => { config = validateConfig(raw).config; }, failWrites: (fail: boolean) => { writeFailure = fail; } };

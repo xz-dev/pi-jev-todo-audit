@@ -4,6 +4,7 @@
  * Ordinary consumer tests do not require sibling repositories. No live transport is allowed.
  */
 import { expect, test } from "bun:test";
+import { AsyncLocalStorage } from "node:async_hooks";
 import { mkdtemp, writeFile } from "node:fs/promises";
 import { join } from "node:path";
 import { pathToFileURL } from "node:url";
@@ -88,11 +89,12 @@ for (const { backend, failure, full } of [
 		}
 		return Response.json({ model: "jev-latest", answers, usage: { input_tokens: 10, ...(failure === "none" ? {} : { output_tokens: 2 }) } });
 	};
-	globalThis.fetch = (async (url: unknown) => {
+	const providerRequest = new AsyncLocalStorage<boolean>();
+	globalThis.fetch = (async (url: unknown, init?: RequestInit) => {
+		if (providerRequest.getStore()) return localFetch(url, init);
 		directRequests.push(String(url));
 		throw new Error("Offline acceptance forbids consumer-owned HTTP; use the shared Pi registry");
 	}) as unknown as typeof fetch;
-	if (backend === "llm") globalThis.fetch = localFetch as typeof fetch;
 
 	try {
 		const { createModels, createProvider } = await import(pathToFileURL(join(piRoot!, "packages/ai/src/models.ts")).href);
@@ -109,14 +111,13 @@ for (const { backend, failure, full } of [
 			getProviderAuth: async () => ({ auth: { apiKey: "synthetic-integration-key" }, source: "fixture" }),
 			classify: async (_selected: unknown, context: unknown, options: Record<string, unknown> = {}) => {
 				selectedCalls++;
-				const observe = options.onAttempt;
-				return classify(model, context, { ...options, apiKey: "synthetic-integration-key", fetch: localFetch,
-					onAttempt: (event: unknown) => { observations.push(structuredClone(event)); if (typeof observe === "function") observe(event); } });
+				if ("observe" in options || "onAttempt" in options) throw new Error("Private Pi observation options are forbidden");
+				return providerRequest.run(true, () => classify(model, context, { ...options, apiKey: "synthetic-integration-key", fetch: options.fetch ?? globalThis.fetch }));
 			},
 			streamSimple: (...args: unknown[]) => {
 				if (backend !== "llm") throw new Error("Native acceptance must not substitute LLM");
 				selectedCalls++;
-				return models.streamSimple(...args);
+				return providerRequest.run(true, () => models.streamSimple(...args));
 			},
 		};
 		function host(config = {}) {
@@ -129,7 +130,10 @@ for (const { backend, failure, full } of [
 				registerCommand: (name: string, command: { handler: (args: string, ctx: unknown) => Promise<void> }) => commands.set(name, command),
 				registerProvider: () => {}, unregisterProvider: () => {},
 				sendMessage: (message: { content?: string }) => sent.push(message),
-				appendEntry: (customType: string, data: unknown) => branch.push({ id: `ledger-${++serial}`, type: "custom", customType, data }),
+				appendEntry: (customType: string, data: unknown) => {
+					if (object(data).kind === "review-attempt") observations.push(structuredClone(object(data).attempt));
+					branch.push({ id: `ledger-${++serial}`, type: "custom", customType, data });
+				},
 				events: { on: () => () => {} },
 			};
 			const ctx = { cwd: dir, isProjectTrusted: () => false, modelRegistry: registry, mode: "rpc", hasUI: false,
@@ -144,7 +148,7 @@ for (const { backend, failure, full } of [
 		await first.fire("session_start");
 		const service = object(holder[key]);
 		expect(typeof service.judge).toBe("function");
-		// Positive wiring control: real service registration can reach the real patched adapter offline.
+		// Positive wiring control: actual registration reaches Pi's public adapter offline.
 		const probe = await (service.judge as (request: unknown) => Promise<Record<string, unknown>>)({ state: {}, questions: { probe: { type: "choice", instructions: "Pick", criteria: { ok: "OK" } } } });
 		expect(probe.stopReason).toBe("stop");
 		expect(selectedCalls).toBe(1);
@@ -288,7 +292,6 @@ for (const { backend, failure, full } of [
 			if (object(diag.service).attemptCount === 0) expect(diag).toMatchObject({ misses: 0, attempts: [], usage: { inputTokens: 0, outputTokens: 0 } });
 		}
 		if (backend === "llm") {
-			observations.push(...branch.map(object).filter((entry) => object(entry.data).kind === "review-attempt").map((entry) => object(entry.data).attempt));
 			expect(wireBodies.every((body) => body.model === model.id && object(body.thinking).type === "enabled")).toBe(true);
 			expect(reviewResults.every((result) => result.backend === "llm")).toBe(true);
 			const actual = reviewResults.flatMap((result) => object(result.diagnostics).attempts as unknown[]);
