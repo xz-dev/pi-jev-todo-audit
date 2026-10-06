@@ -19,7 +19,7 @@ export interface DecideOptions {
 	evidenceVersion?: string;
 	scopeKey?: string;
 }
-export function decide(answers: AuditAnswers, board: BoardSnapshot, threshold: number, loop: number, _staleIds: number[] = [], opts: DecideOptions = {}): VerdictAction {
+export function decide(answers: AuditAnswers, board: BoardSnapshot, threshold: number, _loop: number, _staleIds: number[] = [], opts: DecideOptions = {}): VerdictAction {
 	const strong = (a?: ChoiceAnswer): a is ChoiceAnswer => !!a && (opts.serviceAccepted === true || (typeof a.confidence === "number" && Number.isFinite(a.confidence) && a.confidence >= threshold && a.confidence <= 1 && a.confidence >= 0));
 	const source = (a?: ChoiceAnswer): EvidenceRecord | undefined => strong(a)
 		? opts.context?.records.find((r) => r.id === a.choice && r.complete && !r.advice && r.kind !== "tool_call") : undefined;
@@ -119,17 +119,14 @@ export function decide(answers: AuditAnswers, board: BoardSnapshot, threshold: n
 		(alignment === "not_aligned" || alignment === "no_in_progress_task")) {
 		add(undefined, "create", "create and claim a task for the evidenced authorized current work; do not invent follow-ups", workSource!, false, true);
 	}
-	const trigger = opts.terminalStop ? "terminal-stop" : `@ loop ${loop}`;
 	if (corrections.length) {
 		const mayWake = corrections.some((c) => c.bookkeeping || c.execution);
 		if (opts.terminalStop && !mayWake) return { kind: "notify", text: "[jev audit] task-level planning advice available; no restart authorized by split/clarification alone" };
 		const boardOnly = opts.terminalStop && !corrections.some((c) => c.execution);
 		return { kind: "inject", corrections, mayWake, text: [
-			`[jev audit ${trigger}] Advisory review of the supplied reports and board (macro level; not independent verification of execution).`,
-			boardOnly ? "BOARD ONLY: if the listed facts still apply, consider reconciling them via todo, then return control to the user. This is NOT permission to execute tasks or bypass a wait." : "Suggested board updates to consider via todo at a natural checkpoint, if still applicable:",
 			...corrections.map((c, i) => `${i + 1}. ${c.text}`),
 			...(uncertain.length ? [`(not touched: ${uncertain.map((id) => `#${id}`).join(", ")} — evidence uncertain)`] : []),
-			"If a point is mistaken or already covered, it may be disregarded. No separate reply is needed; any explanation included in normal task progress can inform the next review.",
+			...(boardOnly ? ["BOARD ONLY: if still applicable, reconcile these facts via todo, then return control to the user. Do not execute tasks or bypass a wait."] : []),
 		].join("\n") };
 	}
 	if (suppressed || ((warrant === "idle" || warrant === "trivial") && !inProgressTasks(board).length)) return { kind: "silent" };

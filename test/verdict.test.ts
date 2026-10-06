@@ -206,10 +206,8 @@ describe("leader evidence contract", () => {
 	test("a main-agent report can support completion but is phrased as reported, never as verified execution", () => {
 		const out = text(run({ lifecycle: { task_status_5: a("actually_completed") } }));
 		expect(out).toContain("main-agent report"); expect(out).toContain("not independently verified");
-		expect(out).toContain("not independent verification of execution"); expect(out).not.toMatch(/JEV verified/);
-		expect(out).toContain("No separate reply is needed");
-		expect(out).toContain("normal task progress"); // feedback remains possible without interrupting the task
-		expect(out).not.toContain("reply briefly");
+		expect(out).not.toMatch(/JEV verified|reply briefly/);
+		// Common advisory/acknowledgment guidance belongs to the public delivery seam.
 	});
 	test("a main-agent report cannot cancel scope or create execution permission", () => {
 		expect(run({ lifecycle: { task_status_5: a("cancelled") } }).kind).not.toBe("inject");

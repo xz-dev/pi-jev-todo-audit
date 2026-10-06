@@ -1,11 +1,14 @@
 /** Request/delivery integration with real-shaped public entries. No live inference. */
 import { afterAll, afterEach, beforeEach, expect, mock, test } from "bun:test";
-import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
+import { CustomMessageComponent, initTheme, type ExtensionAPI, type MessageRenderer } from "@earendil-works/pi-coding-agent";
+import { stripVTControlCharacters } from "node:util";
+import { visibleWidth } from "@earendil-works/pi-tui";
 import makeExtension from "../index.js";
 import { DEFAULT_CONFIG } from "../config.js";
 import type { AuditRequest } from "../typesafe.js";
 import type { JudgeRequest, ReviewOptions, ReviewResult, ReviewStageProgress } from "../judgment-client.js";
 
+initTheme("dark", false);
 const serviceKey = Symbol.for("pi-llm-as-jev:service");
 const services = globalThis as Record<symbol, unknown>;
 let savedService: unknown, savedOwner: string | undefined;
@@ -96,9 +99,11 @@ function setup(branch: unknown[] = initial(), config = {}, opts: { persist?: boo
 	const commands = new Map<string, any>();
 	const sent: { message: any; options: any }[] = [];
 	const listeners = new Map<string, ((d: unknown) => void)[]>();
+	const renderers = new Map<string, MessageRenderer>();
 	const pi = {
 		on: (name: string, h: any) => handlers.set(name, [...(handlers.get(name) ?? []), h]),
 		registerCommand: (name: string, c: any) => commands.set(name, c),
+		registerMessageRenderer: (type: string, render: MessageRenderer) => renderers.set(type, render),
 		sendMessage: (message: any, options: any) => sent.push({ message, options }),
 		// `persist` adds a real appendEntry so receipts/answers become durable on the branch.
 		...(opts.persist ? { appendEntry: (customType: string, data: unknown) => { branch.push({ id: `c${branch.length}`, type: "custom", customType, data }); } } : {}),
@@ -109,16 +114,148 @@ function setup(branch: unknown[] = initial(), config = {}, opts: { persist?: boo
 	makeExtension(pi, { ...DEFAULT_CONFIG, apiKeyEnvVar: "JEV_AUDIT_TEST_KEY", ...config });
 	const emit = async (name: string, event = {}) => { for (const h of handlers.get(name) ?? []) await h(event, ctx); };
 	const hook = (values = { STOP_KIND: "AI_UNLOCK", REASON_TYPE: "JOB_DONE", REASON: "done" }) => { for (const h of listeners.get("pi:semantic-hook:v1") ?? []) h({ version: 1, name: "user-ready", values }); };
-	return { branch, ctx, sent, emit, hook, handlers, commands, listeners, manual: () => commands.get("jev-audit").handler("", ctx) as Promise<void> };
+	return { branch, ctx, sent, emit, hook, handlers, commands, listeners, renderers, manual: () => commands.get("jev-audit").handler("", ctx) as Promise<void> };
 }
 const tick = () => new Promise((r) => setTimeout(r, 0));
+const textWithoutLayout = (text: string) => stripVTControlCharacters(text).replace(/\s+/g, "");
+function advisoryComponent(h: ReturnType<typeof setup>, content: string, expanded = false) {
+	const component = new CustomMessageComponent({ role: "custom", customType: "jev-todo-audit", content, display: true, timestamp: 0 }, h.renderers.get("jev-todo-audit"));
+	component.setExpanded(expanded);
+	return component;
+}
+test("disabled audit keeps a callable command without doing judgment work", async () => {
+	scriptParserCompletion();
+	const h = setup(initial(), { enabled: false });
+	expect(h.commands.has("jev-audit")).toBe(true);
+	for (const args of ["", "full"]) await h.commands.get("jev-audit").handler(args, h.ctx);
+	expect(h.ctx.ui.notify.mock.calls).toHaveLength(2);
+	for (const [message] of h.ctx.ui.notify.mock.calls) expect(message).toContain("disabled");
+	expect(h.handlers.size).toBe(0);
+	expect(h.listeners.size).toBe(0);
+	expect(h.sent).toHaveLength(0);
+	expect(reviewCalls).toHaveLength(0);
+	expect(requests).toHaveLength(0);
+});
+
+for (const notifyOnAligned of [false, true]) {
+	test(`A1: one full ordinary advisory body is visible with notifyOnAligned=${notifyOnAligned}`, async () => {
+		scriptParserCompletion();
+		const h = setup(initial(), { notifyOnAligned, legacyFields: [] });
+		await h.emit("session_start"); await h.manual();
+		expect(h.sent).toHaveLength(1);
+		const { message, options } = h.sent[0];
+		expect(message.display).toBe(true);
+		expect(message.content).toContain('mark #5 "Parser" completed');
+		expect(message.content).toContain("Evidence [user]");
+		expectPluginAdvisory(message.content);
+		expect(message.content).toContain("normal task progress");
+		expect(options).toEqual({ deliverAs: "steer" });
+		const component = advisoryComponent(h, message.content);
+		const collapsed = textWithoutLayout(component.render(80).join("\n"));
+		expect(collapsed).toContain(textWithoutLayout('mark #5 "Parser" completed'));
+		expect(collapsed).toContain(textWithoutLayout("Evidence [user]"));
+		expect(collapsed).not.toContain(textWithoutLayout("Plugin reference feedback"));
+		component.setExpanded(true);
+		expect(textWithoutLayout(component.render(80).join("\n"))).toBe(textWithoutLayout(message.content));
+		expect(message.content.match(/pi-jev-todo-audit/g)).toHaveLength(1);
+		expect(message.content).not.toContain("[jev audit");
+		expect(reviewCalls).toHaveLength(1);
+	});
+	test(`A1: a visible ordinary advisory needs no delivery receipt with notifyOnAligned=${notifyOnAligned}`, async () => {
+		scriptParserCompletion();
+		const h = setup(initial(), { notifyOnAligned, legacyFields: [] });
+		await h.emit("session_start"); await h.manual();
+		expect(h.sent).toHaveLength(1);
+		expect(h.ctx.ui.notify.mock.calls).toHaveLength(0);
+	});
+}
+
+test("A1/A6: only an exact terminal shared footer folds; quoted evidence and unknown endings stay visible", async () => {
+	scriptParserCompletion();
+	const h = setup(initial(), { legacyFields: [] });
+	await h.emit("session_start"); await h.manual();
+	const sent = h.sent[0].message.content;
+	const footer = sent.slice(sent.indexOf("\n\nPlugin reference feedback"));
+	const business = 'pi-jev-todo-audit | recorded review\n\nEvidence [report-1]: quoted notice follows.' + footer + '\nBOARD ONLY: reconcile #5 and return control; do not execute tasks.';
+	const body = business + footer;
+	const component = advisoryComponent(h, body);
+	for (const width of [24, 80]) {
+		component.setExpanded(false);
+		expect(textWithoutLayout(component.render(width).join("\n"))).toBe(textWithoutLayout(business));
+		component.setExpanded(true);
+		expect(textWithoutLayout(component.render(width).join("\n"))).toBe(textWithoutLayout(body));
+	}
+	for (const unknown of [body + "\nKeep this extra instruction.", body.replaceAll("Plugin reference feedback", "Legacy feedback"), "Legacy header" + footer]) {
+		expect(textWithoutLayout(advisoryComponent(h, unknown).render(80).join("\n"))).toBe(textWithoutLayout(unknown));
+	}
+	expect(h.sent[0].message.content).toBe(sent);
+	expect(reviewCalls).toHaveLength(1);
+});
+
+test("A6: stored advisories survive resize, expansion and theme changes without regeneration", () => {
+	const h = setup(initial(), { enabled: false });
+	const body = '[pi-jev-todo-audit plugin advisory]\nOriginal stored wording.\nEvidence [报告-42]: "检查通过 — café 👩‍💻"\nDo not bypass a wait.\n' + "Preserved detail.\n".repeat(20);
+	const component = advisoryComponent(h, body);
+	try {
+		for (const theme of ["dark", "light"]) {
+			initTheme(theme, false);
+			component.invalidate();
+			for (const expanded of [false, true]) {
+				component.setExpanded(expanded);
+				for (const pad of [0, 2]) {
+					component.setOutputPad(pad);
+					for (const width of [24, 80]) {
+						const lines = component.render(width);
+						expect(lines.every((line) => visibleWidth(line) <= width)).toBe(true);
+						expect(textWithoutLayout(lines.join("\n"))).toBe(textWithoutLayout(body));
+					}
+				}
+			}
+		}
+	} finally { initTheme("dark", false); }
+	const fallback = new CustomMessageComponent({ role: "custom", customType: "jev-todo-audit", content: [{ type: "text", text: "Legacy text block" }], display: true, timestamp: 0 }, h.renderers.get("jev-todo-audit"));
+	expect(stripVTControlCharacters(fallback.render(80).join("\n"))).toContain("Legacy text block");
+	expect(h.sent).toHaveLength(0); expect(reviewCalls).toHaveLength(0);
+});
+
+test("A6: headless delivery has the same content, keys and options without requiring a UI", async () => {
+	scriptParserCompletion();
+	const visible = setup(initial(), { legacyFields: [] });
+	await visible.emit("session_start"); await visible.manual();
+	const h = setup(initial(), { legacyFields: [] });
+	const { ui: _ui, ...headless } = h.ctx;
+	for (const handler of h.handlers.get("session_start") ?? []) await handler({}, headless);
+	await h.commands.get("jev-audit").handler("", headless);
+	expect(h.sent).toEqual(visible.sent);
+	expect(h.ctx.ui.notify.mock.calls).toHaveLength(0);
+	expect(reviewCalls).toHaveLength(2);
+});
+
+test("A7: generated clarification redacts known secrets before either reader sees it", async () => {
+	const secret = "opaque-credential-no-prefix";
+	process.env.JEV_AUDIT_TEST_KEY = secret;
+	atReviewPort(() => ({ ...rejectedAtPort(), contextOverflow: true, errorMessage: `cannot admit ${secret}` }));
+	// Report IDs are included in clarification bodies too, not just report text.
+	const h = setup([...initial(), { id: `report-${secret}`, type: "message", message: { role: "assistant", content: "Acceptance scope still needs clarification." } }], { legacyFields: [] });
+	await h.emit("session_start"); await h.manual();
+	expect(h.sent).toHaveLength(1);
+	const content = h.sent[0].message.content;
+	expect(content).not.toContain(secret);
+	expect(content).toContain("[REDACTED]");
+	const shown = advisoryComponent(h, content, true).render(80).join("\n");
+	expect(shown).not.toContain(secret);
+	expect(textWithoutLayout(shown)).toBe(textWithoutLayout(content));
+	expect(JSON.stringify(h.ctx.ui.notify.mock.calls)).not.toContain(secret);
+	expect(reviewCalls).toHaveLength(1);
+});
+
 function expectPluginAdvisory(content: string) {
-	expect(content).toStartWith("[pi-jev-todo-audit plugin advisory]");
+	expect(content).toContain("pi-jev-todo-audit");
 	expect(content).toContain("not a user message");
-	expect(content).toContain("not a user instruction or new authorization");
-	expect(content).toContain("do not interrupt or switch tasks solely because of this message");
+	expect(content).toMatch(/not a user (?:message, )?instruction or new authorization/);
+	expect(content).toContain("do not interrupt or switch tasks solely");
 	expect(content).toContain("natural checkpoint");
-	expect(content).toContain("No separate reply or acknowledgment is needed");
+	expect(content).toMatch(/No separate reply(?: or acknowledgment)? is needed/);
 }
 
 const fidelityInput = () => {
@@ -249,6 +386,35 @@ const largeFidelityInput = (withBrief: boolean) => {
 	return { reports, scoped, branch: [user("user", "Investigate #5; do not roll out without approval."), snapshot([scoped]), ...reports] };
 };
 
+test("A3: a 256-option Choice exposes the complete scoped clarification once", async () => {
+	const input = largeFidelityInput(false);
+	answers = { ...parserCompletion(), task_status_5: a("still_ongoing") };
+	atReviewPort((call) => ({ ...acceptedAtPort(call), unresolved: call.projection.unresolved ?? [] }));
+	// 252 reports + user + board event + task supplement + fallback = 256 options.
+	const h = setup([input.branch[0], snapshot([input.scoped]), ...input.reports.slice(0, 252)], { legacyFields: [] }, { persist: true });
+	await h.emit("session_start"); await h.manual();
+	expect(h.sent).toHaveLength(1);
+	const { message, options } = h.sent[0];
+	expect(message.content.split("\n")[0]).toContain("CHOICE CONTEXT INCOMPLETE");
+	expect(message.content).toContain("task_evidence_5: 256 options (limit 255, including fallback)");
+	expect(message.content).toContain("no model judgment or provider attempt");
+	expect(message.content).toContain("sources is not an exclusive allowlist");
+	expect(message.content).toContain("covers");
+	expect(message.content).toContain("primary");
+	expect(message.content).toContain("does not guarantee");
+	expectPluginAdvisory(message.content);
+	expect(textWithoutLayout(advisoryComponent(h, message.content, true).render(80).join("\n"))).toBe(textWithoutLayout(message.content));
+	expect(options).toEqual({ deliverAs: "steer" });
+	expect(reviewCalls[0].projection.questions).not.toHaveProperty("task_evidence_5");
+	const collapsed = textWithoutLayout(advisoryComponent(h, message.content).render(80).join("\n"));
+	expect(collapsed).toContain(textWithoutLayout("task_evidence_5: 256 options (limit 255, including fallback)"));
+	expect(collapsed).toContain(textWithoutLayout("sources is not an exclusive allowlist"));
+	expect(collapsed).not.toContain(textWithoutLayout("Plugin reference feedback"));
+	await h.manual();
+	expect(h.sent).toHaveLength(1);
+	expect(requests).toHaveLength(0);
+});
+
 for (const mode of ["", "full"]) test(`P2: ${mode || "cold"} known task-object scopes bound evidence without excluding public primary reports`, async () => {
 	const input = largeFidelityInput(true);
 	const others = Array.from({ length: 260 }, (_, i) => ({ ...task, id: i + 10, status: "completed" as const }));
@@ -292,7 +458,7 @@ for (const mode of ["", "full"]) for (const withBrief of [false, true]) test(`P2
 	expect(clarifications()).toHaveLength(1);
 	expect(h.sent).toHaveLength(1); expect(clarifications()[0].options.triggerTurn).not.toBe(true);
 	expectPluginAdvisory(clarifications()[0].message.content);
-	expect(clarifications()[0].message.content).toContain("Repeating the same brief does not guarantee a bounded set");
+	expect(clarifications()[0].message.content).toMatch(/Repeating .* does not guarantee/);
 	const diag = () => h.branch.filter((e: any) => e.data?.kind === "diag").at(-1) as any;
 	expect(diag().data.diag.withheld.some((w: any) => w.question === "task_evidence_5" && w.count > 255)).toBe(true);
 	await h.commands.get("jev-audit").handler(mode, h.ctx);
@@ -458,6 +624,35 @@ test("F3: empty reference lists are permitted; malformed brief data stays qualif
 	}
 });
 
+for (const withReports of [true, false]) test(`A4/A5: factual clarification keeps ${withReports ? "public origins" : "missing origins"} and failure remains UI-only`, async () => {
+	atReviewPort(() => ({ ...rejectedAtPort(), contextOverflow: true }));
+	const reports = withReports ? ["report-1", "report-2"].map((id) => ({ id, type: "message", message: { role: "assistant", content: "Parser investigation reported; rollout awaits approval." } })) : [];
+	const h = setup([user("user", "Investigate #5; rollout awaits approval."), snapshot([task]), ...reports], { legacyFields: [] });
+	await h.emit("session_start"); await h.manual();
+	expect(h.sent).toHaveLength(1);
+	const { message, options } = h.sent[0];
+	expect(message.content.split("\n")[0]).toContain("FACTUAL CONTEXT INCOMPLETE");
+	expect(message.content).toContain("#5");
+	for (const id of withReports ? ["report-1", "report-2"] : ["none; do not invent origins"]) expect(message.content).toContain(id);
+	expect(message.content).toContain("Completed answers/ranges remain recorded");
+	expect(message.content).toContain("metadata.auditBrief = { text, sources, covers }");
+	expect(message.content).toContain("sources is not an exclusive allowlist");
+	expect(message.content).toContain("primary evidence");
+	expect(message.content).toContain("does not guarantee admission");
+	expect(message.content).toContain("no completion or continuation judgment");
+	expect(message.content).toContain("does not authorize execution or task-status changes");
+	expectPluginAdvisory(message.content);
+	expect(textWithoutLayout(advisoryComponent(h, message.content, true).render(80).join("\n"))).toBe(textWithoutLayout(message.content));
+	expect(options).toEqual({ deliverAs: "steer" });
+	const collapsed = textWithoutLayout(advisoryComponent(h, message.content).render(80).join("\n"));
+	for (const text of ["For #5", "does not authorize execution or task-status changes", ...(withReports ? ["report-1", "report-2"] : ["none; do not invent origins"])]) expect(collapsed).toContain(textWithoutLayout(text));
+	expect(collapsed).not.toContain(textWithoutLayout("Plugin reference feedback"));
+	expect(h.ctx.ui.notify.mock.calls).toEqual([["[jev audit manual] failed: scripted service refusal", "warning"]]);
+	expect(reviewCalls).toHaveLength(1);
+	await h.manual();
+	expect(h.sent).toHaveLength(1);
+});
+
 test("F2: an irreducible necessary floor asks once for a scoped account, without completion, wakeup or receipt advance", async () => {
 	const h = setup([user("user", "Investigate #5 only; approval is required before rollout."), snapshot([task]),
 		{ id: "needed", type: "message", message: { role: "assistant", content: "OLD_REQUIRED_FORMAT: XML; approval pending. " + "detail ".repeat(700) } }], {}, { persist: true });
@@ -606,6 +801,11 @@ test("manual bypasses cadence, terminal reconciliation wakes for board work only
 	expect(second.sent).toHaveLength(1); expect(second.sent[0].options.triggerTurn).toBe(true);
 	expectPluginAdvisory(second.sent[0].message.content);
 	expect(second.sent[0].message.content).toContain("BOARD ONLY"); expect(second.sent[0].message.content).toContain("return control");
+	expect(second.sent[0].message.content).toContain("Do not execute tasks or bypass a wait");
+	expect(second.sent[0].message.details.auditKeys).toEqual(h.sent[0].message.details.auditKeys);
+	expect(second.sent[0].message.content).toContain("existing permissions and wait conditions");
+	expect(textWithoutLayout(advisoryComponent(second, second.sent[0].message.content).render(80).join("\n"))).toContain(textWithoutLayout("BOARD ONLY: if still applicable, reconcile these facts via todo, then return control to the user. Do not execute tasks or bypass a wait."));
+	expect(textWithoutLayout(advisoryComponent(second, second.sent[0].message.content, true).render(80).join("\n"))).toBe(textWithoutLayout(second.sent[0].message.content));
 });
 
 test("explicit actionable-now with current authorization can wake for execution", async () => {
@@ -614,6 +814,9 @@ test("explicit actionable-now with current authorization can wake for execution"
 	answers = { ...answers, task_status_5: a("actionable_now"), task_granularity_5: a("appropriate"), interaction: a("working") };
 	await h.emit("session_start"); h.hook(); await tick();
 	expect(h.sent).toHaveLength(1); expect(h.sent[0].message.content).toContain("CONTINUE"); expect(h.sent[0].options.triggerTurn).toBe(true);
+	expect(h.sent[0].message.content).toContain("already-authorized next action");
+	expect(h.sent[0].message.content).toContain("existing permissions and wait conditions");
+	expect(h.sent[0].message.content).not.toContain("BOARD ONLY");
 	expectPluginAdvisory(h.sent[0].message.content);
 });
 
@@ -742,7 +945,7 @@ test("terminal empty/all-done boards, disabled extension and malformed hooks are
 	scriptParserCompletion();
 	for (const tasks of [[], [{ ...task, status: "completed" }]]) { const h = setup([snapshot(tasks)]); await h.emit("session_start"); h.hook(); await tick(); expect(h.sent).toHaveLength(0); }
 	expect(requests).toHaveLength(0);
-	const disabled = setup(undefined, { enabled: false }); expect(disabled.handlers.size).toBe(0); expect(disabled.commands.size).toBe(0);
+	const disabled = setup(undefined, { enabled: false }); expect(disabled.handlers.size).toBe(0); expect([...disabled.commands.keys()]).toEqual(["jev-audit"]);
 	const h = setup(); await h.emit("session_start");
 	for (const payload of [null, "bad", { version: 1, name: "user-ready", values: { STOP_KIND: "HUMAN_ABORT" } }]) for (const listener of h.listeners.get("pi:semantic-hook:v1") ?? []) listener(payload);
 	await tick(); expect(requests).toHaveLength(0); expect(reviewCalls).toHaveLength(0);
@@ -796,6 +999,7 @@ test("missing shared service is reported without attempting legacy or Pi auth fa
 	const h = setup(initial(), { legacyFields: [] }, { modelRegistry: { getApiKeyForProvider: () => { authReads++; } } });
 	await h.emit("session_start"); await h.manual();
 	expect(requests).toHaveLength(0); expect(authReads).toBe(0);
+	expect(h.sent).toHaveLength(0);
 	const errors = h.ctx.ui.notify.mock.calls.filter((c) => c[1] === "error");
 	expect(errors).toHaveLength(1); expect(errors[0][0]).toContain("requires pi-llm-as-jev reviewVersion 1");
 	expect(errors[0][0]).not.toContain("JEV_AUDIT_TEST_KEY");

@@ -9,13 +9,71 @@ The design goal is to avoid paying again for unchanged judgments without hiding 
 ## Install
 
 ```sh
-pi install git:github.com/xz-dev/pi-llm-as-jev
 pi install git:github.com/xz-dev/pi-jev-todo-audit
 ```
 
+On the first normal load of a persistent managed installation, the separately
+filterable `judgment-service.ts` entry installs and registers
+`git:github.com/xz-dev/pi-llm-as-jev` through Pi's native package manager if no
+service is already selected. No second manual service-install command is needed.
+This can access the network and adds one independent package declaration in the
+audit installation's user scope or trusted-project scope. Unknown/direct-file
+scope, untrusted project loading, offline mode and inherited-owner suppression
+never authorize a guessed global registration.
+
+The new source has **no audit-imposed commit, tag, branch or version pin**.
+Existing service sources, user pins and resource filters take precedence, even
+if the selected service is missing, disabled, incompatible or failing. Audit does
+not replace it, re-enable it or fall back to a nested copy. An already-selected
+extension that fails in Pi's native loader can stop startup before audit runs;
+repair that selection through Pi's normal package management.
+
+### Update and resource controls
+
+```sh
+pi update --extensions
+```
+
+The independently registered service participates even when audit has no new
+commit or no audit session is active. Use the normal reload/restart to activate
+updated code. Audit neither fetches updates on every startup nor resets the
+service to an older revision. A newly provisioned compatible service is usable
+in the first startup; subsequent reloads let Pi load it directly.
+
+To disable only automatic provisioning, exclude `judgment-service.ts` from the
+audit package's extension resources while retaining `index.ts`. For the
+unqualified Git source, the package selection is:
+
+```json
+{"source":"git:github.com/xz-dev/pi-jev-todo-audit","extensions":["index.ts"]}
+```
+
+Keep your actual source/ref and unrelated settings when changing resource
+selections. This does **not** disable a service already registered independently;
+its own package resource controls apply separately (for example, `extensions: []`
+on its existing selection). Removing audit does not automatically remove that
+shared service, its configuration or credentials.
+
+Business `enabled: false` does not turn off provisioning or hide commands:
+`/jev-audit` reports disablement without judgment/advice/receipts, and
+`/jev-audit-service` reports service capability availability without installing,
+saving settings, resolving credentials or running inference. Each command exists
+only when its corresponding resource is loaded in an eligible process; explicit
+filters and child-owner suppression still apply. The provisioning entry uses its
+own provenance even when `index.ts` is filtered out.
+
+### Installation is not backend readiness
+
 Requires a loaded **pi-llm-as-jev service with `version: 1`, `reviewVersion: 1` and `review()`**. Native reviews use the xz-dev fork's released classifier API and public `fetch` option; no private Pi observation patch is required. Configure model selection in the shared service and credentials/endpoints in Pi (see [Configuration](#configuration)). An already-loaded extension continues running its old code until reloaded/restarted; updating files alone does not validate the running process.
 
-Discovery happens at each eligible audit. If the service is absent or older, automatic auditing skips with a bounded dependency notice and manual auditing reports a clear error. It neither disables ordinary TODO/main-agent work nor sends a probe or falls back to direct HTTP. Loading the compatible service later permits the next normally scheduled/manual audit.
+Startup diagnostics distinguish installation, registration and activation failures.
+A successful clone alone is not durable registration or backend readiness. Audit
+makes at most one provisioning attempt per activation, never installs from an
+audit callback, and does not switch authentication methods on failure. Later
+normal loading can retry an unregistered attempt; registered selections remain
+under Pi's ordinary repair/update handling.
+
+Discovery happens at each eligible audit. If the service is absent or older, automatic auditing skips with a bounded dependency notice and manual auditing reports a clear error. Audit-owned provisioning failures do not disable ordinary TODO/main-agent work or send a readiness probe; there is no direct-HTTP fallback. Loading the compatible service later permits the next normally scheduled/manual audit.
 
 ## Main processes only
 
@@ -107,7 +165,7 @@ Audit consumes the service's accepted final choices and does **not** numerically
 
 Completed, cancelled, deferred, blocked or future tasks cannot simultaneously receive claim/continue/split instructions. New user scope takes precedence over an older board plan. Drift corrections name supported actionable work rather than blindly choosing the next pending task. Empty/all-done boards with trivial or idle activity do not create busywork.
 
-Advice is framed as a leader review of the supplied reports and board, not independent verification of execution, and ends by inviting the main agent to reply with a reason if a point is mistaken; that reply is new input to the next review.
+Advice reviews supplied reports and board state, not independently verified execution. Mistaken or already satisfied suggestions can be disregarded. No separate reply is needed; explanations in normal task progress can inform the next review.
 
 ### Engineering-grounded task size
 
@@ -127,7 +185,11 @@ Practice references: [Wake's INVEST and SMART tasks](https://xp123.com/invest-in
 
 ### Waiting, repetition and stale results
 
-Every injected audit message identifies itself in its text as an automated `pi-jev-todo-audit` plugin advisory, not a user message, instruction or new authorization. Suggestions are for consideration at a natural checkpoint: the agent should continue its current task, respect the user's latest instructions and wait conditions, and need not send a separate reply. This wording does not change the steer delivery or terminal-wakeup gates below.
+Ordinary corrections, `CHOICE CONTEXT INCOMPLETE` and `FACTUAL CONTEXT INCOMPLETE` advisories share one persisted body between the main agent and the user transcript. The default view hides only the recognized shared generic footer; expand the message to see the complete original text. Suggestions, evidence, task/source scope, board-only restrictions and recovery limits always remain visible. There is no separate summary or extra plugin label. Styling and wrapping may differ; reopening or redrawing preserves the stored wording, and unrecognized historical endings remain fully displayed rather than being guessed or rewritten.
+
+Each new body starts with one `pi-jev-todo-audit` heading, followed by its concrete suggestion or limitation and task/source scope. One common boundary identifies it as plugin reference feedback, not a user message, instruction or new authorization. Consider it at a natural checkpoint without interrupting or switching tasks solely for the notice; the user's latest scope, existing permissions and wait conditions still apply. No separate reply is needed. Steer delivery and terminal-wakeup gates remain unchanged.
+
+The visible advisory is its own delivery feedback: no extra `correction injected` notification is emitted. Dependency, uncertainty, failure, recovery and optional aligned notifications remain UI-only status, not main-agent instructions. An audit can send a clarification and subsequently report failure; that failure does not mean no message was sent. Backend JEV request/response traffic is not exposed by this presentation.
 
 A supported correction includes task IDs and sanitized source excerpts, delivered through the existing custom-message steer path. Terminal execution needs explicit actionable-now evidence; merely unfinished work never wakes the agent. A concrete missing board annotation may permit **one board-only turn**, expressly instructing the agent to reconcile the board and return control without executing the blocked task. Split/clarification advice alone does not trigger a terminal restart.
 
@@ -296,6 +358,28 @@ bun test test/shared-service.integration.test.ts \
   test/shared-service-ownership.integration.test.ts \
   test/shared-service-accounting.integration.test.ts
 ```
+
+The opt-in delivery tests use a real Pi executable with isolated HOME, agent,
+Git/npm/XDG settings and local Git URL rewrites. They exercise both installer
+routes, actual command/TUI dispatch, independent updates, supported reload and
+failure recovery. Supply the real `rpiv-todo` **package directory** to execute
+create/update/list through the native agent/tool runner using an offline scripted
+chat provider; tool-name registration alone is not this business check. The real
+service case copies the supplied working source, not merely its last commit.
+
+```sh
+JEV_NATIVE_DELIVERY=1 JEV_NATIVE_REAL_SERVICE=1 \
+JEV_PI_BIN="/path/to/pi" \
+PI_JUDGMENT_SOURCE="/path/to/pi-llm-as-jev" \
+PI_TODO_SOURCE="/path/to/rpiv-mono/packages/rpiv-todo" \
+bun test test/service-delivery.test.ts
+```
+
+These target-native checks were exercised on Pi `1.0.4-xz.265.1.g02d10232`.
+Without the opt-in flags they skip; required acceptance must enable them and
+provide the source paths. Evidence stays under `/var/tmp/jev-native-*`, including
+source/binary identities, raw RPC/TUI output, Git operations and assertions.
+They do not update installed user plugins or prove live-provider accuracy.
 
 Run tests as their own main process: remove an inherited `PI_JEV_TODO_AUDIT_OWNER_PID` **only from the test subprocess environment**, never from production child suppression. Without both source variables, optional integration cases skip; ordinary green tests are not evidence that those cases ran. The suites capture real serialized request bodies, adapter starts/ends, missing/zero usage, rejected/partial recovery, reload/repeat, source continuity and privacy. The difficult retained-facts corpus case deliberately remains incomplete: finding markers in attempted packets is not completed review coverage.
 
