@@ -2,6 +2,7 @@
 import { afterEach, beforeEach, expect, spyOn, test } from "bun:test";
 import { DefaultPackageManager, SettingsManager } from "@earendil-works/pi-coding-agent";
 import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
 import provision from "../judgment-service.js";
@@ -38,7 +39,7 @@ const settings = (path = settingsFile) => JSON.parse(readFileSync(path, "utf8"))
 const writeSettings = (value: unknown, path = settingsFile) => writeFileSync(path, JSON.stringify(value));
 
 beforeEach(() => {
-	dir = mkdtempSync("/var/tmp/jev-provisioning-unit-");
+	dir = mkdtempSync(join(process.platform === "win32" ? tmpdir() : "/var/tmp", "jev-provisioning-unit-"));
 	agent = join(dir, "agent"); cwd = join(dir, "project");
 	mkdirSync(agent); mkdirSync(join(cwd, ".pi"), { recursive: true });
 	settingsFile = join(agent, "settings.json"); projectFile = join(cwd, ".pi", "settings.json");

@@ -2,6 +2,7 @@
 import { expect, spyOn, test } from "bun:test";
 import { DefaultPackageManager } from "@earendil-works/pi-coding-agent";
 import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
 
@@ -24,7 +25,7 @@ test("pi manifest exposes a separately filterable provisioning entry", () => {
 });
 
 test("first managed startup registers one unqualified service package without changing other settings", async () => {
-	const dir = mkdtempSync("/var/tmp/jev-service-registration-");
+	const dir = mkdtempSync(join(process.platform === "win32" ? tmpdir() : "/var/tmp", "jev-service-registration-"));
 	const agentDir = join(dir, "agent");
 	const cwd = join(dir, "project");
 	mkdirSync(agentDir, { recursive: true });
