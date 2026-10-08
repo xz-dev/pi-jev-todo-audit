@@ -1,0 +1,107 @@
+bun test v1.4.2 (744846f84)
+
+test/questions.test.ts:
+(pass) request carries board, stored state and ONLY the segment's loops; old loops are not re-sent [8.12ms]
+(pass) board_warranted is asked only without in_progress tasks; dependency-blocked tasks skip granularity [1.68ms]
+(pass) no_change advances cursors and keeps state verbatim [8.13ms]
+(pass) partial progress is recorded with its anchor and advances; completion stays reported-not-verified [1.61ms]
+(pass) uncertainty holds the segment open without moving the cursor; other scopes still advance [0.08ms]
+(pass) missing answer for a scope writes nothing for that scope [0.06ms]
+(pass) scope_changed resets the task to its first-active loop and opens the current segment [0.17ms]
+(pass) session transitions: scope update and permission withdrawal write anchors; blocker binds to its conclusion [0.42ms]
+(pass) assistant cannot establish authority for cancelled_by_user [0.06ms]
+(pass) assistant cannot establish authority for scope_changed [0.03ms]
+(pass) assistant is not a permission source: {"interaction":"permission_granted"} [0.09ms]
+(pass) assistant is not a permission source: {"interaction":"user_responded"} [0.04ms]
+(pass) assistant is not a permission source: {"scope_update":"scope_updated"} [0.03ms]
+(pass) uncertainty fences the whole task scope: {"task_evidence_5":"insufficient_evidence"} [0.04ms]
+(pass) uncertainty fences the whole task scope: {"task_board_5":"unclear"} [0.02ms]
+(pass) a user reply does not imply readiness; withdrawal wins over simultaneous scope update [0.10ms]
+(pass) lifecycle, granularity, permission, work and scope retain independent sources [0.11ms]
+(pass) reported actionability is not permission: it needs the independent user-authority gate before execution advice [2.43ms]
+(pass) a reported deferral supports board-only reconciliation, never execution authority [0.38ms]
+(pass) work activity cannot clear a stored user wait without a user-backed resumption [0.24ms]
+
+test/judgment-service-entry.test.ts:
+(pass) suppressed child touches neither host nor package settings [2.84ms]
+(pass) loaded service commands preserve selection before publication: llm-as-jev [0.86ms]
+(pass) loaded service commands preserve selection before publication: llm-as-jev:1 [0.26ms]
+(pass) pre-published service is preserved with reviewVersion 1 [0.28ms]
+(pass) pre-published service is preserved with reviewVersion undefined [0.22ms]
+(pass) provisioning command is callable and read-only before startup [0.68ms]
+(pass) own resource provenance provisions with audit disabled and no audit command in user scope [31.23ms]
+(pass) own resource provenance provisions with audit disabled and no audit command in project scope [1.94ms]
+189 | 	expect(settings()).toEqual({ packages: [root, SOURCE], editorPaddingX: 2 });
+190 | 	expect(readFileSync(projectFile, "utf8")).toBe(projectBefore);
+191 | 	expect(install).toHaveBeenCalledTimes(1);
+192 | 	expect(trace.starts).toBe(3); // Later host events are forwarded, not new activations.
+193 | 	expect(h.commands.size).toBe(3); expect(h.providers).toEqual(["fixture-provider"]);
+194 | 	expect(typeof (globals[key] as { review: unknown }).review).toBe("function");
+                                                                   ^
+error: expect(received).toBe(expected)
+
+Expected: "function"
+Received: "undefined"
+
+      at <anonymous> (/home/xz/Code/ai/pi-jev-todo-audit/test/judgment-service-entry.test.ts:194:62)
+(fail) first startup persists once and replays once, without duplicate commands/providers [4.33ms]
+(pass) trusted project registers only in project scope [1.46ms]
+(pass) no guessed registration for temporary with untrusted project [0.34ms]
+(pass) no guessed registration for unknown with untrusted project [0.22ms]
+(pass) no guessed registration for project with untrusted project [0.20ms]
+(pass) wrong installation provenance does not default to user scope [0.31ms]
+(pass) offline first startup reports unavailability and performs no installation [0.28ms]
+(pass) missing or filtered configured service is preserved: git:github.com/xz-dev/pi-llm-as-jev [0.58ms]
+(pass) missing or filtered configured service is preserved: git:github.com/xz-dev/pi-llm-as-jev@v1 [0.66ms]
+(pass) missing or filtered configured service is preserved: git:https://github.com/xz-dev/pi-llm-as-jev.git@v1 [0.49ms]
+(pass) missing or filtered configured service is preserved: git:git@github.com:xz-dev/pi-llm-as-jev.git@v1 [0.45ms]
+(pass) missing or filtered configured service is preserved: git:ssh://git@github.com/xz-dev/pi-llm-as-jev.git@v1 [0.43ms]
+(pass) missing or filtered configured service is preserved: npm:pi-llm-as-jev@1.0.0 [58.93ms]
+(pass) installed local service identity preserves its disabled resource selection [1.30ms]
+(pass) trusted project service selection takes precedence over a global audit [0.99ms]
+(pass) untrusted project settings are not read while a global audit provisions [2.77ms]
+(pass) selection changed during download is preserved without activation [1.56ms]
+(pass) only matching enabled service resources activate, without installing unrelated packages [2.76ms]
+(pass) retired activation shutdown cannot delete a replacement handle [2.36ms]
+(pass) delegated shutdown unsubscribe works for handlers added after startup adoption [1.73ms]
+(pass) cancelled first-start callbacks are not replayed and ordinary events unsubscribe [1.42ms]
+(pass) partial publication is cleaned immediately and its retired handlers never run [1.59ms]
+(pass) failed startup cleanup preserves a concurrently published replacement [1.43ms]
+(pass) factory failure leaves no handle and does not retry from audit events [1.36ms]
+(pass) incompatible newly installed service is diagnosed without downgrade [1.34ms]
+(pass) installation failure is bounded and does not switch transport: download [0.61ms]
+(pass) installation failure is bounded and does not switch transport: Authentication [0.44ms]
+(pass) native persistence errors after clone prevent activation and update-success claims [0.98ms]
+(pass) settings changed to unreadable after clone are not overwritten [0.86ms]
+(pass) a later normal activation retries an unregistered failure without changing the audit switch [1.83ms]
+
+test/index.test.ts:
+(pass) manual audit persists before delivering reported completion; reload does not rejudge or repeat [7.35ms]
+(pass) a second audit sends only the suffix and old protocol ledger entries are not evidence [2.81ms]
+(pass) late result is fenced by board even without a lifecycle callback [1.03ms]
+(pass) late result is fenced by same-id-text even without a lifecycle callback [1.41ms]
+(pass) late result is fenced by branch even without a lifecycle callback [1.01ms]
+(pass) late result is fenced by effective-context even without a lifecycle callback [1.10ms]
+(pass) user abort releases the single-active slot; late first result cannot publish [5.22ms]
+(pass) missing persistence cannot produce completion advice [1.63ms]
+(pass) missing dependency stays visible on each manual request; disabled mode does no work [0.28ms]
+(pass) terminal completion remains board-only and ordinary cadence keeps user cooldown [1.77ms]
+(pass) a changed task contract invalidates its old completion even without a new history record [3.98ms]
+(pass) cold effective-context loss uses originals, not summary authority (original=true) [43.98ms]
+(pass) cold effective-context loss uses originals, not summary authority (original=false) [4.17ms]
+
+test/state-verdict.test.ts:
+(pass) stored completion report yields the existing 'reported, not independently verified' correction [0.33ms]
+(pass) an open (uncertain) task yields no answer and the verdict fails closed for it [0.11ms]
+(pass) a scope whose cursor is behind the branch tip is not current [0.04ms]
+(pass) voided authorization anchor blocks execution advice; in_progress task without granularity never wakes [0.10ms]
+(pass) off-board current work with drift yields a return/create advisory through the unchanged gates [0.08ms]
+(pass) a tool/current-work anchor cannot replace absent execution authority [0.11ms]
+
+1 tests failed:
+(fail) first startup persists once and replays once, without duplicate commands/providers [4.33ms]
+
+ 76 pass
+ 1 fail
+ 369 expect() calls
+Ran 77 tests across 4 files. [690.00ms]

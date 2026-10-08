@@ -142,6 +142,11 @@ export function renderBoardLines(board: BoardSnapshot): string[] {
 	});
 }
 
+/** The verdict cannot consume granularity while any declared dependency is unfinished or missing. */
+export function hasUnfinishedDependency(board: BoardSnapshot, task: BoardTask): boolean {
+	return !!task.blockedBy?.some((id) => board.tasks.find((t) => t.id === id)?.status !== "completed");
+}
+
 /** In-progress tasks currently claimed on the board. */
 export function inProgressTasks(board: BoardSnapshot): BoardTask[] {
 	return visibleTasks(board).filter((t) => t.status === "in_progress");

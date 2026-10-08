@@ -1,0 +1,126 @@
+[
+  {
+    "id": "pi-jev-todo-audit@0.1.0",
+    "name": "pi-jev-todo-audit",
+    "version": "0.1.0",
+    "size": 65721,
+    "unpackedSize": 204144,
+    "shasum": "376c824e683e7946e046d2f35a42db7273caa2a5",
+    "integrity": "sha512-0F5M5rAvtc+3ht0IMLcR8uyBtal93FQH/t/1dGrz/BqNlu5RutSbhmK0QR2WOMLxqfXLq+R4tNtwSCuwKXzLpg==",
+    "filename": "pi-jev-todo-audit-0.1.0.tgz",
+    "files": [
+      {
+        "path": "LICENSE",
+        "size": 1065,
+        "mode": 420
+      },
+      {
+        "path": "README.md",
+        "size": 36596,
+        "mode": 420
+      },
+      {
+        "path": "board.ts",
+        "size": 6822,
+        "mode": 420
+      },
+      {
+        "path": "capacity.ts",
+        "size": 177,
+        "mode": 420
+      },
+      {
+        "path": "config.ts",
+        "size": 7231,
+        "mode": 420
+      },
+      {
+        "path": "context.ts",
+        "size": 14005,
+        "mode": 420
+      },
+      {
+        "path": "counter.ts",
+        "size": 2192,
+        "mode": 420
+      },
+      {
+        "path": "docs/incremental-judgment.md",
+        "size": 6982,
+        "mode": 420
+      },
+      {
+        "path": "incremental.ts",
+        "size": 16612,
+        "mode": 420
+      },
+      {
+        "path": "index.ts",
+        "size": 23106,
+        "mode": 420
+      },
+      {
+        "path": "judgment-client.ts",
+        "size": 13702,
+        "mode": 420
+      },
+      {
+        "path": "judgment-service.ts",
+        "size": 9088,
+        "mode": 420
+      },
+      {
+        "path": "ledger.ts",
+        "size": 3820,
+        "mode": 420
+      },
+      {
+        "path": "loops.ts",
+        "size": 6529,
+        "mode": 420
+      },
+      {
+        "path": "ownership.ts",
+        "size": 352,
+        "mode": 420
+      },
+      {
+        "path": "package.json",
+        "size": 851,
+        "mode": 420
+      },
+      {
+        "path": "questions.ts",
+        "size": 15363,
+        "mode": 420
+      },
+      {
+        "path": "state-verdict.ts",
+        "size": 3859,
+        "mode": 420
+      },
+      {
+        "path": "state.ts",
+        "size": 10698,
+        "mode": 420
+      },
+      {
+        "path": "transitions.ts",
+        "size": 11759,
+        "mode": 420
+      },
+      {
+        "path": "typesafe.ts",
+        "size": 2378,
+        "mode": 420
+      },
+      {
+        "path": "verdict.ts",
+        "size": 10957,
+        "mode": 420
+      }
+    ],
+    "entryCount": 22,
+    "bundled": []
+  }
+]

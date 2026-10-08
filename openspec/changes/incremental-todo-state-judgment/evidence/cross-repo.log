@@ -1,0 +1,19 @@
+bun test v1.4.2 (744846f84)
+{"check":"nonempty-entrypoint-compaction","calls":[{"phase":"0","bytes":9496,"stateBytes":326,"anchorBytes":2,"newHistoryBytes":590,"anchorCount":0,"newCount":4},{"phase":"0","bytes":3448,"stateBytes":181,"anchorBytes":2,"newHistoryBytes":590,"anchorCount":0,"newCount":4},{"phase":"1","bytes":9171,"stateBytes":453,"anchorBytes":215,"newHistoryBytes":118,"anchorCount":2,"newCount":1},{"phase":"2","bytes":9353,"stateBytes":494,"anchorBytes":332,"newHistoryBytes":116,"anchorCount":3,"newCount":1},{"phase":"3","bytes":10264,"stateBytes":534,"anchorBytes":447,"newHistoryBytes":562,"anchorCount":4,"newCount":4},{"phase":"3","bytes":3655,"stateBytes":223,"anchorBytes":215,"newHistoryBytes":562,"anchorCount":2,"newCount":4}],"tokens":"unknown; scripted transport","cost":"no live inference"}
+{"check":"offline-actual-service-pi-A+B","wireBytes":[8964,9036],"tokens":"not measured (scripted transport)","cost":"no live inference"}
+
+test/incremental-lifecycle.integration.test.ts:
+(pass) nonempty progress/authority survives JSONL cold reload and real Pi compaction without resending old loops [139.17ms]
+
+test/partial-progress.test.ts:
+(pass) A+B survives cold reload without deriving acceptance from formatting: "Complete A: reject malformed input and B: preserve valid input." [1.61ms]
+(pass) A+B survives cold reload without deriving acceptance from formatting: "- A: reject malformed input\n- B: preserve valid input" [0.68ms]
+(pass) A+B survives cold reload without deriving acceptance from formatting: "Complete A: reject malformed input\nand B: preserve valid input." [0.60ms]
+(pass) A+B survives cold reload without deriving acceptance from formatting: "Complete A: reject malformed input and B: preserve valid input.\nDo not deploy." [0.60ms]
+(pass) uncertain B keeps A, fences the task; a user withdrawal cannot revive prior permission [1.29ms]
+(pass) A+B through the actual sibling service and installed Pi native adapter (offline wire) [3.72ms]
+
+ 7 pass
+ 0 fail
+ 104 expect() calls
+Ran 7 tests across 2 files. [493.00ms]

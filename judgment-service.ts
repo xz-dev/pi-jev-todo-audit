@@ -52,11 +52,11 @@ export default function (pi: ExtensionAPI): void {
 	pi.registerCommand("jev-audit-service", {
 		description: "Show judgment-service availability (read-only; no installation or inference).",
 		handler: async (_args, ctx) => {
-			const service = getJudgmentService() as { version?: unknown; reviewVersion?: unknown; review?: unknown } | undefined;
-			const ready = service?.version === 1 && service.reviewVersion === 1 && typeof service.review === "function";
+			const service = getJudgmentService();
+			const ready = service?.version === 1 && typeof service.judge === "function";
 			ctx.ui.notify(ready
-				? "Judgment service is available (review version 1)."
-				: "Judgment service is unavailable or incompatible; check startup diagnostics and package resource settings.", ready ? "info" : "warning");
+				? "Judgment service is available (judge version 1)."
+				: "Judgment service is unavailable or incompatible; judge version 1 is required. Check startup diagnostics and package resource settings.", ready ? "info" : "warning");
 		},
 	});
 	let started = false;
@@ -173,9 +173,9 @@ export default function (pi: ExtensionAPI): void {
 			}
 			// The host took its startup-handler snapshot before installing us.
 			for (const handler of pendingStart.splice(0)) await handler(event as never, ctx as never);
-			const service = getJudgmentService() as { version?: unknown; reviewVersion?: unknown; review?: unknown } | undefined;
-			if (service?.version !== 1 || service.reviewVersion !== 1 || typeof service.review !== "function") {
-				warn("Installed judgment service is incompatible with review version 1; no older version will be installed.");
+			const service = getJudgmentService();
+			if (service?.version !== 1 || typeof service.judge !== "function") {
+				warn("Installed judgment service is incompatible with judge version 1; no older version will be installed.");
 			}
 		} catch {
 			await cleanup(event as never, ctx as never);

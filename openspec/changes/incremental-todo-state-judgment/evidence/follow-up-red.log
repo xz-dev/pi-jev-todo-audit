@@ -1,0 +1,126 @@
+bun test v1.4.2 (744846f84)
+
+test/questions.test.ts:
+(pass) request carries board, stored state and ONLY the segment's loops; old loops are not re-sent [8.31ms]
+(pass) board_warranted is asked only without in_progress tasks; dependency-blocked tasks skip granularity [0.61ms]
+(pass) no_change advances cursors and keeps state verbatim [7.11ms]
+(pass) partial progress is recorded with its anchor and advances; completion stays reported-not-verified [0.46ms]
+(pass) uncertainty holds the segment open without moving the cursor; other scopes still advance [0.04ms]
+(pass) missing answer for a scope writes nothing for that scope [0.04ms]
+(pass) scope_changed resets the task to its first-active loop and opens the current segment [0.05ms]
+(pass) session transitions: scope update and permission withdrawal write anchors; blocker binds to its conclusion [0.25ms]
+(pass) assistant cannot establish authority for cancelled_by_user [0.06ms]
+(pass) assistant cannot establish authority for scope_changed [0.02ms]
+(pass) assistant is not a permission source: {"interaction":"permission_granted"} [0.11ms]
+(pass) assistant is not a permission source: {"interaction":"user_responded"} [0.06ms]
+(pass) assistant is not a permission source: {"scope_update":"scope_updated"} [0.04ms]
+(pass) uncertainty fences the whole task scope: {"task_evidence_5":"insufficient_evidence"} [0.05ms]
+(pass) uncertainty fences the whole task scope: {"task_board_5":"unclear"} [0.02ms]
+(pass) a user reply does not imply readiness; withdrawal wins over simultaneous scope update [0.08ms]
+(pass) lifecycle, granularity, permission, work and scope retain independent sources [0.46ms]
+(pass) reported actionability is not permission: it needs the independent user-authority gate before execution advice [1.47ms]
+(pass) a reported deferral supports board-only reconciliation, never execution authority [0.68ms]
+196 | test("work activity cannot clear a stored user wait without a user-backed resumption", () => {
+197 | 	const waiting = base();
+198 | 	waiting.session.interaction = { state: "waiting_user", anchor: "u0" };
+199 | 	waiting.session.authorizedScope = { anchor: "u0" };
+200 | 	const held = apply(full({ interaction: "work_resumed", work_evidence: "a2" }), waiting);
+201 | 	expect(held.state.session.interaction.state).toBe("waiting_user");
+                                                    ^
+error: expect(received).toBe(expected)
+
+Expected: "waiting_user"
+Received: "working"
+
+      at <anonymous> (/home/xz/Code/ai/pi-jev-todo-audit/test/questions.test.ts:201:47)
+(fail) work activity cannot clear a stored user wait without a user-backed resumption [8.75ms]
+
+test/judgment-service-entry.test.ts:
+(pass) suppressed child touches neither host nor package settings [3.89ms]
+(pass) loaded service commands preserve selection before publication: llm-as-jev [0.86ms]
+(pass) loaded service commands preserve selection before publication: llm-as-jev:1 [0.28ms]
+(pass) pre-published service is preserved with reviewVersion 1 [0.26ms]
+(pass) pre-published service is preserved with reviewVersion undefined [0.20ms]
+151 | 		expect(trace.starts).toBe(0);
+152 | 	}
+153 | 	globals[key] = { version: 1, judge: async () => { throw Error("Status must not infer"); } };
+154 | 	h.notices.length = 0;
+155 | 	await command.handler("", h.ctx);
+156 | 	expect(h.notices.join("\n")).toContain("Judgment service is available");
+                                    ^
+error: expect(received).toContain(expected)
+
+Expected to contain: "Judgment service is available"
+Received: "Judgment service is unavailable or incompatible; reviewCacheVersion 1 and reviewStagesVersion 1 are required. Check startup diagnostics and package resource settings."
+
+      at <anonymous> (/home/xz/Code/ai/pi-jev-todo-audit/test/judgment-service-entry.test.ts:156:31)
+(fail) provisioning command is callable and read-only before startup [2.89ms]
+(pass) own resource provenance provisions with audit disabled and no audit command in user scope [24.67ms]
+(pass) own resource provenance provisions with audit disabled and no audit command in project scope [2.43ms]
+189 | 	expect(settings()).toEqual({ packages: [root, SOURCE], editorPaddingX: 2 });
+190 | 	expect(readFileSync(projectFile, "utf8")).toBe(projectBefore);
+191 | 	expect(install).toHaveBeenCalledTimes(1);
+192 | 	expect(trace.starts).toBe(3); // Later host events are forwarded, not new activations.
+193 | 	expect(h.commands.size).toBe(3); expect(h.providers).toEqual(["fixture-provider"]);
+194 | 	expect(typeof (globals[key] as { review: unknown }).review).toBe("function");
+                                                                   ^
+error: expect(received).toBe(expected)
+
+Expected: "function"
+Received: "undefined"
+
+      at <anonymous> (/home/xz/Code/ai/pi-jev-todo-audit/test/judgment-service-entry.test.ts:194:62)
+(fail) first startup persists once and replays once, without duplicate commands/providers [2.03ms]
+(pass) trusted project registers only in project scope [1.88ms]
+(pass) no guessed registration for temporary with untrusted project [0.37ms]
+(pass) no guessed registration for unknown with untrusted project [0.23ms]
+(pass) no guessed registration for project with untrusted project [0.26ms]
+(pass) wrong installation provenance does not default to user scope [0.34ms]
+(pass) offline first startup reports unavailability and performs no installation [0.31ms]
+(pass) missing or filtered configured service is preserved: git:github.com/xz-dev/pi-llm-as-jev [0.64ms]
+(pass) missing or filtered configured service is preserved: git:github.com/xz-dev/pi-llm-as-jev@v1 [0.67ms]
+(pass) missing or filtered configured service is preserved: git:https://github.com/xz-dev/pi-llm-as-jev.git@v1 [0.68ms]
+(pass) missing or filtered configured service is preserved: git:git@github.com:xz-dev/pi-llm-as-jev.git@v1 [0.48ms]
+(pass) missing or filtered configured service is preserved: git:ssh://git@github.com/xz-dev/pi-llm-as-jev.git@v1 [0.46ms]
+(pass) missing or filtered configured service is preserved: npm:pi-llm-as-jev@1.0.0 [84.54ms]
+(pass) installed local service identity preserves its disabled resource selection [1.33ms]
+(pass) trusted project service selection takes precedence over a global audit [1.07ms]
+(pass) untrusted project settings are not read while a global audit provisions [2.08ms]
+(pass) selection changed during download is preserved without activation [1.48ms]
+(pass) only matching enabled service resources activate, without installing unrelated packages [2.36ms]
+(pass) retired activation shutdown cannot delete a replacement handle [1.76ms]
+(pass) delegated shutdown unsubscribe works for handlers added after startup adoption [2.64ms]
+(pass) cancelled first-start callbacks are not replayed and ordinary events unsubscribe [2.51ms]
+(pass) partial publication is cleaned immediately and its retired handlers never run [1.77ms]
+(pass) failed startup cleanup preserves a concurrently published replacement [1.85ms]
+(pass) factory failure leaves no handle and does not retry from audit events [1.48ms]
+309 | 	expect(h.notices.join("\n")).not.toContain("private failure details");
+310 | });
+311 | test("incompatible newly installed service is diagnosed without downgrade", async () => {
+312 | 	serviceFactory = factory.replace("version:1", "version:99");
+313 | 	const h = activate(); await h.emit("session_start");
+314 | 	expect(h.notices.join("\n")).toContain("incompatible with judge version 1");
+                                    ^
+error: expect(received).toContain(expected)
+
+Expected to contain: "incompatible with judge version 1"
+Received: "[jev-audit] Installing the independent judgment-service package…\n[jev-audit] Installed judgment service is incompatible with review version 1 / reviewCacheVersion 1 / reviewStagesVersion 1; no older version will be installed."
+
+      at <anonymous> (/home/xz/Code/ai/pi-jev-todo-audit/test/judgment-service-entry.test.ts:314:31)
+(fail) incompatible newly installed service is diagnosed without downgrade [1.76ms]
+(pass) installation failure is bounded and does not switch transport: download [0.67ms]
+(pass) installation failure is bounded and does not switch transport: Authentication [0.48ms]
+(pass) native persistence errors after clone prevent activation and update-success claims [1.12ms]
+(pass) settings changed to unreadable after clone are not overwritten [1.03ms]
+(pass) a later normal activation retries an unregistered failure without changing the audit switch [1.98ms]
+
+4 tests failed:
+(fail) work activity cannot clear a stored user wait without a user-backed resumption [8.75ms]
+(fail) provisioning command is callable and read-only before startup [2.89ms]
+(fail) first startup persists once and replays once, without duplicate commands/providers [2.03ms]
+(fail) incompatible newly installed service is diagnosed without downgrade [1.76ms]
+
+ 54 pass
+ 4 fail
+ 292 expect() calls
+Ran 58 tests across 2 files. [637.00ms]

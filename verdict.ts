@@ -1,5 +1,5 @@
 /** Deterministic safety gates around advisory model judgments, not a second classifier. */
-import { inProgressTasks, unfinishedTasks, type BoardSnapshot, type BoardTask } from "./board.js";
+import { hasUnfinishedDependency, inProgressTasks, unfinishedTasks, type BoardSnapshot, type BoardTask } from "./board.js";
 import { canonicalJson, digest, redact, workVersion, type AuditContext, type EvidenceRecord } from "./context.js";
 import { evidenceKey, granularityKey, lifecycleKey, reconciliationKey, NOT_ON_BOARD, type AuditAnswers, type ChoiceAnswer } from "./typesafe.js";
 
@@ -84,19 +84,19 @@ export function decide(answers: AuditAnswers, board: BoardSnapshot, threshold: n
 			continue;
 		}
 		if (!["still_ongoing", "actionable_now"].includes(life.choice)) continue;
-		const dependencyBlocked = task.blockedBy?.some((id) => board.tasks.find((t) => t.id === id)?.status !== "completed");
-		if (dependencyBlocked) continue;
+		if (hasUnfinishedDependency(board, task)) continue;
 		const granularity = answers.granularity?.[granularityKey(task.id)];
 		if (task.status === "in_progress" && strong(granularity) &&
 			["split_independent_outcomes", "split_verifiable_checkpoints", "clarify_done_criteria", "clarify_next_action"].includes(granularity.choice)) {
-			if (!anchor || !globallyUsable || !ready) { uncertain.push(task.id); continue; }
+			const granularityAnchor = answers.granularityEvidence === undefined ? anchor : source(answers.granularityEvidence[evidenceKey(task.id)]);
+			if (!granularityAnchor || !globallyUsable || !ready) { uncertain.push(task.id); continue; }
 			const instruction = {
 				split_independent_outcomes: `split ${label} only along the evidenced independent outcomes, preserving authorized scope and avoiding already tracked work`,
 				split_verifiable_checkpoints: `split ${label} into the evidenced verifiable checkpoints while preserving its overall goal; do not duplicate existing tasks`,
 				clarify_done_criteria: `clarify the completion criteria for ${label}; do not assume subdivision is needed`,
 				clarify_next_action: `clarify the concrete next action for ${label}; do not treat uncertainty as excessive size`,
 			}[granularity.choice]!;
-			add(task, granularity.choice, instruction, anchor);
+			add(task, granularity.choice, instruction, granularityAnchor);
 			continue;
 		}
 		// A known blocker contradicts readiness. Uncertainty about subdivision

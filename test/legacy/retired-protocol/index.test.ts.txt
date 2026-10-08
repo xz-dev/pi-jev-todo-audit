@@ -1,0 +1,1150 @@
+/** Request/delivery integration with real-shaped public entries. No live inference. */
+import { afterAll, afterEach, beforeEach, expect, mock, test } from "bun:test";
+import { CustomMessageComponent, initTheme, type ExtensionAPI, type MessageRenderer } from "@earendil-works/pi-coding-agent";
+import { stripVTControlCharacters } from "node:util";
+import { visibleWidth } from "@earendil-works/pi-tui";
+import makeExtension from "../index.js";
+import { DEFAULT_CONFIG } from "../config.js";
+import type { AuditRequest } from "../typesafe.js";
+import type { JudgeRequest, ReviewOptions, ReviewResult, ReviewStageProgress } from "../judgment-client.js";
+
+initTheme("dark", false);
+const serviceKey = Symbol.for("pi-llm-as-jev:service");
+const services = globalThis as Record<symbol, unknown>;
+let savedService: unknown, savedOwner: string | undefined;
+type Projection = ReturnType<NonNullable<ReviewOptions["projectStage"]>>;
+type ReviewCall = { request: JudgeRequest; options: ReviewOptions; projection: Projection };
+let reviewCalls: ReviewCall[];
+let portFixtureErrors: string[];
+/** Explicit complete decision for the one-task parser fixture, not missing-answer repair. */
+function parserCompletion() {
+	return { alignment: a("aligned"), current_match: a("5"), task_status_5: a("actually_completed"), task_evidence_5: a("user"),
+		interaction: a("waiting_user"), work_evidence: a("user"), drift: a("on_track"), task_board_5: a("accurate"), task_granularity_5: a("appropriate") };
+}
+function scriptParserCompletion() { answers = parserCompletion(); atReviewPort(acceptedAtPort); }
+/** Single scripted final-stage call, not a cache, transport or recovery implementation. */
+function atReviewPort(reply: (call: ReviewCall) => ReviewResult | Promise<ReviewResult>, prior: (options: ReviewOptions) => ReviewResult["answers"] = () => ({})) {
+	services[serviceKey] = { version: 1, reviewVersion: 1, reviewCacheVersion: 1, reviewStagesVersion: 1, review: async (request: JudgeRequest, options: ReviewOptions) => {
+		const projection = options.projectStage!({ evidence: (request.evidence ?? []).map((record) => ({ record })), completed: [], previousAnswers: prior(options), final: true });
+		const call = { request: structuredClone(request), options, projection };
+		reviewCalls.push(call);
+		return reply(call);
+	} };
+}
+function acceptedAtPort(call: ReviewCall): ReviewResult {
+	// Each named choice comes from the test. Unknown/missing questions fail this
+	// fixture rather than acquiring a default answer. No provider response is reconstructed.
+	const accepted = Object.fromEntries(Object.entries(call.projection.questions).map(([id, q]) => {
+		const answer = answers[id] as { choice: string; confidence: number } | undefined;
+		if (q.type !== "choice" || !answer || !Object.hasOwn(q.criteria, answer.choice)) {
+			portFixtureErrors.push(`Unscripted choice: ${id}`);
+			throw new Error(`Unscripted choice: ${id}`);
+		}
+		return [id, { type: "choice" as const, ...answer, probabilities: Object.fromEntries(Object.keys(q.criteria).map((label) => [label, label === answer.choice ? 1 : 0])) }];
+	}));
+	return { answers: accepted, dropped: [], backend: "classifier", model: "scripted/service", stopReason: "stop", reuse: { hits: 0, joined: 0, sent: 0 },
+		progress: { stages: [] }, unresolved: [], diagnostics: { attempts: [], attemptCount: 0, observationCoverage: "complete", usage: {
+			inputTokens: { knownSum: 0, missing: 0 }, outputTokens: { knownSum: 0, missing: 0 }, costUsd: { knownSum: 0, missing: 0 },
+		} } };
+}
+
+function rejectedAtPort(): ReviewResult {
+	return { answers: {}, dropped: [], backend: "classifier", model: "scripted/service", stopReason: "error", errorMessage: "scripted service refusal",
+		reuse: { hits: 0, joined: 0, sent: 0 }, progress: { stages: [] }, unresolved: [], diagnostics: {
+			attempts: [], attemptCount: 0, observationCoverage: "complete", usage: { inputTokens: { knownSum: 0, missing: 0 }, outputTokens: { knownSum: 0, missing: 0 }, costUsd: { knownSum: 0, missing: 0 } },
+		} };
+}
+function publishPortProgress(call: ReviewCall, result: ReviewResult): ReviewStageProgress {
+	const stage: ReviewStageProgress = { final: true, checkpoint: String(reviewCalls.indexOf(call) + 1).padStart(64, "0"), sources: (call.request.evidence ?? []).map(({ id }) => ({ id })),
+		evidenceIds: (call.request.evidence ?? []).map(({ id }) => id), opinions: result.answers, durable: true };
+	const acknowledgements = Object.entries(result.answers).map(([id, answer]) => {
+		const key = `scripted-stage-${reviewCalls.indexOf(call)}:${id}`;
+		return { key, saved: call.options.cache!.store(key, answer) };
+	});
+	stage.cache = { keys: acknowledgements.map((a) => a.key), durable: acknowledgements.every((a) => a.saved) };
+	call.options.onProgress!(stage);
+	return stage;
+}
+function completedAtPort(call: ReviewCall): ReviewResult {
+	const result = acceptedAtPort(call);
+	result.progress.stages.push(publishPortProgress(call, result));
+	return result;
+}
+
+const originalFetch = globalThis.fetch;
+const originalKey = process.env.JEV_AUDIT_TEST_KEY;
+const a = (choice: string) => ({ choice, confidence: 0.95 });
+let answers: Record<string, unknown>;
+let requests: AuditRequest[];
+let respond: () => Promise<Response>;
+const response = () => new Response(JSON.stringify({ answers }), { status: 200 });
+beforeEach(() => {
+	savedService = services[serviceKey]; delete services[serviceKey]; reviewCalls = []; portFixtureErrors = [];
+	savedOwner = process.env.PI_JEV_TODO_AUDIT_OWNER_PID;
+	process.env.PI_JEV_TODO_AUDIT_OWNER_PID = String(process.pid);
+	process.env.JEV_AUDIT_TEST_KEY = "sk-test-key";
+	requests = [];
+	answers = { alignment: a("aligned"), current_match: a("5"), task_status_5: a("actually_completed"), task_evidence_5: a("user"), interaction: a("waiting_user"), work_evidence: a("user") };
+	respond = async () => response();
+	globalThis.fetch = mock(async (_url: unknown, init: any) => { requests.push(JSON.parse(init.body)); return respond(); }) as unknown as typeof fetch;
+});
+afterEach(() => {
+	if (savedService === undefined) delete services[serviceKey]; else services[serviceKey] = savedService;
+	if (savedOwner === undefined) delete process.env.PI_JEV_TODO_AUDIT_OWNER_PID; else process.env.PI_JEV_TODO_AUDIT_OWNER_PID = savedOwner;
+	expect(portFixtureErrors).toEqual([]); // Fixture errors must not be swallowed by audit's isolation boundary.
+});
+afterAll(() => { globalThis.fetch = originalFetch; if (originalKey === undefined) delete process.env.JEV_AUDIT_TEST_KEY; else process.env.JEV_AUDIT_TEST_KEY = originalKey; });
+
+const user = (id: string, text: string) => ({ id, type: "message", message: { role: "user", content: text } });
+const task = { id: 5, subject: "Parser", status: "in_progress" as const, description: "Malformed input rejected; no deployment without approval" };
+const snapshot = (tasks: unknown[], id = "board") => ({ id, type: "message", message: { role: "toolResult", toolName: "todo", content: [{ type: "text", text: "Board snapshot updated" }], details: { tasks, nextId: 8 } } });
+const initial = () => [user("user", "Confirmed #5 passed all agreed acceptance checks. Reconcile completion only; do not start other work."), snapshot([task])];
+function setup(branch: unknown[] = initial(), config = {}, opts: { persist?: boolean; modelRegistry?: unknown } = {}) {
+	const handlers = new Map<string, ((e: any, c: any) => Promise<void>)[]>();
+	const commands = new Map<string, any>();
+	const sent: { message: any; options: any }[] = [];
+	const listeners = new Map<string, ((d: unknown) => void)[]>();
+	const renderers = new Map<string, MessageRenderer>();
+	const pi = {
+		on: (name: string, h: any) => handlers.set(name, [...(handlers.get(name) ?? []), h]),
+		registerCommand: (name: string, c: any) => commands.set(name, c),
+		registerMessageRenderer: (type: string, render: MessageRenderer) => renderers.set(type, render),
+		sendMessage: (message: any, options: any) => sent.push({ message, options }),
+		// `persist` adds a real appendEntry so receipts/answers become durable on the branch.
+		...(opts.persist ? { appendEntry: (customType: string, data: unknown) => { branch.push({ id: `c${branch.length}`, type: "custom", customType, data }); } } : {}),
+		events: { on: (name: string, h: any) => { listeners.set(name, [...(listeners.get(name) ?? []), h]); return () => {}; } },
+	} as unknown as ExtensionAPI;
+	const ctx = { sessionManager: { getSessionId: () => "s1", getBranch: () => branch, buildContextEntries: () => branch }, ui: { notify: mock((_text: string, _level?: string) => {}) },
+		...(opts.modelRegistry ? { modelRegistry: opts.modelRegistry } : {}) };
+	makeExtension(pi, { ...DEFAULT_CONFIG, apiKeyEnvVar: "JEV_AUDIT_TEST_KEY", ...config });
+	const emit = async (name: string, event = {}) => { for (const h of handlers.get(name) ?? []) await h(event, ctx); };
+	const hook = (values = { STOP_KIND: "AI_UNLOCK", REASON_TYPE: "JOB_DONE", REASON: "done" }) => { for (const h of listeners.get("pi:semantic-hook:v1") ?? []) h({ version: 1, name: "user-ready", values }); };
+	return { branch, ctx, sent, emit, hook, handlers, commands, listeners, renderers, manual: () => commands.get("jev-audit").handler("", ctx) as Promise<void> };
+}
+const tick = () => new Promise((r) => setTimeout(r, 0));
+const textWithoutLayout = (text: string) => stripVTControlCharacters(text).replace(/\s+/g, "");
+function advisoryComponent(h: ReturnType<typeof setup>, content: string, expanded = false) {
+	const component = new CustomMessageComponent({ role: "custom", customType: "jev-todo-audit", content, display: true, timestamp: 0 }, h.renderers.get("jev-todo-audit"));
+	component.setExpanded(expanded);
+	return component;
+}
+test("disabled audit keeps a callable command without doing judgment work", async () => {
+	scriptParserCompletion();
+	const h = setup(initial(), { enabled: false });
+	expect(h.commands.has("jev-audit")).toBe(true);
+	for (const args of ["", "full"]) await h.commands.get("jev-audit").handler(args, h.ctx);
+	expect(h.ctx.ui.notify.mock.calls).toHaveLength(2);
+	for (const [message] of h.ctx.ui.notify.mock.calls) expect(message).toContain("disabled");
+	expect(h.handlers.size).toBe(0);
+	expect(h.listeners.size).toBe(0);
+	expect(h.sent).toHaveLength(0);
+	expect(reviewCalls).toHaveLength(0);
+	expect(requests).toHaveLength(0);
+});
+
+for (const notifyOnAligned of [false, true]) {
+	test(`A1: one full ordinary advisory body is visible with notifyOnAligned=${notifyOnAligned}`, async () => {
+		scriptParserCompletion();
+		const h = setup(initial(), { notifyOnAligned, legacyFields: [] });
+		await h.emit("session_start"); await h.manual();
+		expect(h.sent).toHaveLength(1);
+		const { message, options } = h.sent[0];
+		expect(message.display).toBe(true);
+		expect(message.content).toContain('mark #5 "Parser" completed');
+		expect(message.content).toContain("Evidence [user]");
+		expectPluginAdvisory(message.content);
+		expect(message.content).toContain("normal task progress");
+		expect(options).toEqual({ deliverAs: "steer" });
+		const component = advisoryComponent(h, message.content);
+		const collapsed = textWithoutLayout(component.render(80).join("\n"));
+		expect(collapsed).toContain(textWithoutLayout('mark #5 "Parser" completed'));
+		expect(collapsed).toContain(textWithoutLayout("Evidence [user]"));
+		expect(collapsed).not.toContain(textWithoutLayout("Plugin reference feedback"));
+		component.setExpanded(true);
+		expect(textWithoutLayout(component.render(80).join("\n"))).toBe(textWithoutLayout(message.content));
+		expect(message.content.match(/pi-jev-todo-audit/g)).toHaveLength(1);
+		expect(message.content).not.toContain("[jev audit");
+		expect(reviewCalls).toHaveLength(1);
+	});
+	test(`A1: a visible ordinary advisory needs no delivery receipt with notifyOnAligned=${notifyOnAligned}`, async () => {
+		scriptParserCompletion();
+		const h = setup(initial(), { notifyOnAligned, legacyFields: [] });
+		await h.emit("session_start"); await h.manual();
+		expect(h.sent).toHaveLength(1);
+		expect(h.ctx.ui.notify.mock.calls).toHaveLength(0);
+	});
+}
+
+test("A1/A6: only an exact terminal shared footer folds; quoted evidence and unknown endings stay visible", async () => {
+	scriptParserCompletion();
+	const h = setup(initial(), { legacyFields: [] });
+	await h.emit("session_start"); await h.manual();
+	const sent = h.sent[0].message.content;
+	const footer = sent.slice(sent.indexOf("\n\nPlugin reference feedback"));
+	const business = 'pi-jev-todo-audit | recorded review\n\nEvidence [report-1]: quoted notice follows.' + footer + '\nBOARD ONLY: reconcile #5 and return control; do not execute tasks.';
+	const body = business + footer;
+	const component = advisoryComponent(h, body);
+	for (const width of [24, 80]) {
+		component.setExpanded(false);
+		expect(textWithoutLayout(component.render(width).join("\n"))).toBe(textWithoutLayout(business));
+		component.setExpanded(true);
+		expect(textWithoutLayout(component.render(width).join("\n"))).toBe(textWithoutLayout(body));
+	}
+	for (const unknown of [body + "\nKeep this extra instruction.", body.replaceAll("Plugin reference feedback", "Legacy feedback"), "Legacy header" + footer]) {
+		expect(textWithoutLayout(advisoryComponent(h, unknown).render(80).join("\n"))).toBe(textWithoutLayout(unknown));
+	}
+	expect(h.sent[0].message.content).toBe(sent);
+	expect(reviewCalls).toHaveLength(1);
+});
+
+test("A6: stored advisories survive resize, expansion and theme changes without regeneration", () => {
+	const h = setup(initial(), { enabled: false });
+	const body = '[pi-jev-todo-audit plugin advisory]\nOriginal stored wording.\nEvidence [报告-42]: "检查通过 — café 👩‍💻"\nDo not bypass a wait.\n' + "Preserved detail.\n".repeat(20);
+	const component = advisoryComponent(h, body);
+	try {
+		for (const theme of ["dark", "light"]) {
+			initTheme(theme, false);
+			component.invalidate();
+			for (const expanded of [false, true]) {
+				component.setExpanded(expanded);
+				for (const pad of [0, 2]) {
+					component.setOutputPad(pad);
+					for (const width of [24, 80]) {
+						const lines = component.render(width);
+						expect(lines.every((line) => visibleWidth(line) <= width)).toBe(true);
+						expect(textWithoutLayout(lines.join("\n"))).toBe(textWithoutLayout(body));
+					}
+				}
+			}
+		}
+	} finally { initTheme("dark", false); }
+	const fallback = new CustomMessageComponent({ role: "custom", customType: "jev-todo-audit", content: [{ type: "text", text: "Legacy text block" }], display: true, timestamp: 0 }, h.renderers.get("jev-todo-audit"));
+	expect(stripVTControlCharacters(fallback.render(80).join("\n"))).toContain("Legacy text block");
+	expect(h.sent).toHaveLength(0); expect(reviewCalls).toHaveLength(0);
+});
+
+test("A6: headless delivery has the same content, keys and options without requiring a UI", async () => {
+	scriptParserCompletion();
+	const visible = setup(initial(), { legacyFields: [] });
+	await visible.emit("session_start"); await visible.manual();
+	const h = setup(initial(), { legacyFields: [] });
+	const { ui: _ui, ...headless } = h.ctx;
+	for (const handler of h.handlers.get("session_start") ?? []) await handler({}, headless);
+	await h.commands.get("jev-audit").handler("", headless);
+	expect(h.sent).toEqual(visible.sent);
+	expect(h.ctx.ui.notify.mock.calls).toHaveLength(0);
+	expect(reviewCalls).toHaveLength(2);
+});
+
+test("A7: generated clarification redacts known secrets before either reader sees it", async () => {
+	const secret = "opaque-credential-no-prefix";
+	process.env.JEV_AUDIT_TEST_KEY = secret;
+	atReviewPort(() => ({ ...rejectedAtPort(), contextOverflow: true, errorMessage: `cannot admit ${secret}` }));
+	// Report IDs are included in clarification bodies too, not just report text.
+	const h = setup([...initial(), { id: `report-${secret}`, type: "message", message: { role: "assistant", content: "Acceptance scope still needs clarification." } }], { legacyFields: [] });
+	await h.emit("session_start"); await h.manual();
+	expect(h.sent).toHaveLength(1);
+	const content = h.sent[0].message.content;
+	expect(content).not.toContain(secret);
+	expect(content).toContain("[REDACTED]");
+	const shown = advisoryComponent(h, content, true).render(80).join("\n");
+	expect(shown).not.toContain(secret);
+	expect(textWithoutLayout(shown)).toBe(textWithoutLayout(content));
+	expect(JSON.stringify(h.ctx.ui.notify.mock.calls)).not.toContain(secret);
+	expect(reviewCalls).toHaveLength(1);
+});
+
+function expectPluginAdvisory(content: string) {
+	expect(content).toContain("pi-jev-todo-audit");
+	expect(content).toContain("not a user message");
+	expect(content).toMatch(/not a user (?:message, )?instruction or new authorization/);
+	expect(content).toContain("do not interrupt or switch tasks solely");
+	expect(content).toContain("natural checkpoint");
+	expect(content).toMatch(/No separate reply(?: or acknowledgment)? is needed/);
+}
+
+const fidelityInput = () => {
+	const brief = { text: "XML chosen; all checks reported passed.", sources: ["origin"], covers: ["other"] };
+	const scoped = { ...task, metadata: { auditBrief: brief } };
+	const origin = { id: "origin", type: "message", message: { role: "assistant", content: "XML acceptance checks passed." } };
+	const other = { id: "other", type: "message", message: { role: "assistant", content: "Legacy supporting report." } };
+	return { brief, scoped, origin, other, branch: [user("user", "Reconcile #5 only; no other execution."), snapshot([scoped]), origin, other] };
+};
+
+for (const change of ["fact", "source", "coverage", "role"]) test(`I1: ${change}-only material change refreshes the same-label review`, async () => {
+	const input = fidelityInput();
+	answers = { ...answers, drift: a("on_track"), task_board_5: a("accurate"), task_granularity_5: a("appropriate") };
+	atReviewPort(acceptedAtPort);
+	const h = setup(input.branch, {}, { persist: true }); await h.emit("session_start"); await h.manual();
+	await h.manual(); expect(reviewCalls).toHaveLength(2);
+	expect(reviewCalls[1].request).toEqual(reviewCalls[0].request);
+	expect(reviewCalls[1].projection).toEqual(reviewCalls[0].projection);
+	if (change === "fact") input.brief.text = "CSV chosen; validation remains pending.";
+	if (change === "source") input.brief.sources = ["other"];
+	if (change === "coverage") input.brief.covers = [];
+	if (change === "role") (input.origin.message as any).role = "custom";
+	answers.task_status_5 = a("still_ongoing");
+	await h.manual();
+	expect(reviewCalls).toHaveLength(3);
+	expect(reviewCalls[2].request).not.toEqual(reviewCalls[0].request);
+	expect(reviewCalls[2].projection.state).not.toEqual(reviewCalls[0].projection.state);
+	expect(requests).toHaveLength(0); // audit never uses HTTP; paid reuse is tested with real service/Pi.
+	expect(h.sent).toHaveLength(1); // new facts never inherit the old completion answer
+});
+
+test("I1: a no-op board read keeps identical brief evaluations reusable", async () => {
+	const input = fidelityInput();
+	answers = { ...answers, drift: a("on_track"), task_board_5: a("accurate"), task_granularity_5: a("appropriate") };
+	atReviewPort(acceptedAtPort);
+	const h = setup(input.branch, {}, { persist: true }); await h.emit("session_start"); await h.manual();
+	const reordered = { ...input.scoped, metadata: { auditBrief: { covers: ["other"], sources: ["origin"], text: input.brief.text } } };
+	h.branch.push({ id: "read-call", type: "message", message: { role: "assistant", content: [{ type: "toolCall", id: "read-todo", name: "todo", arguments: { action: "list" } }] } });
+	h.branch.push({ ...snapshot([reordered], "no-op-read"), message: { ...snapshot([reordered]).message, toolCallId: "read-todo" } });
+	await h.manual();
+	expect(reviewCalls).toHaveLength(2);
+	expect(reviewCalls[1].request).toEqual(reviewCalls[0].request);
+	expect(reviewCalls[1].projection).toEqual(reviewCalls[0].projection);
+	expect(requests).toHaveLength(0); expect(h.sent).toHaveLength(1);
+});
+
+test("I1: a same-id reported fact refreshes an identical terminal stop without rearming acknowledgment advice", async () => {
+	const input = fidelityInput();
+	answers = { ...answers, drift: a("on_track"), task_board_5: a("accurate"), task_granularity_5: a("appropriate"), task_evidence_5: a("origin") };
+	atReviewPort(acceptedAtPort);
+	const h = setup(input.branch, {}, { persist: true }); await h.emit("session_start"); h.hook(); await tick();
+	input.origin.message.content = "CSV acceptance checks passed for the revised scope.";
+	h.hook(); await tick();
+	expect(reviewCalls).toHaveLength(2);
+	expect(reviewCalls[1].request.evidence?.find((r) => r.id === "origin")?.text).toBe("CSV acceptance checks passed for the revised scope.");
+	expect(requests).toHaveLength(0);
+	expect(h.sent).toHaveLength(2);
+	h.branch.push({ id: "ack", type: "message", message: { role: "assistant", content: "Acknowledged." } });
+	h.hook(); await tick();
+	expect(h.sent).toHaveLength(2);
+});
+
+for (const change of ["fact", "source", "coverage", "report", "role", "effective-history"]) test(`I1: in-flight ${change} change suppresses stale corrections`, async () => {
+	const input = fidelityInput();
+	answers = { ...answers, drift: a("on_track"), task_board_5: a("accurate"), task_granularity_5: a("appropriate") };
+	let release!: (r: ReviewResult) => void;
+	atReviewPort(() => new Promise<ReviewResult>((resolve) => { release = resolve; }));
+	const h = setup(input.branch, {}, { persist: true }); await h.emit("session_start"); const pending = h.manual(); await tick();
+	expect(reviewCalls).toHaveLength(1);
+	const completed = acceptedAtPort(reviewCalls[0]);
+	if (change === "fact") input.brief.text = "CSV pending validation.";
+	if (change === "source") input.brief.sources = ["other"];
+	if (change === "coverage") input.brief.covers = [];
+	if (change === "report") input.origin.message.content = "CSV still requires validation.";
+	if (change === "role") (input.origin.message as any).role = "custom";
+	if (change === "effective-history") h.ctx.sessionManager.buildContextEntries = () => h.branch.filter((e: any) => e.id !== "origin");
+	publishPortProgress(reviewCalls[0], completed); // Late completion cannot advance a changed business context.
+	release(completed); await pending;
+	expect(h.branch.filter((e: any) => e.data?.kind === "receipt")).toHaveLength(0);
+	expect(requests).toHaveLength(0);
+	expect(h.sent).toHaveLength(0);
+});
+for (const mode of ["", "full"]) for (const sources of [[], ["support-report"]]) test(`P1: ${mode || "cold"} covered completion report stays selectable with ${sources.length ? "support-only" : "empty"} sources`, async () => {
+	const completion = { id: "completion-report", type: "message", message: { role: "assistant", content: "Task 5 investigation complete. All agreed parser acceptance checks passed. Rollout still awaits user approval." } };
+	const support = { id: "support-report", type: "message", message: { role: "assistant", content: "Current checkout is clean; no new acceptance check outcome." } };
+	const scoped = { ...task, metadata: { auditBrief: { text: "Parser acceptance scope reported complete; rollout awaits approval.", sources, covers: [completion.id] } } };
+	answers = { ...answers, drift: a("on_track"), task_status_5: a("actually_completed"), task_evidence_5: a(completion.id), task_board_5: a("accurate"), task_granularity_5: a("appropriate") };
+	atReviewPort(completedAtPort);
+	const h = setup([user("user", "Investigate #5 and reconcile only. No rollout without approval."), snapshot([scoped]), completion, support], {}, { persist: true });
+	await h.emit("session_start"); await h.commands.get("jev-audit").handler(mode, h.ctx);
+	expect(reviewCalls).toHaveLength(1);
+	expect(reviewCalls[0].request.evidence?.find((r) => r.id === completion.id)?.text).toBe(completion.message.content);
+	expect(packetAtPort(reviewCalls[0]).records.find((r: any) => r.id === completion.id).kind).toBe("assistant");
+	expect(reviewCalls[0].projection.questions.task_evidence_5.criteria).toHaveProperty(completion.id);
+	expect(requests).toHaveLength(0);
+	expect(h.branch.filter((e: any) => e.data?.kind === "receipt")).toHaveLength(1);
+	expect(h.sent).toHaveLength(1); expect(h.sent[0].message.content).toContain("Evidence [completion-report]");
+	expect(h.sent[0].options.triggerTurn).not.toBe(true);
+});
+
+test("P1/F1: a processed completion report stays whole and selectable without a prior primary pin", async () => {
+	const content = "Task 5's entire parser acceptance scope passed; rollout awaits approval. " + "Acceptance detail. ".repeat(300);
+	const completion = { id: "completion-report", type: "message", message: { role: "assistant", content } };
+	const scoped = { ...task, metadata: { auditBrief: { text: "Parser acceptance reported complete; no rollout approval.", sources: [], covers: [completion.id] } } };
+	answers = { ...answers, drift: a("on_track"), task_status_5: a("unclear"), task_evidence_5: a("insufficient_evidence"), task_board_5: a("accurate"), task_granularity_5: a("appropriate") };
+	atReviewPort(completedAtPort);
+	const h = setup([user("user", "Investigate and reconcile #5 only; no rollout without approval."), snapshot([scoped]), completion], {}, { persist: true });
+	await h.emit("session_start"); await h.manual();
+	expect(h.branch.filter((e: any) => e.data?.kind === "receipt")).toHaveLength(1);
+	h.branch.push({ id: "ack", type: "message", message: { role: "assistant", content: "Rechecking the same accepted scope." } });
+	answers.task_status_5 = a("actually_completed"); answers.task_evidence_5 = a(completion.id);
+	await h.manual();
+	expect(reviewCalls).toHaveLength(2);
+	expect(reviewCalls[1].options.checkpoint).toBeUndefined();
+	expect(reviewCalls[1].request.evidence?.find((r) => r.id === completion.id)?.text).toBe(content);
+	expect(reviewCalls[1].projection.questions.task_evidence_5.criteria).toHaveProperty(completion.id);
+	expect(requests).toHaveLength(0);
+	expect(h.sent).toHaveLength(1); expect(h.sent[0].message.content).toContain("Evidence [completion-report]");
+});
+
+const largeFidelityInput = (withBrief: boolean) => {
+	const reports = Array.from({ length: 260 }, (_, i) => ({ id: `report${i}`, type: "message", message: { role: "assistant",
+		content: i === 0 ? "XML chosen; malformed input rejected; investigation complete, rollout awaits user approval." : `Reported investigation detail ${i}; no new permission.` } }));
+	const scoped = { ...task, ...(withBrief ? { metadata: { auditBrief: {
+		text: "XML chosen; malformed input rejected; investigation complete, rollout awaits user approval.",
+		sources: ["user", "report0"], covers: reports.map((r) => r.id),
+	} } } : {}) };
+	return { reports, scoped, branch: [user("user", "Investigate #5; do not roll out without approval."), snapshot([scoped]), ...reports] };
+};
+
+test("A3: a 256-option Choice exposes the complete scoped clarification once", async () => {
+	const input = largeFidelityInput(false);
+	answers = { ...parserCompletion(), task_status_5: a("still_ongoing") };
+	atReviewPort((call) => ({ ...acceptedAtPort(call), unresolved: call.projection.unresolved ?? [] }));
+	// 252 reports + user + board event + task supplement + fallback = 256 options.
+	const h = setup([input.branch[0], snapshot([input.scoped]), ...input.reports.slice(0, 252)], { legacyFields: [] }, { persist: true });
+	await h.emit("session_start"); await h.manual();
+	expect(h.sent).toHaveLength(1);
+	const { message, options } = h.sent[0];
+	expect(message.content.split("\n")[0]).toContain("CHOICE CONTEXT INCOMPLETE");
+	expect(message.content).toContain("task_evidence_5: 256 options (limit 255, including fallback)");
+	expect(message.content).toContain("no model judgment or provider attempt");
+	expect(message.content).toContain("sources is not an exclusive allowlist");
+	expect(message.content).toContain("covers");
+	expect(message.content).toContain("primary");
+	expect(message.content).toContain("does not guarantee");
+	expectPluginAdvisory(message.content);
+	expect(textWithoutLayout(advisoryComponent(h, message.content, true).render(80).join("\n"))).toBe(textWithoutLayout(message.content));
+	expect(options).toEqual({ deliverAs: "steer" });
+	expect(reviewCalls[0].projection.questions).not.toHaveProperty("task_evidence_5");
+	const collapsed = textWithoutLayout(advisoryComponent(h, message.content).render(80).join("\n"));
+	expect(collapsed).toContain(textWithoutLayout("task_evidence_5: 256 options (limit 255, including fallback)"));
+	expect(collapsed).toContain(textWithoutLayout("sources is not an exclusive allowlist"));
+	expect(collapsed).not.toContain(textWithoutLayout("Plugin reference feedback"));
+	await h.manual();
+	expect(h.sent).toHaveLength(1);
+	expect(requests).toHaveLength(0);
+});
+
+for (const mode of ["", "full"]) test(`P2: ${mode || "cold"} known task-object scopes bound evidence without excluding public primary reports`, async () => {
+	const input = largeFidelityInput(true);
+	const others = Array.from({ length: 260 }, (_, i) => ({ ...task, id: i + 10, status: "completed" as const }));
+	input.scoped.metadata!.auditBrief.covers = ["report0"];
+	answers = { ...answers, drift: a("blocked"), task_status_5: a("blocked"), task_evidence_5: a("report0"), task_board_5: a("needs_reconciliation"), task_granularity_5: a("blocked") };
+	atReviewPort(acceptedAtPort);
+	const h = setup([input.branch[0], snapshot([input.scoped, ...others]), input.reports[0]], { apiUrl: "https://fixture.invalid/v1/systemone" }, { persist: true }); await h.emit("session_start");
+	await h.commands.get("jev-audit").handler(mode, h.ctx);
+	expect(reviewCalls).toHaveLength(1);
+	for (const q of Object.values(reviewCalls[0].projection.questions)) expect(Object.keys(q.criteria).length).toBeLessThanOrEqual(255);
+	expect(reviewCalls[0].projection.questions.task_evidence_5.criteria).toHaveProperty("report0");
+	expect(reviewCalls[0].projection.questions.task_evidence_5.criteria).not.toHaveProperty("task:269");
+	const packet = packetAtPort(reviewCalls[0]);
+	expect(packet.records.filter((r: any) => r.kind === "supplement")).toHaveLength(261);
+	expect(reviewCalls[0].request.evidence?.find((r) => r.id === "report0")?.text).toContain("rollout awaits user approval");
+	expect(requests).toHaveLength(0);
+	expect(packet.candidateManifests.task_evidence_5.scope).toEqual(["task:5"]);
+	const correction = h.sent.filter((s) => s.message.content.includes("Evidence [report0]"));
+	expect(correction).toHaveLength(1);
+	expect(correction[0].message.content).toContain("do not execute it");
+	expect(correction[0].options.triggerTurn).not.toBe(true);
+});
+
+for (const mode of ["", "full"]) for (const withBrief of [false, true]) test(`P2/P3: ${mode || "cold"} 260 potential primary reports ${withBrief ? "with legal brief" : "without brief"} stay incomplete without hidden loss`, async () => {
+	const input = largeFidelityInput(withBrief);
+	answers = { ...answers, drift: a("on_track"), task_board_5: a("accurate"), task_granularity_5: a("appropriate") };
+	atReviewPort((call) => ({ ...acceptedAtPort(call), unresolved: call.projection.unresolved ?? [] }));
+	const h = setup(input.branch, { apiUrl: "https://fixture.invalid/v1/systemone" }, { persist: true }); await h.emit("session_start");
+	await h.commands.get("jev-audit").handler(mode, h.ctx);
+	expect(reviewCalls).toHaveLength(1);
+	for (const q of Object.values(reviewCalls[0].projection.questions)) expect(Object.keys(q.criteria).length).toBeLessThanOrEqual(255);
+	expect(reviewCalls[0].projection.questions).not.toHaveProperty("task_evidence_5");
+	expect(reviewCalls[0].projection.questions).not.toHaveProperty("work_evidence");
+	const packet = packetAtPort(reviewCalls[0]);
+	expect(reviewCalls[0].request.evidence?.filter((r) => r.metadata?.kind === "assistant")).toHaveLength(260);
+	if (withBrief) expect(packet.factualMaterial["task:5"].covers).toContainEqual({ id: "report259", role: "assistant" });
+	else expect(packet.candidateManifests.task_evidence_5.unresolved).toContain("report259");
+	expect(packet.records.some((r: any) => r.id === "task:5")).toBe(true);
+	expect(h.branch.some((e: any) => e.data?.kind === "receipt")).toBe(false);
+	const clarifications = () => h.sent.filter((s) => s.message.content.includes("CHOICE CONTEXT INCOMPLETE"));
+	expect(clarifications()).toHaveLength(1);
+	expect(h.sent).toHaveLength(1); expect(clarifications()[0].options.triggerTurn).not.toBe(true);
+	expectPluginAdvisory(clarifications()[0].message.content);
+	expect(clarifications()[0].message.content).toMatch(/Repeating .* does not guarantee/);
+	const diag = () => h.branch.filter((e: any) => e.data?.kind === "diag").at(-1) as any;
+	expect(diag().data.diag.withheld.some((w: any) => w.question === "task_evidence_5" && w.count > 255)).toBe(true);
+	await h.commands.get("jev-audit").handler(mode, h.ctx);
+	expect(reviewCalls).toHaveLength(2); expect(clarifications()).toHaveLength(1);
+	expect(reviewCalls[1].request).toEqual(reviewCalls[0].request);
+	expect(reviewCalls[1].projection).toEqual(reviewCalls[0].projection);
+	expect(requests).toHaveLength(0);
+	expect(diag().data.diag.attempts).toHaveLength(0); // Scripted zero-attempt receipt stays zero; real reuse has its own wire gate.
+	expect(diag().data.diag.range).toEqual({ from: null, to: null });
+});
+
+test("P3: an oversized task evidence set withholds only that finding; a supported sibling still reconciles", async () => {
+	const related = Array.from({ length: 260 }, (_, i) => ({ ...task, id: i + 10, status: "completed" as const }));
+	const five = { ...task, metadata: { auditBrief: { text: "Task 5 depends on these task records.", sources: related.map((t) => `task:${t.id}`), covers: [] } } };
+	const six = { ...task, id: 6, subject: "Separate accepted outcome", metadata: { auditBrief: {
+		text: "Task 6's whole acceptance scope is reported passed and accepted; reconcile only.", sources: ["user", "six-report"], covers: [],
+	} } };
+	const branch = [user("user", "Confirmed #6 passed its entire acceptance scope. Reconcile #6 only. #5 remains under investigation."),
+		snapshot([five, six, ...related]), { id: "six-report", type: "message", message: { role: "assistant", content: "Task 6's entire agreed outcome passed and was accepted; no further execution." } }];
+	answers = { ...answers, drift: a("on_track"), task_board_5: a("accurate"), task_granularity_5: a("appropriate"),
+		task_status_6: a("actually_completed"), task_evidence_6: a("six-report"), task_board_6: a("accurate"), task_granularity_6: a("appropriate") };
+	atReviewPort((call) => ({ ...acceptedAtPort(call), unresolved: call.projection.unresolved ?? [] }));
+	const h = setup(branch, { apiUrl: "https://fixture.invalid/v1/systemone" }, { persist: true }); await h.emit("session_start"); await h.manual();
+	expect(reviewCalls).toHaveLength(1);
+	expect(reviewCalls[0].projection.questions).not.toHaveProperty("task_evidence_5");
+	expect(reviewCalls[0].projection.questions.task_evidence_6.criteria).toHaveProperty("six-report");
+	expect(packetAtPort(reviewCalls[0]).records.some((r: any) => r.id === "task:269")).toBe(true);
+	const changes = h.sent.filter((s) => s.message.content.includes("Evidence ["));
+	expect(changes).toHaveLength(1); expect(changes[0].message.content).toContain('mark #6 "Separate accepted outcome" completed');
+	expect(changes[0].message.content).not.toContain('mark #5'); expect(changes[0].message.content).toContain("Evidence [six-report]");
+	expect(h.branch.some((e: any) => e.data?.kind === "receipt")).toBe(false);
+	await h.manual(); expect(reviewCalls).toHaveLength(2); expect(requests).toHaveLength(0); expect(h.sent).toHaveLength(2); // one scoped clarification + supported correction, neither repeated
+});
+
+test("P3: an oversized board-matching Choice loses no tasks and grants no work finding, while independent accepted work remains usable", async () => {
+	const tasks = Array.from({ length: 256 }, (_, i) => ({ ...task, id: i + 1, status: i + 1 === 5 ? "in_progress" as const : "completed" as const }));
+	const h = setup([user("user", "Confirmed #5 passes the entire agreed acceptance scope; update only its board status."), snapshot(tasks)],
+		{ apiUrl: "https://fixture.invalid/v1/systemone" }, { persist: true });
+	answers = { ...answers, current_match: a("not_on_board"), interaction: a("working"), alignment: a("no_in_progress_task"),
+		drift: a("on_track"), task_board_5: a("accurate"), task_granularity_5: a("appropriate") };
+	atReviewPort((call) => ({ ...acceptedAtPort(call), unresolved: call.projection.unresolved ?? [] }));
+	await h.emit("session_start"); await h.manual();
+	expect(reviewCalls).toHaveLength(1);
+	expect(reviewCalls[0].projection.questions).not.toHaveProperty("current_match");
+	for (const q of Object.values(reviewCalls[0].projection.questions)) expect(Object.keys(q.criteria).length).toBeLessThanOrEqual(255);
+	expect(packetAtPort(reviewCalls[0]).records.filter((r: any) => r.kind === "supplement")).toHaveLength(256);
+	const changes = h.sent.filter((s) => s.message.content.includes("Evidence ["));
+	expect(changes).toHaveLength(1); expect(changes[0].message.content).toContain('mark #5 "Parser" completed');
+	expect(changes[0].message.content).not.toContain("CONTINUE"); expect(changes[0].message.content).not.toContain("CREATE");
+	expect(h.branch.some((e: any) => e.data?.kind === "receipt")).toBe(false);
+	const diag = h.branch.filter((e: any) => e.data?.kind === "diag").at(-1) as any;
+	expect(diag.data.diag.withheld).toContainEqual({ question: "current_match", count: 257, limit: 255 });
+	await h.manual(); expect(reviewCalls).toHaveLength(2); expect(requests).toHaveLength(0); expect(h.sent).toHaveLength(2);
+});
+
+test("I1/R1: changing the remembered primary changes actual candidate definitions, not just the old fact/cursor identity", async () => {
+	const input = fidelityInput(); input.brief.covers = ["origin", "other"];
+	const six = { ...task, id: 6, status: "completed" as const };
+	input.brief.sources = ["task:6"];
+	input.branch[1] = snapshot([input.scoped, six]);
+	answers = { ...answers, task_status_5: a("still_ongoing"), task_evidence_5: a("task:6"), drift: a("on_track"), task_board_5: a("accurate"), task_granularity_5: a("appropriate") };
+	const scriptedCheckpoints = new Map<string, ReviewResult["answers"]>();
+	atReviewPort((call) => {
+		const result = completedAtPort(call);
+		scriptedCheckpoints.set(result.progress.stages[0].checkpoint, result.answers);
+		return result;
+	}, (options) => options.checkpoint ? scriptedCheckpoints.get(options.checkpoint)! : {});
+	const h = setup(input.branch, { apiUrl: "https://fixture.invalid/v1/systemone" }, { persist: true }); await h.emit("session_start"); await h.manual();
+	input.brief.sources = ["other"]; answers.task_evidence_5 = a("other");
+	await h.manual();
+	expect(reviewCalls[1].projection.questions.task_evidence_5.criteria).toHaveProperty("task:6"); // prior reference remains uncertain until refreshed
+	expect(reviewCalls[1].projection.questions.task_evidence_5.criteria).toHaveProperty("other");
+	await h.manual();
+	expect(reviewCalls).toHaveLength(3);
+	expect(reviewCalls[2].options.checkpoint).toBeUndefined();
+	expect(reviewCalls[2].projection.questions.task_evidence_5.criteria).not.toHaveProperty("task:6");
+	expect(reviewCalls[2].projection.questions.task_evidence_5.criteria).toHaveProperty("origin"); // coverage never retires a public primary candidate
+	expect(reviewCalls[2].projection.questions.task_evidence_5.criteria).toHaveProperty("other");
+	await h.manual(); expect(reviewCalls).toHaveLength(4);
+	expect(reviewCalls[3].request).toEqual(reviewCalls[2].request);
+	expect(reviewCalls[3].projection).toEqual(reviewCalls[2].projection);
+	expect(requests).toHaveLength(0); expect(h.sent).toHaveLength(0);
+});
+
+// Decode only the actual projection's metadata. Source bodies stay in request.evidence;
+// never rehydrate a fabricated old request packet to stand in for raw transport.
+const packetAtPort = (call: ReviewCall) => {
+	const state = String(call.projection.state.audit);
+	const start = state.indexOf('{"records"');
+	return JSON.parse(state.slice(start, state.indexOf("\nInterpret evidence", start)));
+};
+const packetOf = (request: AuditRequest) => {
+	const start = request.state.indexOf('{"records"');
+	return JSON.parse(request.state.slice(start, request.state.indexOf("\nInterpret evidence", start)));
+};
+
+test("F1: a supplied current brief is scoped reported data with original source roles, serialized once", async () => {
+	scriptParserCompletion();
+	const text = "Current format is XML; rollout still awaits user approval.";
+	const h = setup([user("user", "Investigate #5; no rollout without approval."),
+		{ id: "decision", type: "message", message: { role: "assistant", content: "Chose XML during investigation." } },
+		snapshot([{ ...task, metadata: { auditBrief: { text, sources: ["user", "decision"], covers: ["decision"] } } }]),
+	]);
+	await h.emit("session_start"); await h.manual();
+	const packet = packetAtPort(reviewCalls[0]);
+	expect(packet.factualMaterial?.["task:5"]).toEqual({ role: "reported", valid: true,
+		sources: [{ id: "user", role: "user" }, { id: "decision", role: "assistant" }],
+		covers: [{ id: "decision", role: "assistant" }], gaps: [],
+	});
+	expect(String(reviewCalls[0].projection.state.audit).split(text).length - 1).toBe(1);
+	expect(packet.records.find((r: any) => r.id === "task:5").text).toContain(text);
+	expect(packet.records.find((r: any) => r.id === "user").kind).toBe("user");
+});
+
+test("F3: missing brief lineage stays a gap, not completion proof; legacy tasks remain useful", async () => {
+	scriptParserCompletion();
+	const h = setup([user("user", "Investigate #5, awaiting approval."), snapshot([{ ...task,
+		metadata: { auditBrief: { text: "Investigation reported complete; approval outstanding.", sources: ["gone"], covers: ["gone"] } },
+	}])]);
+	answers.task_evidence_5 = a("task:5");
+	await h.emit("session_start"); await h.manual();
+	const material = packetAtPort(reviewCalls[0]).factualMaterial?.["task:5"];
+	expect(material?.valid).toBe(false);
+	expect(material?.gaps).toContainEqual({ id: "gone", reason: "source unavailable" });
+	expect(reviewCalls[0].projection.state.audit).toContain("Investigation reported complete");
+	expect(h.sent).toHaveLength(0);
+	answers.task_evidence_5 = a("user");
+	const legacy = setup(); await legacy.emit("session_start"); await legacy.manual();
+	expect(reviewCalls.at(-1)!.projection.state.audit).toContain(task.description);
+	expect(legacy.sent).toHaveLength(1);
+	expect(legacy.sent[0].message.content).toContain("Evidence [user]");
+});
+
+test("F3: coverage cannot erase user, summary or another task; excluded and redacted origins stay gaps", async () => {
+	atReviewPort(rejectedAtPort); // This case tests projection, not a model's business decision.
+	const h = setup([user("user", "Work on #5 only; await approval."), user("abandoned", "ABANDONED_FACT"),
+		{ id: "redacted", type: "message", message: { role: "assistant", content: "Visible report password=SECRET_VALUE" } },
+		{ id: "summary", type: "compaction", summary: "Host account, not an original report" },
+		{ id: "private", type: "custom", customType: "internal", data: "PRIVATE_BODY" },
+		snapshot([{ ...task, metadata: { auditBrief: { text: "Current reported blocker", sources: ["redacted", "abandoned", "private"], covers: ["user", "summary", "task:6"] } } },
+			{ ...task, id: 6, description: "OTHER_TASK_FACT", status: "pending" }]),
+	]);
+	h.ctx.sessionManager.buildContextEntries = () => h.branch.filter((e: any) => e.id !== "abandoned");
+	await h.emit("session_start"); await h.manual();
+	const packet = packetAtPort(reviewCalls[0]), material = packet.factualMaterial["task:5"];
+	expect(material.valid).toBe(false);
+	expect(material.sources).toContainEqual({ id: "redacted", role: "assistant" });
+	for (const id of ["redacted", "abandoned", "private", "user", "summary", "task:6"]) expect(material.gaps.some((g: any) => g.id === id)).toBe(true);
+	for (const hidden of ["ABANDONED_FACT", "SECRET_VALUE", "PRIVATE_BODY"]) expect(JSON.stringify(reviewCalls[0].request)).not.toContain(hidden);
+	expect(reviewCalls[0].projection.state.audit).toContain("OTHER_TASK_FACT");
+	expect(packet.records.find((r: any) => r.id === "user").protected).toBe(true);
+});
+
+test("F3: empty reference lists are permitted; malformed brief data stays qualified without breaking legacy prose", async () => {
+	scriptParserCompletion();
+	for (const brief of [{ text: "Reported blocker", sources: [], covers: [] }, { text: 7, sources: "bad", covers: [null] }]) {
+		const h = setup([user("user", "Confirmed #5 is complete; reconcile only."), snapshot([{ ...task, metadata: { auditBrief: brief } }])]);
+		await h.emit("session_start"); await h.manual();
+		const packet = packetAtPort(reviewCalls.at(-1)!);
+		expect(packet.factualMaterial["task:5"].valid).toBe(typeof brief.text === "string");
+		expect(reviewCalls.at(-1)!.projection.state.audit).toContain(task.description);
+		expect(h.sent).toHaveLength(1); // An independent user anchor remains usable despite an unrelated malformed report.
+	}
+});
+
+for (const withReports of [true, false]) test(`A4/A5: factual clarification keeps ${withReports ? "public origins" : "missing origins"} and failure remains UI-only`, async () => {
+	atReviewPort(() => ({ ...rejectedAtPort(), contextOverflow: true }));
+	const reports = withReports ? ["report-1", "report-2"].map((id) => ({ id, type: "message", message: { role: "assistant", content: "Parser investigation reported; rollout awaits approval." } })) : [];
+	const h = setup([user("user", "Investigate #5; rollout awaits approval."), snapshot([task]), ...reports], { legacyFields: [] });
+	await h.emit("session_start"); await h.manual();
+	expect(h.sent).toHaveLength(1);
+	const { message, options } = h.sent[0];
+	expect(message.content.split("\n")[0]).toContain("FACTUAL CONTEXT INCOMPLETE");
+	expect(message.content).toContain("#5");
+	for (const id of withReports ? ["report-1", "report-2"] : ["none; do not invent origins"]) expect(message.content).toContain(id);
+	expect(message.content).toContain("Completed answers/ranges remain recorded");
+	expect(message.content).toContain("metadata.auditBrief = { text, sources, covers }");
+	expect(message.content).toContain("sources is not an exclusive allowlist");
+	expect(message.content).toContain("primary evidence");
+	expect(message.content).toContain("does not guarantee admission");
+	expect(message.content).toContain("no completion or continuation judgment");
+	expect(message.content).toContain("does not authorize execution or task-status changes");
+	expectPluginAdvisory(message.content);
+	expect(textWithoutLayout(advisoryComponent(h, message.content, true).render(80).join("\n"))).toBe(textWithoutLayout(message.content));
+	expect(options).toEqual({ deliverAs: "steer" });
+	const collapsed = textWithoutLayout(advisoryComponent(h, message.content).render(80).join("\n"));
+	for (const text of ["For #5", "does not authorize execution or task-status changes", ...(withReports ? ["report-1", "report-2"] : ["none; do not invent origins"])]) expect(collapsed).toContain(textWithoutLayout(text));
+	expect(collapsed).not.toContain(textWithoutLayout("Plugin reference feedback"));
+	expect(h.ctx.ui.notify.mock.calls).toEqual([["[jev audit manual] failed: scripted service refusal", "warning"]]);
+	expect(reviewCalls).toHaveLength(1);
+	await h.manual();
+	expect(h.sent).toHaveLength(1);
+});
+
+test("F2: an irreducible necessary floor asks once for a scoped account, without completion, wakeup or receipt advance", async () => {
+	const h = setup([user("user", "Investigate #5 only; approval is required before rollout."), snapshot([task]),
+		{ id: "needed", type: "message", message: { role: "assistant", content: "OLD_REQUIRED_FORMAT: XML; approval pending. " + "detail ".repeat(700) } }], {}, { persist: true });
+	answers = { ...answers, drift: a("on_track"), task_status_5: a("still_ongoing"), task_evidence_5: a("needed"), task_board_5: a("accurate"), task_granularity_5: a("appropriate") };
+	atReviewPort(completedAtPort);
+	await h.emit("session_start"); await h.manual();
+	expect(h.sent).toHaveLength(0);
+	const receipts = () => h.branch.filter((e: any) => e.data?.kind === "receipt");
+	const prior = receipts().length;
+	for (let i = 0; i < 6; i++) h.branch.push({ id: `later${i}`, type: "message", message: { role: "assistant", content: `New stage ${i}` } });
+	atReviewPort(() => ({ ...rejectedAtPort(), contextOverflow: true }));
+	await h.manual();
+	expect(receipts()).toHaveLength(prior);
+	expect(h.sent).toHaveLength(1);
+	expect(h.sent[0].message.content).toContain("FACTUAL CONTEXT INCOMPLETE");
+	expectPluginAdvisory(h.sent[0].message.content);
+	expect(h.sent[0].message.content).toContain("#5");
+	expect(h.sent[0].message.content).toContain("needed");
+	expect(h.sent[0].message.content).toContain("metadata.auditBrief");
+	expect(h.sent[0].options).toEqual({ deliverAs: "steer" });
+	expect(reviewCalls).toHaveLength(2);
+	expect(reviewCalls[1].request.evidence?.find((r) => r.id === "needed")?.text).toContain("OLD_REQUIRED_FORMAT");
+	expect(reviewCalls[1].request.evidence?.map((r) => r.id)).toEqual(["user", "board", "needed", "later0", "later1", "later2", "later3", "later4", "later5"]);
+	// Required originals remain in the real evidence envelope, not a second fixed-state copy.
+	// Consumer-cache reuse does not make an unsupported factual floor compressible.
+	await h.manual();
+	expect(receipts()).toHaveLength(prior); expect(h.sent).toHaveLength(1);
+});
+
+test("F2: an older ready brief never supplies permission against a later CSV/approval decision", async () => {
+	scriptParserCompletion();
+	const h = setup([user("old-user", "Proceed on the old XML plan."),
+		{ id: "old-report", type: "message", message: { role: "assistant", content: "XML investigation done; reported ready." } },
+		snapshot([{ ...task, metadata: { auditBrief: { text: "XML and ready to roll out", sources: ["old-user", "old-report"], covers: ["old-report"] } } }]),
+		user("new-user", "Use CSV instead. Await approval; do not execute rollout."),
+	], {}, { persist: true });
+	answers = { ...answers, drift: a("on_track"), task_status_5: a("actionable_now"), task_evidence_5: a("task:5"), work_evidence: a("task:5"),
+		task_board_5: a("accurate"), task_granularity_5: a("appropriate"), interaction: a("working") };
+	await h.emit("session_start"); h.hook(); await tick();
+	expect(reviewCalls).toHaveLength(1);
+	const packet = packetAtPort(reviewCalls[0]);
+	expect(packet.userBoundary).toBe("new-user");
+	expect(packet.records.filter((r: any) => r.kind === "user").map((r: any) => r.id)).toEqual(["old-user", "new-user"]);
+	expect(reviewCalls[0].request.evidence?.find((r) => r.id === "new-user")?.text).toContain("Use CSV instead. Await approval");
+	expect(h.sent).toHaveLength(0); // Even a synthetic working opinion cannot turn reported task data into authority.
+});
+
+test("F4: reload after compaction restores the durable frontier and qualified brief; hidden origins stay gaps, never fabricated evidence", async () => {
+	const briefText = "Investigation done; XML chosen; awaiting approval.";
+	const briefed = { ...task, metadata: { auditBrief: { text: briefText, sources: ["user", "origin", "kept"], covers: ["kept"] } } };
+	const branch = [user("user", "Investigate #5; no rollout without approval."),
+		{ id: "origin", type: "message", message: { role: "assistant", content: "CHOSEN_FORMAT: XML after comparing both." } },
+		{ id: "kept", type: "message", message: { role: "assistant", content: "Kept public report: still blocked on approval." } },
+		snapshot([briefed]),
+		user("latest", "Re-check the XML choice; still awaiting approval.")];
+	const receipts = () => branch.filter((e: any) => e.customType === "jev-todo-audit-ledger" && e.data?.kind === "receipt");
+	const diags = () => branch.filter((e: any) => e.customType === "jev-todo-audit-ledger" && e.data?.kind === "diag").map((e: any) => e.data.diag);
+	answers = { ...answers, drift: a("on_track"), task_status_5: a("still_ongoing"), task_evidence_5: a("kept"), task_board_5: a("accurate"), task_granularity_5: a("appropriate") };
+	atReviewPort(completedAtPort);
+	const first = setup(branch, {}, { persist: true });
+	await first.emit("session_start"); await first.manual();
+	expect(reviewCalls).toHaveLength(1);
+	expect(packetAtPort(reviewCalls[0]).factualMaterial["task:5"].valid).toBe(true);
+	expect(receipts().map((e: any) => e.data.receipt.through)).toEqual(["latest"]);
+	// Compaction + reload: the live context replaces raw history with a summary; the branch, receipts and board survive.
+	const compacted = [{ id: "compact", type: "compaction", summary: "Earlier work compacted; raw details unavailable." },
+		branch.find((e: any) => e.id === "kept"),
+		{ type: "message", message: { role: "user", content: "LEGACY_AUTHORITY: id-less user entry still decides." } },
+		branch.find((e: any) => e.id === "latest")];
+	atReviewPort(() => ({ ...rejectedAtPort(), unresolved: ["work_evidence"] }));
+	const reloaded = setup(branch, {}, { persist: true });
+	reloaded.ctx.sessionManager.buildContextEntries = () => compacted;
+	await reloaded.emit("session_start"); await reloaded.manual();
+	expect(reviewCalls).toHaveLength(2);
+	const packet = packetAtPort(reviewCalls[1]);
+	const material = packet.factualMaterial["task:5"];
+	expect(material.role).toBe("reported"); expect(material.valid).toBe(false);
+	expect(material.sources).toContainEqual({ id: "origin", role: "unavailable" });
+	expect(material.sources).toContainEqual({ id: "kept", role: "assistant" });
+	for (const id of ["user", "origin"]) expect(material.gaps).toContainEqual({ id, reason: "source unavailable" });
+	expect(String(reviewCalls[1].projection.state.audit).split(briefText).length - 1).toBe(1);
+	expect(JSON.stringify(reviewCalls[1].request)).not.toContain("CHOSEN_FORMAT");
+	expect(reviewCalls[1].projection.questions.task_evidence_5.criteria).not.toHaveProperty("origin");
+	expect(reviewCalls[1].projection.questions.task_evidence_5.criteria).toHaveProperty("kept");
+	// Reconstruct current permitted evidence without borrowing a service checkpoint.
+	// The old consumer frontier remains in diagnostics, not an assertion of current source coverage.
+	expect(packet.rolling?.progress.processedThrough).toBeNull();
+	expect(reviewCalls[1].options.checkpoint).toBeUndefined();
+	// The actual service rejects the now-hidden primary member (R02 wire test);
+	// this port receives its failed final view, not partial completion advice.
+	expect(receipts()).toHaveLength(1);
+	expect(diags().at(-1)).toMatchObject({ outcome: "failed", range: { from: "latest", to: "latest" } });
+	const legacy = reviewCalls[1].request.evidence?.find((r) => r.text.includes("LEGACY_AUTHORITY"));
+	expect(legacy?.metadata).toMatchObject({ kind: "user", protected: true });
+	expect(packet.records.find((r: any) => r.id === legacy!.id)).toMatchObject({ kind: "user", protected: true });
+	expect(reloaded.sent).toHaveLength(0); // no completion or wakeup is fabricated from summary, brief or replayed opinions
+	// Complete the genuinely missing pair. Synthetic sources bind to the permitted snapshot, not a fake raw cursor.
+	answers.work_evidence = a("latest"); atReviewPort(completedAtPort);
+	await reloaded.manual();
+	expect(reviewCalls).toHaveLength(3);
+	expect(reviewCalls[2].request).toEqual(reviewCalls[1].request);
+	// The real service/Pi R02 test, not this port, proves only work_evidence is resent.
+	expect(receipts()).toHaveLength(2);
+	expect((receipts().at(-1) as any).data.receipt.sourceContext).toMatch(/^[a-f0-9]{64}$/);
+	expect(diags().at(-1).range).toEqual({ from: "latest", to: "latest" });
+	expect(reloaded.sent).toHaveLength(0);
+});
+
+test("F4: a partial-answer failure keeps the range incomplete; a successful resumed final view can reconcile", async () => {
+	answers = parserCompletion();
+	atReviewPort(() => ({ ...rejectedAtPort(), unresolved: ["task_granularity_5"] }));
+	const h = setup(initial(), {}, { persist: true });
+	const receipts = () => h.branch.filter((e: any) => e.customType === "jev-todo-audit-ledger" && e.data?.kind === "receipt");
+	await h.emit("session_start"); await h.manual();
+	expect(reviewCalls).toHaveLength(1); expect(receipts()).toHaveLength(0);
+	// Approved final-only review semantics: missing provider members never emit early advice.
+	expect(h.sent).toHaveLength(0);
+	const reloaded = setup(h.branch, {}, { persist: true });
+	atReviewPort(completedAtPort);
+	await reloaded.emit("session_start"); await reloaded.manual();
+	expect(reviewCalls).toHaveLength(2);
+	expect(reviewCalls[1].request).toEqual(reviewCalls[0].request);
+	expect(packetAtPort(reviewCalls[1]).records.find((r: any) => r.id === "user").kind).toBe("user");
+	expect(receipts()).toHaveLength(1);
+	expect((receipts()[0] as any).data.receipt.through).toBe("board");
+	expect(reloaded.sent).toHaveLength(1); expect(reloaded.sent[0].message.content).toContain("Evidence [user]");
+	// Actual classifier/missing entry test proves valid partials survive reload and
+	// only task_granularity_5 reaches Pi on retry; there is no cache in this fixture.
+});
+
+test("periodic cadence and user cooldown work without a watchdog", async () => {
+	scriptParserCompletion();
+	const h = setup(); await h.emit("session_start");
+	for (let i = 0; i < 19; i++) { h.branch.push({ type: "message", message: { role: "assistant", content: `Visible progress ${i}` } }); await h.emit("turn_end"); }
+	expect(reviewCalls).toHaveLength(0); await h.emit("turn_end"); expect(reviewCalls).toHaveLength(1);
+	expect(h.sent).toHaveLength(1); expect(h.sent[0].options).toEqual({ deliverAs: "steer" }); expect(h.sent[0].message.content).toContain("Evidence [user]");
+	h.branch.push(user("new-user", "Do not start anything else")); await h.emit("message_end", { message: { role: "user" } });
+	for (let i = 0; i < 10; i++) await h.emit("turn_end"); expect(reviewCalls).toHaveLength(1);
+	for (let i = 0; i < 10; i++) await h.emit("turn_end"); expect(reviewCalls).toHaveLength(2);
+	expect(requests).toHaveLength(0);
+});
+
+test("manual bypasses cadence, terminal reconciliation wakes for board work only", async () => {
+	scriptParserCompletion();
+	const h = setup(); await h.emit("session_start"); await h.manual();
+	expect(h.sent).toHaveLength(1); expect(h.sent[0].options).toEqual({ deliverAs: "steer" });
+	expectPluginAdvisory(h.sent[0].message.content);
+	const second = setup(); await second.emit("session_start"); second.hook(); await tick();
+	expect(second.sent).toHaveLength(1); expect(second.sent[0].options.triggerTurn).toBe(true);
+	expectPluginAdvisory(second.sent[0].message.content);
+	expect(second.sent[0].message.content).toContain("BOARD ONLY"); expect(second.sent[0].message.content).toContain("return control");
+	expect(second.sent[0].message.content).toContain("Do not execute tasks or bypass a wait");
+	expect(second.sent[0].message.details.auditKeys).toEqual(h.sent[0].message.details.auditKeys);
+	expect(second.sent[0].message.content).toContain("existing permissions and wait conditions");
+	expect(textWithoutLayout(advisoryComponent(second, second.sent[0].message.content).render(80).join("\n"))).toContain(textWithoutLayout("BOARD ONLY: if still applicable, reconcile these facts via todo, then return control to the user. Do not execute tasks or bypass a wait."));
+	expect(textWithoutLayout(advisoryComponent(second, second.sent[0].message.content, true).render(80).join("\n"))).toBe(textWithoutLayout(second.sent[0].message.content));
+});
+
+test("explicit actionable-now with current authorization can wake for execution", async () => {
+	scriptParserCompletion();
+	const h = setup([user("user", "Implement #5 now; the next action is to fix the parser rejection case and permission is granted."), snapshot([task])]);
+	answers = { ...answers, task_status_5: a("actionable_now"), task_granularity_5: a("appropriate"), interaction: a("working") };
+	await h.emit("session_start"); h.hook(); await tick();
+	expect(h.sent).toHaveLength(1); expect(h.sent[0].message.content).toContain("CONTINUE"); expect(h.sent[0].options.triggerTurn).toBe(true);
+	expect(h.sent[0].message.content).toContain("already-authorized next action");
+	expect(h.sent[0].message.content).toContain("existing permissions and wait conditions");
+	expect(h.sent[0].message.content).not.toContain("BOARD ONLY");
+	expectPluginAdvisory(h.sent[0].message.content);
+});
+
+test("an incomplete terminal review cannot wake the agent for an active task", async () => {
+	// The service owns missing-member validation; audit consumes only the failed final view.
+	atReviewPort(() => ({ ...rejectedAtPort(), unresolved: ["task_granularity_5"] }));
+	const h = setup([user("user", "Implement #5 now; permission is granted."), snapshot([task])]);
+	await h.emit("session_start"); h.hook(); await tick();
+	expect(reviewCalls).toHaveLength(1);
+	expect(h.sent).toHaveLength(0);
+});
+
+test("blocked match and coarse-task judgment cannot override waiting; missing annotation is board-only", async () => {
+	scriptParserCompletion();
+	const h = setup([user("user", "Wait for approval before doing anything on #5."), snapshot([task])]);
+	answers = { ...answers, alignment: a("not_aligned"), task_status_5: a("blocked"), task_granularity_5: a("split_independent_outcomes"), task_board_5: a("needs_reconciliation") };
+	await h.emit("session_start"); h.hook(); await tick();
+	expect(h.sent).toHaveLength(1);
+	const text = h.sent[0].message.content;
+	expect(text).toContain("BOARD ONLY"); expect(text).not.toContain("split #5"); expect(text).not.toContain("CONTINUE"); expect(text).not.toContain('set #5 "Parser" in_progress');
+	answers.board_warranted = a("idle"); // The updated pending board has no active task; waiting is still not execution.
+	h.branch.push(snapshot([{ ...task, status: "pending", description: "Awaiting user approval" }], "updated-board"));
+	await h.manual(); expect(h.sent).toHaveLength(1);
+	expect(reviewCalls.at(-1)!.projection.state.audit).toContain("Awaiting user approval");
+});
+
+test("already recorded wait or ongoing-only work does not wake", async () => {
+	scriptParserCompletion();
+	for (const lifecycle of ["blocked", "future", "deliberately_deferred", "still_ongoing"]) {
+		const h = setup([user("user", "Wait for approval"), snapshot([{ ...task, description: "Awaiting user approval" }])]);
+		answers = { ...answers, task_status_5: a(lifecycle), task_board_5: a("accurate") };
+		await h.emit("session_start"); h.hook(); await tick(); expect(h.sent).toHaveLength(0);
+	}
+});
+
+test("reworded stops and assistant acknowledgments do not repeat demands, even after reload", async () => {
+	scriptParserCompletion();
+	const h = setup(); await h.emit("session_start"); h.hook(); await tick(); expect(h.sent).toHaveLength(1);
+	h.branch.push({ id: "audit", type: "custom_message", ...h.sent[0].message });
+	h.branch.push({ id: "ack", type: "message", message: { role: "assistant", content: "Acknowledged; will reconcile the board." } });
+	h.hook({ STOP_KIND: "EXHAUSTED", REASON_TYPE: "CHANGED_WORDING", REASON: "a different stop phrase" }); await tick();
+	await h.manual(); expect(h.sent).toHaveLength(1);
+	const reloaded = setup(h.branch); await reloaded.emit("session_start"); await reloaded.manual(); expect(reloaded.sent).toHaveLength(0);
+});
+
+test("board bookkeeping cannot re-arm a blocker when unrelated latest output becomes historical", async () => {
+	scriptParserCompletion();
+	const h = setup([user("user", "Work on src/parser.ts, but wait for approval."), snapshot([task]),
+		{ id: "docs-call", type: "message", message: { role: "assistant", content: [{ type: "toolCall", id: "docs", name: "unfamiliar", arguments: { url: "https://unrelated.example/guide.html" } }] } },
+		{ id: "docs", type: "message", message: { role: "toolResult", toolCallId: "docs", toolName: "unfamiliar", content: "Unrelated latest visible output" } },
+	]);
+	answers = { ...answers, task_status_5: a("blocked"), task_board_5: a("needs_reconciliation") };
+	await h.emit("session_start"); await h.manual(); expect(h.sent).toHaveLength(1);
+	h.branch.push({ id: "ack-call", type: "message", message: { role: "assistant", content: [{ type: "toolCall", id: "record-wait", name: "todo", arguments: { action: "update", id: 5, status: "pending", description: "Awaiting user approval" } }] } });
+	answers.board_warranted = a("idle");
+	h.branch.push(snapshot([{ ...task, status: "pending", description: "Awaiting user approval" }], "bookkeeping"));
+	await h.manual(); expect(h.sent).toHaveLength(1);
+});
+
+test("new user evidence permits a fresh audit under identical stop metadata", async () => {
+	scriptParserCompletion();
+	const h = setup(); await h.emit("session_start"); h.hook(); await tick();
+	h.branch.push(user("new-user", "Confirmed the updated #5 also passes its new acceptance check.")); await h.emit("message_end", { message: { role: "user" } });
+	answers.task_evidence_5 = a("new-user"); h.hook(); await tick();
+	expect(reviewCalls).toHaveLength(2); expect(h.sent).toHaveLength(2);
+});
+
+for (const change of ["user", "board", "branch", "shutdown"]) test(`in-flight result invalidated by ${change} is discarded`, async () => {
+	answers = parserCompletion();
+	let release!: (r: ReviewResult) => void;
+	atReviewPort(() => new Promise<ReviewResult>((resolve) => { release = resolve; }));
+	const h = setup(); await h.emit("session_start"); const pending = h.manual(); await tick();
+	expect(reviewCalls).toHaveLength(1);
+	const result = acceptedAtPort(reviewCalls[0]);
+	if (change === "user") { h.branch.push(user("new-user", "Stop. The acceptance criteria have changed.")); await h.emit("message_end", { message: { role: "user" } }); }
+	if (change === "board") h.branch.push(snapshot([{ ...task, subject: "Different acceptance scope" }], "new-board"));
+	if (change === "branch") await h.emit("session_tree");
+	if (change === "shutdown") await h.emit("session_shutdown");
+	release(result); await pending; expect(h.sent).toHaveLength(0);
+});
+
+test("new stop after an in-flight user change is queued once and not lost with the aborted request", async () => {
+	answers = parserCompletion();
+	let release!: (r: ReviewResult) => void; let first = true;
+	atReviewPort((call) => first ? (first = false, new Promise<ReviewResult>((resolve) => { release = resolve; })) : acceptedAtPort(call));
+	const h = setup(); await h.emit("session_start"); h.hook(); await tick();
+	expect(reviewCalls).toHaveLength(1);
+	const staleResult = acceptedAtPort(reviewCalls[0]);
+	h.branch.push(user("new-user", "Confirmed the revised #5 is now accepted; reconcile the new board state."));
+	await h.emit("message_end", { message: { role: "user" } }); answers.task_evidence_5 = a("new-user"); h.hook();
+	release(staleResult); await tick(); await tick();
+	expect(reviewCalls).toHaveLength(2); expect(h.sent).toHaveLength(1); expect(h.sent[0].message.content).toContain("Evidence [new-user]");
+});
+
+test("request retains effective global context, visible failure and task requirements; excludes abandoned/compacted raw payload", async () => {
+	scriptParserCompletion();
+	const branch = [user("abandoned", "ABANDONED_PAYLOAD"), { id: "summary", type: "compaction", summary: "Global acceptance requires rejecting malformed input" },
+		user("user", "Investigate src/parser.ts; wait for approval before changing behavior."), snapshot([{ ...task, owner: "worker", metadata: { nonstandard: "approval missing" } }]),
+		{ id: "call", type: "message", message: { role: "assistant", content: [{ type: "toolCall", id: "probe", name: "unfamiliar_probe", arguments: { file: "src/parser.ts" } }] } },
+		{ id: "result", type: "message", message: { role: "toolResult", toolName: "unfamiliar_probe", toolCallId: "probe", isError: true, content: "Acceptance failed: malformed input accepted" } },
+	];
+	const h = setup(branch); h.ctx.sessionManager.buildContextEntries = () => branch.filter((entry) => entry.id !== "abandoned");
+	answers = { ...parserCompletion(), task_status_5: a("blocked"), task_evidence_5: a("user"), task_board_5: a("accurate"), interaction: a("waiting_user") };
+	await h.emit("session_start"); await h.manual();
+	const state = JSON.stringify({ request: reviewCalls[0].request, projection: reviewCalls[0].projection });
+	for (const evidence of ["Global acceptance", "unfamiliar_probe", "approval missing", "worker"]) expect(state).toContain(evidence);
+	expect(reviewCalls[0].request.evidence?.find((r) => r.id === "result")?.text).toContain('"status":"error"');
+	// Macro projection: the failure is visible as a status, not as its raw body.
+	expect(state).not.toContain("malformed input accepted");
+	expect(state).not.toContain("ABANDONED_PAYLOAD"); expect(h.sent).toHaveLength(0);
+});
+
+test("age and legacy budget do not force splitting or crop context; notice once", async () => {
+	scriptParserCompletion();
+	const long = "Relevant acceptance condition for src/parser.ts. ".repeat(200);
+	const h = setup([user("user", long), snapshot([task])], { activityBudgetChars: 1 });
+	answers = { ...answers, task_status_5: a("still_ongoing"), task_granularity_5: a("appropriate"), interaction: a("working") };
+	await h.emit("session_start"); await h.emit("session_start");
+	for (let i = 0; i < 40; i++) await h.emit("turn_end");
+	expect(reviewCalls).toHaveLength(3); // Ten-loop cadence; the first ten loops are inside user cooldown.
+	expect(reviewCalls.at(-1)!.request.evidence?.find((r) => r.id === "user")?.text).toBe(long); expect(h.sent).toHaveLength(0);
+	expect(h.ctx.ui.notify.mock.calls.filter(([m]) => m.includes("deprecated"))).toHaveLength(1);
+});
+
+test("terminal empty/all-done boards, disabled extension and malformed hooks are inert", async () => {
+	scriptParserCompletion();
+	for (const tasks of [[], [{ ...task, status: "completed" }]]) { const h = setup([snapshot(tasks)]); await h.emit("session_start"); h.hook(); await tick(); expect(h.sent).toHaveLength(0); }
+	expect(requests).toHaveLength(0);
+	const disabled = setup(undefined, { enabled: false }); expect(disabled.handlers.size).toBe(0); expect([...disabled.commands.keys()]).toEqual(["jev-audit"]);
+	const h = setup(); await h.emit("session_start");
+	for (const payload of [null, "bad", { version: 1, name: "user-ready", values: { STOP_KIND: "HUMAN_ABORT" } }]) for (const listener of h.listeners.get("pi:semantic-hook:v1") ?? []) listener(payload);
+	await tick(); expect(requests).toHaveLength(0); expect(reviewCalls).toHaveLength(0);
+});
+
+test("known opaque API key is absent from evidence, task labels and failure diagnostics", async () => {
+	process.env.JEV_AUDIT_TEST_KEY = "opaque-credential-no-prefix";
+	const h = setup([user("user", "Opaque credential opaque-credential-no-prefix appeared in visible text"), snapshot([{ ...task, subject: "opaque-credential-no-prefix" }])]);
+	atReviewPort(() => ({ ...rejectedAtPort(), errorMessage: "invalid opaque-credential-no-prefix" }));
+	await h.emit("session_start"); await h.manual();
+	expect(reviewCalls).toHaveLength(1);
+	expect(JSON.stringify({ request: reviewCalls[0].request, projection: reviewCalls[0].projection })).not.toContain("opaque-credential-no-prefix");
+	expect(JSON.stringify(h.ctx.ui.notify.mock.calls)).not.toContain("opaque-credential-no-prefix");
+	expect(h.sent).toHaveLength(0);
+});
+
+const piRegistry = (keys: Record<string, string | undefined>) => ({ getProvider: (p: string) => p in keys ? {} : undefined, getApiKeyForProvider: async (p: string) => keys[p] });
+const warnings = (h: ReturnType<typeof setup>) => h.ctx.ui.notify.mock.calls.filter((c) => c[1] === "warning").map((c) => String(c[0]));
+
+test("Pi authentication belongs to the service; audit never reads Pi keys or sends HTTP", async () => {
+	scriptParserCompletion();
+	let authReads = 0;
+	const h = setup(initial(), { legacyFields: [] }, { modelRegistry: { getApiKeyForProvider: () => { authReads++; throw new Error("must be service-owned"); } } });
+	await h.emit("session_start"); await h.manual();
+	expect(authReads).toBe(0); expect(requests).toHaveLength(0); expect(reviewCalls).toHaveLength(1);
+	expect(warnings(h)).toEqual([]);
+	// Authentication and secret removal AFTER this port are asserted on real native/LLM wires.
+});
+
+test("legacy endpoint and key fields warn by name and never supply fallback authentication", async () => {
+	scriptParserCompletion();
+	const h = setup(initial(), { apiUrl: "https://openrouter.ai/api/v1/systemone", apiKey: "obsolete-opaque-key", legacyFields: ["apiUrl", "apiKey"] }, { modelRegistry: piRegistry({ openrouter: undefined }) });
+	await h.emit("session_start"); await h.manual(); await h.manual();
+	expect(reviewCalls).toHaveLength(2); expect(requests).toHaveLength(0);
+	const w = warnings(h); expect(w).toHaveLength(1);
+	expect(w[0]).toContain("ignored legacy fields: apiUrl, apiKey");
+	expect(w[0]).not.toMatch(/obsolete-opaque-key|openrouter\.ai|\/login/);
+});
+
+test("explicit legacy fields warn even for a custom endpoint; absent legacy fields do not", async () => {
+	for (const [config, registry] of [[{ apiUrl: "https://proxy.example/v1/systemone", legacyFields: ["apiUrl"] }, piRegistry({ typesafe: "x" })], [{ legacyFields: [] }, piRegistry({})]] as const) {
+		const h = setup(initial(), config, { modelRegistry: registry }); await h.emit("session_start");
+		expect(warnings(h)).toHaveLength(config.legacyFields.length ? 1 : 0);
+		expect(warnings(h).join(" ")).not.toContain("proxy.example");
+	}
+});
+
+test("missing shared service is reported without attempting legacy or Pi auth fallback", async () => {
+	delete process.env.JEV_AUDIT_TEST_KEY;
+	let authReads = 0;
+	const h = setup(initial(), { legacyFields: [] }, { modelRegistry: { getApiKeyForProvider: () => { authReads++; } } });
+	await h.emit("session_start"); await h.manual();
+	expect(requests).toHaveLength(0); expect(authReads).toBe(0);
+	expect(h.sent).toHaveLength(0);
+	const errors = h.ctx.ui.notify.mock.calls.filter((c) => c[1] === "error");
+	expect(errors).toHaveLength(1); expect(errors[0][0]).toContain("requires pi-llm-as-jev reviewVersion 1");
+	expect(errors[0][0]).not.toContain("JEV_AUDIT_TEST_KEY");
+});
+
+test("API failure remains isolated and a later manual check can run", async () => {
+	atReviewPort(rejectedAtPort);
+	const h = setup(); await h.emit("session_start"); await h.manual(); expect(h.sent).toHaveLength(0);
+	scriptParserCompletion(); await h.manual(); expect(h.sent).toHaveLength(1);
+	expect(reviewCalls).toHaveLength(2);
+});
+
+test("task trajectory is bounded, stable across an unchanged repeat, and keeps its first-active origin", async () => {
+	// Each revision stays an ordered `todo` tool event; the supplement carries origin, count and the latest five.
+	const snap = (tasks: unknown[], id: string) => ({ id, type: "message", message: { role: "toolResult", toolName: "todo", content: "ok", details: { tasks, nextId: 8 } } });
+	const say = (n: number) => ({ id: `a${n}`, type: "message", message: { role: "assistant", content: `x${n}` } });
+	const branch: unknown[] = [user("user", "Implement #5 parser rewrite."), snap([{ ...task, status: "pending" }], "e0")];
+	for (let i = 1; i <= 8; i++) branch.push(say(i), snap([{ ...task, description: `v${i}` }], `e${i}`));
+	// All required questions answered so the receipt actually commits (persist is on, so it is durable).
+	answers = { ...answers, drift: a("on_track"), task_board_5: a("accurate"), task_granularity_5: a("appropriate") };
+	atReviewPort(completedAtPort);
+	const h = setup(branch, {}, { persist: true }); await h.emit("session_start"); await h.manual();
+	// The pending snapshot is the task's first board state, not a revision of it; e1–e8 are the revisions.
+	const trajOf = (state: string) => { const start = state.indexOf('{"records"'); const packet = JSON.parse(state.slice(start, state.indexOf("\nInterpret evidence", start))); const text = packet.records.find((r: any) => r.id === "task:5").text; return JSON.parse(text.slice(0, text.indexOf("\nAge review"))).trajectory; };
+	const first = trajOf(String(reviewCalls[0].projection.state.audit));
+	expect(first.segments.map((s: any) => s.source)).toEqual(["e4", "e5", "e6", "e7", "e8"]);
+	expect(first.revisionCount).toBe(8);
+	expect(first.firstActive).toEqual({ turn: 1, source: "e1" }); // the origin is kept even when its segment is bounded away
+	const events = packetAtPort(reviewCalls[0]).records
+		.filter((r: any) => r.toolName === "todo").map((r: any) => r.id);
+	expect(events).toEqual(["e0", "e1", "e2", "e3", "e4", "e5", "e6", "e7", "e8"]); // every revision remains an ordered tool event
+	// An acknowledged receipt must not change the supplement or the next review's inputs.
+	await h.manual();
+	expect(reviewCalls).toHaveLength(2);
+	expect(reviewCalls[1].request).toEqual(reviewCalls[0].request);
+	expect(reviewCalls[1].projection).toEqual(reviewCalls[0].projection);
+	// A very long history stays bounded in the fixed task state.
+	for (let i = 9; i <= 1000; i++) branch.push(snap([{ ...task, description: `w${i}` }], `f${i}`));
+	await h.manual();
+	const later = trajOf(String(reviewCalls.at(-1)!.projection.state.audit));
+	expect(later.revisionCount).toBe(1000);
+	expect(later.segments.map((s: any) => s.source)).toEqual(["f996", "f997", "f998", "f999", "f1000"]);
+	expect(later.firstActive).toEqual({ turn: 1, source: "e1" });
+});
+
+test("TODO revisions start segments without paid calls; granularity keeps the first-active origin through resume", async () => {
+	scriptParserCompletion();
+	const turn = (i: number) => ({ id: `t${i}`, type: "message", message: { role: "assistant", content: `Visible analysis step ${i}` } });
+	const branch: unknown[] = [user("user", "Implement #5 parser rewrite."), snapshot([{ ...task, status: "pending" }], "s0")];
+	const h = setup(branch, { interval: 1000 }); await h.emit("session_start");
+	const advance = async (to: number) => { while (branch.filter((e: any) => e.message?.role === "assistant").length < to) { branch.push(turn(branch.length)); await h.emit("turn_end"); } };
+	await advance(12); branch.push(snapshot([task], "start"));
+	await advance(20); branch.push(snapshot([{ ...task, description: "refined scope" }], "rev20"));
+	await advance(27); branch.push(snapshot([{ ...task, status: "pending", description: "waiting approval" }], "rev27"));
+	branch.push(user("approve", "Approved, resume #5.")); await h.emit("message_end", { message: { role: "user" } });
+	branch.push(snapshot([{ ...task, description: "resumed" }], "resume"));
+	await advance(35);
+	expect(reviewCalls).toHaveLength(0); expect(requests).toHaveLength(0); // Board edits alone never request a review.
+	await h.manual();
+	expect(reviewCalls).toHaveLength(1);
+	const state = String(reviewCalls[0].projection.state.audit), start = state.indexOf('{"records"');
+	const packet = JSON.parse(state.slice(start, state.indexOf("\nInterpret evidence", start)));
+	const supplement = JSON.parse(packet.records.find((r: any) => r.id === "task:5").text.split("\nAge review")[0]);
+	expect(supplement.trajectory.firstActive).toEqual({ turn: 12, source: "start" });
+	expect(supplement.trajectory.segments.map((s: any) => s.source)).toEqual(["start", "rev20", "rev27", "resume"]);
+	expect(reviewCalls[0].projection.questions.task_granularity_5.instructions).toContain("whole trajectory (see rubric)");
+	expect(state).toContain("from its first in_progress turn (trajectory.firstActive)");
+});
+
+test("manual modes: repeat inputs are stable, full requests fresh review without tool bodies, unknown args do nothing", async () => {
+	const branch = [...initial(),
+		{ id: "call", type: "message", message: { role: "assistant", content: [{ type: "toolCall", id: "c1", name: "bash", arguments: { command: "SECRET_COMMAND" } }] } },
+		{ id: "ret", type: "message", message: { role: "toolResult", toolCallId: "c1", toolName: "bash", content: "SECRET_OUTPUT" } }];
+	// Every requested question is answered, so an unchanged repeat has nothing left to ask.
+	answers = { ...answers, drift: a("on_track"), task_board_5: a("accurate"), task_granularity_5: a("appropriate") };
+	atReviewPort(completedAtPort);
+	const h = setup(branch, {}, { persist: true }); await h.emit("session_start");
+	const cmd = (args: string) => h.commands.get("jev-audit").handler(args, h.ctx) as Promise<void>;
+	await cmd(""); expect(reviewCalls).toHaveLength(1);
+	await cmd(""); expect(reviewCalls).toHaveLength(2); expect(h.sent).toHaveLength(1);
+	expect(reviewCalls[1].request).toEqual(reviewCalls[0].request);
+	expect(reviewCalls[1].options.fresh).toBe(reviewCalls[0].options.fresh);
+	await cmd("bogus"); expect(reviewCalls).toHaveLength(2);
+	expect(h.ctx.ui.notify.mock.calls.some((c) => String(c[0]).startsWith("Usage: /jev-audit"))).toBe(true);
+	await cmd("full"); expect(reviewCalls).toHaveLength(3);
+	expect(typeof reviewCalls[2].options.fresh).toBe("string");
+	const full = JSON.stringify(reviewCalls[2].request);
+	expect(full).not.toContain("SECRET_COMMAND"); expect(full).not.toContain("SECRET_OUTPUT");
+	expect(reviewCalls[2].request.evidence?.find((r) => r.id === "user")?.text).toContain("Confirmed #5 passed");
+	expect(h.sent).toHaveLength(1);
+	await cmd(""); expect(reviewCalls).toHaveLength(4);
+	expect(reviewCalls[3].options.fresh).toBe(reviewCalls[2].options.fresh);
+	expect(requests).toHaveLength(0); // Real fresh/reuse billing is checked at the Pi wire, not faked here.
+});
+
+test("changing ignored audit apiUrl preserves the shared-service request identity", async () => {
+	// Only shared-service transport identity can invalidate judgment reuse now.
+	const branch = [...initial()];
+	answers = parserCompletion(); atReviewPort(completedAtPort);
+	const h = setup(branch, {}, { persist: true }); await h.emit("session_start"); await h.manual();
+	expect(reviewCalls).toHaveLength(1);
+	const other = setup(branch, { apiUrl: "https://other-endpoint.example/v1/systemone" }, { persist: true });
+	await other.emit("session_start"); await other.manual();
+	expect(reviewCalls).toHaveLength(2);
+	expect(reviewCalls[1].request).toEqual(reviewCalls[0].request);
+	expect(reviewCalls[1].options.checkpoint).toEqual(reviewCalls[0].options.checkpoint);
+	expect(requests).toHaveLength(0);
+});
+
+test("a late response after a branch switch appends no ledger entries to the active branch", async () => {
+	// appendEntry writes to the live session file: after a branch switch, entries land on the ACTIVE branch.
+	let active: unknown[] = [...initial()];
+	const handlers = new Map<string, ((e: any, c: any) => Promise<void>)[]>();
+	const commands = new Map<string, any>();
+	const sent: { message: any; options: any }[] = [];
+	const pi = {
+		on: (n: string, h: any) => handlers.set(n, [...(handlers.get(n) ?? []), h]),
+		registerCommand: (n: string, c: any) => commands.set(n, c),
+		sendMessage: (m: any, o: any) => sent.push({ message: m, options: o }),
+		appendEntry: (t: string, d: unknown) => { active.push({ id: `c${active.length}`, type: "custom", customType: t, data: d }); },
+		events: { on: () => () => {} },
+	} as unknown as ExtensionAPI;
+	const ctxFor = () => ({ sessionManager: { getSessionId: () => "s1", getBranch: () => active, buildContextEntries: () => active }, ui: { notify: mock(() => {}) } });
+	makeExtension(pi, { ...DEFAULT_CONFIG, apiKeyEnvVar: "JEV_AUDIT_TEST_KEY" });
+	const emit = async (name: string) => { const ctx = ctxFor(); for (const h of handlers.get(name) ?? []) await h({}, ctx); };
+	await emit("session_start");
+	answers = parserCompletion();
+	let release!: (v: ReviewResult) => void;
+	atReviewPort(() => new Promise<ReviewResult>((resolve) => { release = resolve; }));
+	const pending = commands.get("jev-audit").handler("", ctxFor()) as Promise<void>;
+	await tick(); expect(reviewCalls).toHaveLength(1);
+	const lateResult = acceptedAtPort(reviewCalls[0]);
+	active = [...initial(), user("other", "Different branch content entirely.")]; // branch switch (tip id changes)
+	await emit("session_tree");
+	expect(reviewCalls[0].options.signal?.aborted).toBe(true);
+	publishPortProgress(reviewCalls[0], lateResult);
+	release(lateResult); await pending;
+	expect(sent).toHaveLength(0);
+	expect(active.filter((e: any) => e.type === "custom" && e.customType === "jev-todo-audit-ledger")).toHaveLength(0);
+});

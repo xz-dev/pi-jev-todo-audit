@@ -1,0 +1,72 @@
+[
+  {
+    "check": "nonempty-entrypoint-compaction",
+    "calls": [
+      {
+        "phase": "0",
+        "bytes": 9496,
+        "stateBytes": 326,
+        "anchorBytes": 2,
+        "newHistoryBytes": 590,
+        "anchorCount": 0,
+        "newCount": 4
+      },
+      {
+        "phase": "0",
+        "bytes": 3448,
+        "stateBytes": 181,
+        "anchorBytes": 2,
+        "newHistoryBytes": 590,
+        "anchorCount": 0,
+        "newCount": 4
+      },
+      {
+        "phase": "1",
+        "bytes": 9171,
+        "stateBytes": 453,
+        "anchorBytes": 215,
+        "newHistoryBytes": 118,
+        "anchorCount": 2,
+        "newCount": 1
+      },
+      {
+        "phase": "2",
+        "bytes": 9353,
+        "stateBytes": 494,
+        "anchorBytes": 332,
+        "newHistoryBytes": 116,
+        "anchorCount": 3,
+        "newCount": 1
+      },
+      {
+        "phase": "3",
+        "bytes": 10264,
+        "stateBytes": 534,
+        "anchorBytes": 447,
+        "newHistoryBytes": 562,
+        "anchorCount": 4,
+        "newCount": 4
+      },
+      {
+        "phase": "3",
+        "bytes": 3655,
+        "stateBytes": 223,
+        "anchorBytes": 215,
+        "newHistoryBytes": 562,
+        "anchorCount": 2,
+        "newCount": 4
+      }
+    ],
+    "tokens": "unknown; scripted transport",
+    "cost": "no live inference"
+  },
+  {
+    "check": "offline-actual-service-pi-A+B",
+    "wireBytes": [
+      8964,
+      9036
+    ],
+    "tokens": "not measured (scripted transport)",
+    "cost": "no live inference"
+  }
+]

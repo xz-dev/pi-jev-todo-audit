@@ -1,0 +1,103 @@
+[
+  {
+    "gate": "audit-typecheck",
+    "exitCode": 0,
+    "command": [
+      "npm",
+      "run",
+      "typecheck"
+    ]
+  },
+  {
+    "gate": "audit-default",
+    "exitCode": 0,
+    "command": [
+      "bun",
+      "test"
+    ]
+  },
+  {
+    "gate": "cross-repo",
+    "exitCode": 0,
+    "command": [
+      "bun",
+      "test",
+      "test/partial-progress.test.ts",
+      "test/incremental-lifecycle.integration.test.ts"
+    ]
+  },
+  {
+    "gate": "service-check",
+    "exitCode": 0,
+    "command": [
+      "npm",
+      "run",
+      "check"
+    ],
+    "extraEnv": {}
+  },
+  {
+    "gate": "session-replay",
+    "exitCode": 0,
+    "command": [
+      "bun",
+      "test/replay-incremental.ts",
+      "/home/xz/.pi/agent/sessions/--home-xz-Code-ai-pi-jev-todo-audit--/2026-10-07T05-55-40-571Z_01a114ee-8d9a-703f-bef4-752ac39a2d7e.jsonl",
+      "370fbf7b",
+      "90429fca"
+    ]
+  },
+  {
+    "gate": "lean-check",
+    "exitCode": 0,
+    "command": [
+      "lean",
+      "docs/programming-thinking/audit-session-cache.idea.lean"
+    ],
+    "extraEnv": {}
+  },
+  {
+    "gate": "lean-run",
+    "exitCode": 0,
+    "command": [
+      "lean",
+      "--run",
+      "docs/programming-thinking/audit-session-cache.idea.lean"
+    ],
+    "extraEnv": {}
+  },
+  {
+    "gate": "audit-spec",
+    "exitCode": 0,
+    "command": [
+      "openspec",
+      "validate",
+      "incremental-todo-state-judgment",
+      "--strict"
+    ],
+    "extraEnv": {}
+  },
+  {
+    "gate": "service-spec",
+    "exitCode": 0,
+    "command": [
+      "openspec",
+      "validate",
+      "focus-service-on-timeout-and-backend-compat",
+      "--strict"
+    ],
+    "extraEnv": {}
+  },
+  {
+    "gate": "package-dry-run",
+    "exitCode": 0,
+    "command": [
+      "npm",
+      "pack",
+      "--dry-run",
+      "--ignore-scripts",
+      "--offline",
+      "--json"
+    ]
+  }
+]

@@ -1,0 +1,1981 @@
+bun test v1.4.2 (744846f84)
+
+test/limits.test.ts:
+(pass) explicit overflow can be recognized: {"error":{"code":"context_length_exceeded"}} [0.26ms]
+(pass) explicit overflow can be recognized: {"error":{"message":"Input token count exceeds the maximum context limit"}} [0.12ms]
+(pass) explicit overflow can be recognized: {"message":"State tokens exceeds the allowed context length"} [0.01ms]
+(pass) explicit overflow can be recognized: {"detail":"Maximum context length is 32000 tokens; requested 40000 tokens"}
+(pass) explicit overflow can be recognized: {"detail":{"error_type":"max_tokens_exceeded"}}
+(pass) ordinary 422 error never authorizes cropping: {"detail":[{"message":"bad choice","input":"context length exceeded"}]} [6.41ms]
+(pass) ordinary 422 error never authorizes cropping: {"message":"invalid question","input":"context length exceeded"} [2.02ms]
+(pass) ordinary 422 error never authorizes cropping: {"detail":"unknown validation error"} [1.71ms]
+(pass) ordinary 400 error never authorizes cropping: {"message":"Total tokens exceeds the allowed per-minute rate limit"} [1.75ms]
+(pass) ordinary 401 error never authorizes cropping: {"message":"context length exceeded"} [1.66ms]
+(pass) ordinary 429 error never authorizes cropping: {"error":{"code":"context_length_exceeded"}} [1.65ms]
+(pass) ordinary 413 error never authorizes cropping: {"message":"payload too large"} [8.77ms]
+(pass) ordinary 503 error never authorizes cropping: {"message":"context length exceeded"} [1.20ms]
+(pass) valid source survives unknown answers, illegal confidence/options and inherited key names [0.63ms]
+(pass) task rubric is scoped, differentiates levels, and never mandates one test/file per task [0.30ms]
+
+test/context.test.ts:
+(pass) ignored metadata cannot renumber id-less history or its call/source associations [0.56ms]
+(pass) pending redacted calls retain both independent gaps [0.11ms]
+(pass) tools are projected to name, call identity/order and status; arguments and bodies never leave [0.44ms]
+(pass) a result without status flags or content is unknown, never success [0.07ms]
+(pass) all supported text-only analysis turns are kept in order, and a short reply keeps its question [0.74ms]
+(pass) supplements retain prose, arbitrary metadata, owner and dependencies without private result details [0.14ms]
+(pass) credentials, thinking, images and private custom state stay out; gaps are explicit [0.18ms]
+(pass) safe JSON stays parseable after redaction, handles circular data and preserves repeated references [0.04ms]
+(pass) binary and conventional credential fields never become supplemental text evidence [0.23ms]
+(pass) quoted credential values in visible JSON/log text are redacted completely [0.15ms]
+(pass) latest visible custom result does not need an artifact reference [0.13ms]
+(pass) public summaries are labelled; missing effective API and missing results are not success [0.09ms]
+(pass) visible audit advice retains producer identity but is not a selectable source [0.29ms]
+
+test/loops.test.ts:
+(pass) groups assistant message + its tool results into one loop; user opens a new loop [0.24ms]
+(pass) a loop with a pending tool call is incomplete and excluded from loopsAfter [0.11ms]
+(pass) compaction summary and aborted turn are ordinary records, never loop boundaries that split a call from its result [0.06ms]
+(pass) packLoops fits whole loops within the declared limit and reports the remainder [0.09ms]
+(pass) packLoops reports oversize when the first loop alone cannot fit [0.02ms]
+(pass) packLoops without a declared limit falls back to a bounded loop count and no limit [0.03ms]
+(pass) envelope overhead and output reserve count against the limit [0.01ms]
+
+test/questions.test.ts:
+(pass) request carries board, stored state and ONLY the segment's loops; old loops are not re-sent [0.87ms]
+(pass) board_warranted is asked only without in_progress tasks; dependency-blocked tasks skip granularity [0.18ms]
+(pass) no_change advances cursors and keeps state verbatim [0.57ms]
+(pass) partial progress is recorded with its anchor and advances; completion stays reported-not-verified [0.15ms]
+(pass) uncertainty holds the segment open without moving the cursor; other scopes still advance [0.07ms]
+(pass) missing answer for a scope writes nothing for that scope [0.03ms]
+(pass) scope_changed resets the task to its first-active loop and opens the current segment [0.04ms]
+(pass) session transitions: scope update and permission withdrawal write anchors; blocker binds to its conclusion [0.11ms]
+
+test/config.test.ts:
+(pass) config > missing file → defaults [0.17ms]
+jev-todo-audit: invalid JSON at /home/xz/.cache/pi-agent/jev-cfg-MSp6K9/config.json, skipping
+(pass) config > malformed JSON → defaults [0.42ms]
+(pass) config > partial config merges over defaults [0.14ms]
+(pass) config > bad values fall back per-field [0.11ms]
+(pass) config > blank apiKey in file counts as absent [0.22ms]
+(pass) config > project layer ignored when untrusted [0.10ms]
+(pass) config > project layer merges when trusted [0.20ms]
+(pass) config > project layer cannot set apiKey/apiKeyEnvVar [0.15ms]
+(pass) config > agent path honors PI_CODING_AGENT_DIR [0.32ms]
+(pass) config > projectConfigPath sits under .pi [0.13ms]
+(pass) config > staleAuditSpans default + project override [0.44ms]
+
+test/openrouter.test.ts:
+(pass) the documented OpenRouter response (id, provider, usage.cost) is answered and its charge recorded [0.32ms]
+(pass) OpenRouter's typed context_length_exceeded is an overflow; its other typed errors are not [0.06ms]
+(pass) OpenRouter's single published 32K context bounds both dimensions [0.07ms]
+(pass) diagnostics total the reported charge and count attempts that reported none [0.14ms]
+
+test/judgment-service-entry.test.ts:
+(pass) suppressed child touches neither host nor package settings [12.54ms]
+(pass) loaded service commands preserve selection before publication: llm-as-jev [0.85ms]
+(pass) loaded service commands preserve selection before publication: llm-as-jev:1 [0.27ms]
+(pass) pre-published service is preserved with reviewVersion 1 [0.26ms]
+(pass) pre-published service is preserved with reviewVersion undefined [0.19ms]
+(pass) provisioning command is callable and read-only before startup [0.44ms]
+(pass) own resource provenance provisions with audit disabled and no audit command in user scope [21.63ms]
+(pass) own resource provenance provisions with audit disabled and no audit command in project scope [2.39ms]
+(pass) first startup persists once and replays once, without duplicate commands/providers [1.52ms]
+(pass) trusted project registers only in project scope [1.48ms]
+(pass) no guessed registration for temporary with untrusted project [0.32ms]
+(pass) no guessed registration for unknown with untrusted project [0.21ms]
+(pass) no guessed registration for project with untrusted project [0.22ms]
+(pass) wrong installation provenance does not default to user scope [0.30ms]
+(pass) offline first startup reports unavailability and performs no installation [0.28ms]
+(pass) missing or filtered configured service is preserved: git:github.com/xz-dev/pi-llm-as-jev [0.58ms]
+(pass) missing or filtered configured service is preserved: git:github.com/xz-dev/pi-llm-as-jev@v1 [0.50ms]
+(pass) missing or filtered configured service is preserved: git:https://github.com/xz-dev/pi-llm-as-jev.git@v1 [0.45ms]
+(pass) missing or filtered configured service is preserved: git:git@github.com:xz-dev/pi-llm-as-jev.git@v1 [0.44ms]
+(pass) missing or filtered configured service is preserved: git:ssh://git@github.com/xz-dev/pi-llm-as-jev.git@v1 [0.41ms]
+(pass) missing or filtered configured service is preserved: npm:pi-llm-as-jev@1.0.0 [51.91ms]
+(pass) installed local service identity preserves its disabled resource selection [1.03ms]
+(pass) trusted project service selection takes precedence over a global audit [0.80ms]
+(pass) untrusted project settings are not read while a global audit provisions [2.46ms]
+(pass) selection changed during download is preserved without activation [0.97ms]
+(pass) only matching enabled service resources activate, without installing unrelated packages [1.72ms]
+(pass) retired activation shutdown cannot delete a replacement handle [1.31ms]
+(pass) delegated shutdown unsubscribe works for handlers added after startup adoption [1.38ms]
+(pass) cancelled first-start callbacks are not replayed and ordinary events unsubscribe [1.26ms]
+(pass) partial publication is cleaned immediately and its retired handlers never run [1.37ms]
+(pass) failed startup cleanup preserves a concurrently published replacement [2.22ms]
+(pass) factory failure leaves no handle and does not retry from audit events [5.61ms]
+(pass) incompatible newly installed service is diagnosed without downgrade [1.61ms]
+(pass) installation failure is bounded and does not switch transport: download [0.65ms]
+(pass) installation failure is bounded and does not switch transport: Authentication [0.45ms]
+(pass) native persistence errors after clone prevent activation and update-success claims [0.98ms]
+(pass) settings changed to unreadable after clone are not overwritten [0.82ms]
+(pass) a later normal activation retries an unregistered failure without changing the audit switch [1.63ms]
+
+test/service-delivery.test.ts:
+(pass) audit does not constrain the independently managed service in its dependencies or lockfile [0.58ms]
+(pass) pi manifest exposes a separately filterable provisioning entry [0.02ms]
+(pass) first managed startup registers one unqualified service package without changing other settings [5.93ms]
+(skip) native real service: first-start status diagnostic and native reload ownership
+(skip) native bun: first-start dispatch, independent update, and real reload
+(skip) native npm: first-start dispatch, independent update, and real reload
+(skip) native safety: scope, selections, failures and recovery
+
+test/counter.test.ts:
+(pass) counter > counts finalized assistant messages as loops [0.06ms]
+(pass) counter > lastUserMsgAt = loops completed before the user msg [0.02ms]
+(pass) counter > turn_end increments; user message_end resets cooldown ref [0.03ms]
+(pass) counter > audit fires at multiples of 10 when past cooldown [0.03ms]
+(pass) counter > cooldown 10 boundary: exactly 10 skips, 11 fires [0.04ms]
+(pass) counter > cooldown skips trigger inside 10 loops of user msg; next multiple still fires [0.02ms]
+(pass) counter > edge: exactly 10 loops after user msg still skipped [0.04ms]
+(pass) counter > aborted turn never reaches branch → not counted
+
+test/typesafe.test.ts:
+(pass) typesafe request > batched questions have per-task lifecycle, evidence and active-task granularity [0.12ms]
+(pass) typesafe request > dependency-blocked active task omits only unread granularity and restores it when unblocked [0.69ms]
+(pass) typesafe request > all-done board → board_warranted included [0.07ms]
+(pass) typesafe request > pending-only board → board_warranted included [0.07ms]
+(pass) typesafe request > state embeds board rows + activity [0.10ms]
+(pass) typesafe request > current_match options = visible tasks + not_on_board (deleted excluded) [0.08ms]
+(pass) typesafe request > empty board → not_on_board only + board_warranted question present [0.07ms]
+(pass) typesafe request > per-task lifecycle question per unfinished task [0.09ms]
+(pass) typesafe request > terminalStop info serializes into state [0.09ms]
+(pass) typesafe request > no terminalStop → no stop block in state [0.06ms]
+(pass) typesafe client > ok response → parsed answers [0.34ms]
+(pass) typesafe client > HTTP error → ok:false, no throw [0.19ms]
+(pass) typesafe client > network failure → ok:false, no throw [0.11ms]
+(pass) typesafe client > malformed body → ok:false [0.11ms]
+(pass) typesafe client > transient HTTP error retries up to maxRetries, then ok:true [3.40ms]
+(pass) typesafe client > network throw retries up to maxRetries [1.24ms]
+(pass) typesafe client > non-retryable error fails fast — no retry [0.10ms]
+(pass) typesafe client > budget exhausted → ok:false after maxRetries+1 calls [3.27ms]
+(pass) typesafe client > real transport errors retry: TypeError fetch failed + ENOTFOUND + socket hang up [7.42ms]
+(pass) typesafe client > malformed response is not retried even with maxRetries>0 [0.10ms]
+(pass) typesafe client > backoff delays double: base * 2^(attempt-1) [97.41ms]
+(pass) typesafe client > abort during backoff → ok:false 'aborted', no further fetch [6.10ms]
+(pass) typesafe client > repeated successful+retried audits leave no abort listeners on signal [2.14ms]
+(pass) typesafe client > maxRetries 0 / unset → single attempt (default off) [0.17ms]
+(pass) typesafe client > task_status_* answers fold into lifecycle map; garbage keys dropped [0.16ms]
+
+test/index.test.ts:
+(pass) disabled audit keeps a callable command without doing judgment work [0.45ms]
+145 | for (const notifyOnAligned of [false, true]) {
+146 | 	test(`A1: one full ordinary advisory body is visible with notifyOnAligned=${notifyOnAligned}`, async () => {
+147 | 		scriptParserCompletion();
+148 | 		const h = setup(initial(), { notifyOnAligned, legacyFields: [] });
+149 | 		await h.emit("session_start"); await h.manual();
+150 | 		expect(h.sent).toHaveLength(1);
+                       ^
+error: expect(received).toHaveLength(expected)
+
+Expected length: 1
+Received length: 0
+
+      at <anonymous> (/home/xz/Code/ai/pi-jev-todo-audit/test/index.test.ts:150:18)
+(fail) A1: one full ordinary advisory body is visible with notifyOnAligned=false [1.37ms]
+168 | 	});
+169 | 	test(`A1: a visible ordinary advisory needs no delivery receipt with notifyOnAligned=${notifyOnAligned}`, async () => {
+170 | 		scriptParserCompletion();
+171 | 		const h = setup(initial(), { notifyOnAligned, legacyFields: [] });
+172 | 		await h.emit("session_start"); await h.manual();
+173 | 		expect(h.sent).toHaveLength(1);
+                       ^
+error: expect(received).toHaveLength(expected)
+
+Expected length: 1
+Received length: 0
+
+      at <anonymous> (/home/xz/Code/ai/pi-jev-todo-audit/test/index.test.ts:173:18)
+(fail) A1: a visible ordinary advisory needs no delivery receipt with notifyOnAligned=false [0.20ms]
+145 | for (const notifyOnAligned of [false, true]) {
+146 | 	test(`A1: one full ordinary advisory body is visible with notifyOnAligned=${notifyOnAligned}`, async () => {
+147 | 		scriptParserCompletion();
+148 | 		const h = setup(initial(), { notifyOnAligned, legacyFields: [] });
+149 | 		await h.emit("session_start"); await h.manual();
+150 | 		expect(h.sent).toHaveLength(1);
+                       ^
+error: expect(received).toHaveLength(expected)
+
+Expected length: 1
+Received length: 0
+
+      at <anonymous> (/home/xz/Code/ai/pi-jev-todo-audit/test/index.test.ts:150:18)
+(fail) A1: one full ordinary advisory body is visible with notifyOnAligned=true [0.10ms]
+168 | 	});
+169 | 	test(`A1: a visible ordinary advisory needs no delivery receipt with notifyOnAligned=${notifyOnAligned}`, async () => {
+170 | 		scriptParserCompletion();
+171 | 		const h = setup(initial(), { notifyOnAligned, legacyFields: [] });
+172 | 		await h.emit("session_start"); await h.manual();
+173 | 		expect(h.sent).toHaveLength(1);
+                       ^
+error: expect(received).toHaveLength(expected)
+
+Expected length: 1
+Received length: 0
+
+      at <anonymous> (/home/xz/Code/ai/pi-jev-todo-audit/test/index.test.ts:173:18)
+(fail) A1: a visible ordinary advisory needs no delivery receipt with notifyOnAligned=true [0.08ms]
+177 | 
+178 | test("A1/A6: only an exact terminal shared footer folds; quoted evidence and unknown endings stay visible", async () => {
+179 | 	scriptParserCompletion();
+180 | 	const h = setup(initial(), { legacyFields: [] });
+181 | 	await h.emit("session_start"); await h.manual();
+182 | 	const sent = h.sent[0].message.content;
+                           ^
+TypeError: undefined is not an object (evaluating 'h.sent[0].message')
+      at <anonymous> (/home/xz/Code/ai/pi-jev-todo-audit/test/index.test.ts:182:22)
+(fail) A1/A6: only an exact terminal shared footer folds; quoted evidence and unknown endings stay visible [0.23ms]
+(pass) A6: stored advisories survive resize, expansion and theme changes without regeneration [11.62ms]
+231 | 	const { ui: _ui, ...headless } = h.ctx;
+232 | 	for (const handler of h.handlers.get("session_start") ?? []) await handler({}, headless);
+233 | 	await h.commands.get("jev-audit").handler("", headless);
+234 | 	expect(h.sent).toEqual(visible.sent);
+235 | 	expect(h.ctx.ui.notify.mock.calls).toHaveLength(0);
+236 | 	expect(reviewCalls).toHaveLength(2);
+                           ^
+error: expect(received).toHaveLength(expected)
+
+Expected length: 2
+Received length: 0
+
+      at <anonymous> (/home/xz/Code/ai/pi-jev-todo-audit/test/index.test.ts:236:22)
+(fail) A6: headless delivery has the same content, keys and options without requiring a UI [0.52ms]
+241 | 	process.env.JEV_AUDIT_TEST_KEY = secret;
+242 | 	atReviewPort(() => ({ ...rejectedAtPort(), contextOverflow: true, errorMessage: `cannot admit ${secret}` }));
+243 | 	// Report IDs are included in clarification bodies too, not just report text.
+244 | 	const h = setup([...initial(), { id: `report-${secret}`, type: "message", message: { role: "assistant", content: "Acceptance scope still needs clarification." } }], { legacyFields: [] });
+245 | 	await h.emit("session_start"); await h.manual();
+246 | 	expect(h.sent).toHaveLength(1);
+                      ^
+error: expect(received).toHaveLength(expected)
+
+Expected length: 1
+Received length: 0
+
+      at <anonymous> (/home/xz/Code/ai/pi-jev-todo-audit/test/index.test.ts:246:17)
+(fail) A7: generated clarification redacts known secrets before either reader sees it [0.21ms]
+274 | for (const change of ["fact", "source", "coverage", "role"]) test(`I1: ${change}-only material change refreshes the same-label review`, async () => {
+275 | 	const input = fidelityInput();
+276 | 	answers = { ...answers, drift: a("on_track"), task_board_5: a("accurate"), task_granularity_5: a("appropriate") };
+277 | 	atReviewPort(acceptedAtPort);
+278 | 	const h = setup(input.branch, {}, { persist: true }); await h.emit("session_start"); await h.manual();
+279 | 	await h.manual(); expect(reviewCalls).toHaveLength(2);
+                                             ^
+error: expect(received).toHaveLength(expected)
+
+Expected length: 2
+Received length: 0
+
+      at <anonymous> (/home/xz/Code/ai/pi-jev-todo-audit/test/index.test.ts:279:40)
+(fail) I1: fact-only material change refreshes the same-label review [0.32ms]
+274 | for (const change of ["fact", "source", "coverage", "role"]) test(`I1: ${change}-only material change refreshes the same-label review`, async () => {
+275 | 	const input = fidelityInput();
+276 | 	answers = { ...answers, drift: a("on_track"), task_board_5: a("accurate"), task_granularity_5: a("appropriate") };
+277 | 	atReviewPort(acceptedAtPort);
+278 | 	const h = setup(input.branch, {}, { persist: true }); await h.emit("session_start"); await h.manual();
+279 | 	await h.manual(); expect(reviewCalls).toHaveLength(2);
+                                             ^
+error: expect(received).toHaveLength(expected)
+
+Expected length: 2
+Received length: 0
+
+      at <anonymous> (/home/xz/Code/ai/pi-jev-todo-audit/test/index.test.ts:279:40)
+(fail) I1: source-only material change refreshes the same-label review [0.12ms]
+274 | for (const change of ["fact", "source", "coverage", "role"]) test(`I1: ${change}-only material change refreshes the same-label review`, async () => {
+275 | 	const input = fidelityInput();
+276 | 	answers = { ...answers, drift: a("on_track"), task_board_5: a("accurate"), task_granularity_5: a("appropriate") };
+277 | 	atReviewPort(acceptedAtPort);
+278 | 	const h = setup(input.branch, {}, { persist: true }); await h.emit("session_start"); await h.manual();
+279 | 	await h.manual(); expect(reviewCalls).toHaveLength(2);
+                                             ^
+error: expect(received).toHaveLength(expected)
+
+Expected length: 2
+Received length: 0
+
+      at <anonymous> (/home/xz/Code/ai/pi-jev-todo-audit/test/index.test.ts:279:40)
+(fail) I1: coverage-only material change refreshes the same-label review [0.12ms]
+274 | for (const change of ["fact", "source", "coverage", "role"]) test(`I1: ${change}-only material change refreshes the same-label review`, async () => {
+275 | 	const input = fidelityInput();
+276 | 	answers = { ...answers, drift: a("on_track"), task_board_5: a("accurate"), task_granularity_5: a("appropriate") };
+277 | 	atReviewPort(acceptedAtPort);
+278 | 	const h = setup(input.branch, {}, { persist: true }); await h.emit("session_start"); await h.manual();
+279 | 	await h.manual(); expect(reviewCalls).toHaveLength(2);
+                                             ^
+error: expect(received).toHaveLength(expected)
+
+Expected length: 2
+Received length: 0
+
+      at <anonymous> (/home/xz/Code/ai/pi-jev-todo-audit/test/index.test.ts:279:40)
+(fail) I1: role-only material change refreshes the same-label review [0.12ms]
+299 | 	const h = setup(input.branch, {}, { persist: true }); await h.emit("session_start"); await h.manual();
+300 | 	const reordered = { ...input.scoped, metadata: { auditBrief: { covers: ["other"], sources: ["origin"], text: input.brief.text } } };
+301 | 	h.branch.push({ id: "read-call", type: "message", message: { role: "assistant", content: [{ type: "toolCall", id: "read-todo", name: "todo", arguments: { action: "list" } }] } });
+302 | 	h.branch.push({ ...snapshot([reordered], "no-op-read"), message: { ...snapshot([reordered]).message, toolCallId: "read-todo" } });
+303 | 	await h.manual();
+304 | 	expect(reviewCalls).toHaveLength(2);
+                           ^
+error: expect(received).toHaveLength(expected)
+
+Expected length: 2
+Received length: 0
+
+      at <anonymous> (/home/xz/Code/ai/pi-jev-todo-audit/test/index.test.ts:304:22)
+(fail) I1: a no-op board read keeps identical brief evaluations reusable [0.28ms]
+312 | 	answers = { ...answers, drift: a("on_track"), task_board_5: a("accurate"), task_granularity_5: a("appropriate"), task_evidence_5: a("origin") };
+313 | 	atReviewPort(acceptedAtPort);
+314 | 	const h = setup(input.branch, {}, { persist: true }); await h.emit("session_start"); h.hook(); await tick();
+315 | 	input.origin.message.content = "CSV acceptance checks passed for the revised scope.";
+316 | 	h.hook(); await tick();
+317 | 	expect(reviewCalls).toHaveLength(2);
+                           ^
+error: expect(received).toHaveLength(expected)
+
+Expected length: 2
+Received length: 0
+
+      at <anonymous> (/home/xz/Code/ai/pi-jev-todo-audit/test/index.test.ts:317:22)
+(fail) I1: a same-id reported fact refreshes an identical terminal stop without rearming acknowledgment advice [3.04ms]
+327 | 	const input = fidelityInput();
+328 | 	answers = { ...answers, drift: a("on_track"), task_board_5: a("accurate"), task_granularity_5: a("appropriate") };
+329 | 	let release!: (r: ReviewResult) => void;
+330 | 	atReviewPort(() => new Promise<ReviewResult>((resolve) => { release = resolve; }));
+331 | 	const h = setup(input.branch, {}, { persist: true }); await h.emit("session_start"); const pending = h.manual(); await tick();
+332 | 	expect(reviewCalls).toHaveLength(1);
+                           ^
+error: expect(received).toHaveLength(expected)
+
+Expected length: 1
+Received length: 0
+
+      at <anonymous> (/home/xz/Code/ai/pi-jev-todo-audit/test/index.test.ts:332:22)
+(fail) I1: in-flight fact change suppresses stale corrections [1.33ms]
+327 | 	const input = fidelityInput();
+328 | 	answers = { ...answers, drift: a("on_track"), task_board_5: a("accurate"), task_granularity_5: a("appropriate") };
+329 | 	let release!: (r: ReviewResult) => void;
+330 | 	atReviewPort(() => new Promise<ReviewResult>((resolve) => { release = resolve; }));
+331 | 	const h = setup(input.branch, {}, { persist: true }); await h.emit("session_start"); const pending = h.manual(); await tick();
+332 | 	expect(reviewCalls).toHaveLength(1);
+                           ^
+error: expect(received).toHaveLength(expected)
+
+Expected length: 1
+Received length: 0
+
+      at <anonymous> (/home/xz/Code/ai/pi-jev-todo-audit/test/index.test.ts:332:22)
+(fail) I1: in-flight source change suppresses stale corrections [1.18ms]
+327 | 	const input = fidelityInput();
+328 | 	answers = { ...answers, drift: a("on_track"), task_board_5: a("accurate"), task_granularity_5: a("appropriate") };
+329 | 	let release!: (r: ReviewResult) => void;
+330 | 	atReviewPort(() => new Promise<ReviewResult>((resolve) => { release = resolve; }));
+331 | 	const h = setup(input.branch, {}, { persist: true }); await h.emit("session_start"); const pending = h.manual(); await tick();
+332 | 	expect(reviewCalls).toHaveLength(1);
+                           ^
+error: expect(received).toHaveLength(expected)
+
+Expected length: 1
+Received length: 0
+
+      at <anonymous> (/home/xz/Code/ai/pi-jev-todo-audit/test/index.test.ts:332:22)
+(fail) I1: in-flight coverage change suppresses stale corrections [1.15ms]
+327 | 	const input = fidelityInput();
+328 | 	answers = { ...answers, drift: a("on_track"), task_board_5: a("accurate"), task_granularity_5: a("appropriate") };
+329 | 	let release!: (r: ReviewResult) => void;
+330 | 	atReviewPort(() => new Promise<ReviewResult>((resolve) => { release = resolve; }));
+331 | 	const h = setup(input.branch, {}, { persist: true }); await h.emit("session_start"); const pending = h.manual(); await tick();
+332 | 	expect(reviewCalls).toHaveLength(1);
+                           ^
+error: expect(received).toHaveLength(expected)
+
+Expected length: 1
+Received length: 0
+
+      at <anonymous> (/home/xz/Code/ai/pi-jev-todo-audit/test/index.test.ts:332:22)
+(fail) I1: in-flight report change suppresses stale corrections [1.15ms]
+327 | 	const input = fidelityInput();
+328 | 	answers = { ...answers, drift: a("on_track"), task_board_5: a("accurate"), task_granularity_5: a("appropriate") };
+329 | 	let release!: (r: ReviewResult) => void;
+330 | 	atReviewPort(() => new Promise<ReviewResult>((resolve) => { release = resolve; }));
+331 | 	const h = setup(input.branch, {}, { persist: true }); await h.emit("session_start"); const pending = h.manual(); await tick();
+332 | 	expect(reviewCalls).toHaveLength(1);
+                           ^
+error: expect(received).toHaveLength(expected)
+
+Expected length: 1
+Received length: 0
+
+      at <anonymous> (/home/xz/Code/ai/pi-jev-todo-audit/test/index.test.ts:332:22)
+(fail) I1: in-flight role change suppresses stale corrections [1.16ms]
+327 | 	const input = fidelityInput();
+328 | 	answers = { ...answers, drift: a("on_track"), task_board_5: a("accurate"), task_granularity_5: a("appropriate") };
+329 | 	let release!: (r: ReviewResult) => void;
+330 | 	atReviewPort(() => new Promise<ReviewResult>((resolve) => { release = resolve; }));
+331 | 	const h = setup(input.branch, {}, { persist: true }); await h.emit("session_start"); const pending = h.manual(); await tick();
+332 | 	expect(reviewCalls).toHaveLength(1);
+                           ^
+error: expect(received).toHaveLength(expected)
+
+Expected length: 1
+Received length: 0
+
+      at <anonymous> (/home/xz/Code/ai/pi-jev-todo-audit/test/index.test.ts:332:22)
+(fail) I1: in-flight effective-history change suppresses stale corrections [1.10ms]
+349 | 	const scoped = { ...task, metadata: { auditBrief: { text: "Parser acceptance scope reported complete; rollout awaits approval.", sources, covers: [completion.id] } } };
+350 | 	answers = { ...answers, drift: a("on_track"), task_status_5: a("actually_completed"), task_evidence_5: a(completion.id), task_board_5: a("accurate"), task_granularity_5: a("appropriate") };
+351 | 	atReviewPort(completedAtPort);
+352 | 	const h = setup([user("user", "Investigate #5 and reconcile only. No rollout without approval."), snapshot([scoped]), completion, support], {}, { persist: true });
+353 | 	await h.emit("session_start"); await h.commands.get("jev-audit").handler(mode, h.ctx);
+354 | 	expect(reviewCalls).toHaveLength(1);
+                           ^
+error: expect(received).toHaveLength(expected)
+
+Expected length: 1
+Received length: 0
+
+      at <anonymous> (/home/xz/Code/ai/pi-jev-todo-audit/test/index.test.ts:354:22)
+(fail) P1: cold covered completion report stays selectable with empty sources [0.24ms]
+349 | 	const scoped = { ...task, metadata: { auditBrief: { text: "Parser acceptance scope reported complete; rollout awaits approval.", sources, covers: [completion.id] } } };
+350 | 	answers = { ...answers, drift: a("on_track"), task_status_5: a("actually_completed"), task_evidence_5: a(completion.id), task_board_5: a("accurate"), task_granularity_5: a("appropriate") };
+351 | 	atReviewPort(completedAtPort);
+352 | 	const h = setup([user("user", "Investigate #5 and reconcile only. No rollout without approval."), snapshot([scoped]), completion, support], {}, { persist: true });
+353 | 	await h.emit("session_start"); await h.commands.get("jev-audit").handler(mode, h.ctx);
+354 | 	expect(reviewCalls).toHaveLength(1);
+                           ^
+error: expect(received).toHaveLength(expected)
+
+Expected length: 1
+Received length: 0
+
+      at <anonymous> (/home/xz/Code/ai/pi-jev-todo-audit/test/index.test.ts:354:22)
+(fail) P1: cold covered completion report stays selectable with support-only sources [0.10ms]
+349 | 	const scoped = { ...task, metadata: { auditBrief: { text: "Parser acceptance scope reported complete; rollout awaits approval.", sources, covers: [completion.id] } } };
+350 | 	answers = { ...answers, drift: a("on_track"), task_status_5: a("actually_completed"), task_evidence_5: a(completion.id), task_board_5: a("accurate"), task_granularity_5: a("appropriate") };
+351 | 	atReviewPort(completedAtPort);
+352 | 	const h = setup([user("user", "Investigate #5 and reconcile only. No rollout without approval."), snapshot([scoped]), completion, support], {}, { persist: true });
+353 | 	await h.emit("session_start"); await h.commands.get("jev-audit").handler(mode, h.ctx);
+354 | 	expect(reviewCalls).toHaveLength(1);
+                           ^
+error: expect(received).toHaveLength(expected)
+
+Expected length: 1
+Received length: 0
+
+      at <anonymous> (/home/xz/Code/ai/pi-jev-todo-audit/test/index.test.ts:354:22)
+(fail) P1: full covered completion report stays selectable with empty sources [0.09ms]
+349 | 	const scoped = { ...task, metadata: { auditBrief: { text: "Parser acceptance scope reported complete; rollout awaits approval.", sources, covers: [completion.id] } } };
+350 | 	answers = { ...answers, drift: a("on_track"), task_status_5: a("actually_completed"), task_evidence_5: a(completion.id), task_board_5: a("accurate"), task_granularity_5: a("appropriate") };
+351 | 	atReviewPort(completedAtPort);
+352 | 	const h = setup([user("user", "Investigate #5 and reconcile only. No rollout without approval."), snapshot([scoped]), completion, support], {}, { persist: true });
+353 | 	await h.emit("session_start"); await h.commands.get("jev-audit").handler(mode, h.ctx);
+354 | 	expect(reviewCalls).toHaveLength(1);
+                           ^
+error: expect(received).toHaveLength(expected)
+
+Expected length: 1
+Received length: 0
+
+      at <anonymous> (/home/xz/Code/ai/pi-jev-todo-audit/test/index.test.ts:354:22)
+(fail) P1: full covered completion report stays selectable with support-only sources [0.08ms]
+367 | 	const scoped = { ...task, metadata: { auditBrief: { text: "Parser acceptance reported complete; no rollout approval.", sources: [], covers: [completion.id] } } };
+368 | 	answers = { ...answers, drift: a("on_track"), task_status_5: a("unclear"), task_evidence_5: a("insufficient_evidence"), task_board_5: a("accurate"), task_granularity_5: a("appropriate") };
+369 | 	atReviewPort(completedAtPort);
+370 | 	const h = setup([user("user", "Investigate and reconcile #5 only; no rollout without approval."), snapshot([scoped]), completion], {}, { persist: true });
+371 | 	await h.emit("session_start"); await h.manual();
+372 | 	expect(h.branch.filter((e: any) => e.data?.kind === "receipt")).toHaveLength(1);
+                                                                       ^
+error: expect(received).toHaveLength(expected)
+
+Expected length: 1
+Received length: 0
+
+      at <anonymous> (/home/xz/Code/ai/pi-jev-todo-audit/test/index.test.ts:372:66)
+(fail) P1/F1: a processed completion report stays whole and selectable without a prior primary pin [0.24ms]
+396 | 	answers = { ...parserCompletion(), task_status_5: a("still_ongoing") };
+397 | 	atReviewPort((call) => ({ ...acceptedAtPort(call), unresolved: call.projection.unresolved ?? [] }));
+398 | 	// 252 reports + user + board event + task supplement + fallback = 256 options.
+399 | 	const h = setup([input.branch[0], snapshot([input.scoped]), ...input.reports.slice(0, 252)], { legacyFields: [] }, { persist: true });
+400 | 	await h.emit("session_start"); await h.manual();
+401 | 	expect(h.sent).toHaveLength(1);
+                      ^
+error: expect(received).toHaveLength(expected)
+
+Expected length: 1
+Received length: 0
+
+      at <anonymous> (/home/xz/Code/ai/pi-jev-todo-audit/test/index.test.ts:401:17)
+(fail) A3: a 256-option Choice exposes the complete scoped clarification once [0.43ms]
+426 | 	input.scoped.metadata!.auditBrief.covers = ["report0"];
+427 | 	answers = { ...answers, drift: a("blocked"), task_status_5: a("blocked"), task_evidence_5: a("report0"), task_board_5: a("needs_reconciliation"), task_granularity_5: a("blocked") };
+428 | 	atReviewPort(acceptedAtPort);
+429 | 	const h = setup([input.branch[0], snapshot([input.scoped, ...others]), input.reports[0]], { apiUrl: "https://fixture.invalid/v1/systemone" }, { persist: true }); await h.emit("session_start");
+430 | 	await h.commands.get("jev-audit").handler(mode, h.ctx);
+431 | 	expect(reviewCalls).toHaveLength(1);
+                           ^
+error: expect(received).toHaveLength(expected)
+
+Expected length: 1
+Received length: 0
+
+      at <anonymous> (/home/xz/Code/ai/pi-jev-todo-audit/test/index.test.ts:431:22)
+(fail) P2: cold known task-object scopes bound evidence without excluding public primary reports [1.31ms]
+426 | 	input.scoped.metadata!.auditBrief.covers = ["report0"];
+427 | 	answers = { ...answers, drift: a("blocked"), task_status_5: a("blocked"), task_evidence_5: a("report0"), task_board_5: a("needs_reconciliation"), task_granularity_5: a("blocked") };
+428 | 	atReviewPort(acceptedAtPort);
+429 | 	const h = setup([input.branch[0], snapshot([input.scoped, ...others]), input.reports[0]], { apiUrl: "https://fixture.invalid/v1/systemone" }, { persist: true }); await h.emit("session_start");
+430 | 	await h.commands.get("jev-audit").handler(mode, h.ctx);
+431 | 	expect(reviewCalls).toHaveLength(1);
+                           ^
+error: expect(received).toHaveLength(expected)
+
+Expected length: 1
+Received length: 0
+
+      at <anonymous> (/home/xz/Code/ai/pi-jev-todo-audit/test/index.test.ts:431:22)
+(fail) P2: full known task-object scopes bound evidence without excluding public primary reports [0.86ms]
+447 | 	const input = largeFidelityInput(withBrief);
+448 | 	answers = { ...answers, drift: a("on_track"), task_board_5: a("accurate"), task_granularity_5: a("appropriate") };
+449 | 	atReviewPort((call) => ({ ...acceptedAtPort(call), unresolved: call.projection.unresolved ?? [] }));
+450 | 	const h = setup(input.branch, { apiUrl: "https://fixture.invalid/v1/systemone" }, { persist: true }); await h.emit("session_start");
+451 | 	await h.commands.get("jev-audit").handler(mode, h.ctx);
+452 | 	expect(reviewCalls).toHaveLength(1);
+                           ^
+error: expect(received).toHaveLength(expected)
+
+Expected length: 1
+Received length: 0
+
+      at <anonymous> (/home/xz/Code/ai/pi-jev-todo-audit/test/index.test.ts:452:22)
+(fail) P2/P3: cold 260 potential primary reports without brief stay incomplete without hidden loss [0.39ms]
+447 | 	const input = largeFidelityInput(withBrief);
+448 | 	answers = { ...answers, drift: a("on_track"), task_board_5: a("accurate"), task_granularity_5: a("appropriate") };
+449 | 	atReviewPort((call) => ({ ...acceptedAtPort(call), unresolved: call.projection.unresolved ?? [] }));
+450 | 	const h = setup(input.branch, { apiUrl: "https://fixture.invalid/v1/systemone" }, { persist: true }); await h.emit("session_start");
+451 | 	await h.commands.get("jev-audit").handler(mode, h.ctx);
+452 | 	expect(reviewCalls).toHaveLength(1);
+                           ^
+error: expect(received).toHaveLength(expected)
+
+Expected length: 1
+Received length: 0
+
+      at <anonymous> (/home/xz/Code/ai/pi-jev-todo-audit/test/index.test.ts:452:22)
+(fail) P2/P3: cold 260 potential primary reports with legal brief stay incomplete without hidden loss [0.30ms]
+447 | 	const input = largeFidelityInput(withBrief);
+448 | 	answers = { ...answers, drift: a("on_track"), task_board_5: a("accurate"), task_granularity_5: a("appropriate") };
+449 | 	atReviewPort((call) => ({ ...acceptedAtPort(call), unresolved: call.projection.unresolved ?? [] }));
+450 | 	const h = setup(input.branch, { apiUrl: "https://fixture.invalid/v1/systemone" }, { persist: true }); await h.emit("session_start");
+451 | 	await h.commands.get("jev-audit").handler(mode, h.ctx);
+452 | 	expect(reviewCalls).toHaveLength(1);
+                           ^
+error: expect(received).toHaveLength(expected)
+
+Expected length: 1
+Received length: 0
+
+      at <anonymous> (/home/xz/Code/ai/pi-jev-todo-audit/test/index.test.ts:452:22)
+(fail) P2/P3: full 260 potential primary reports without brief stay incomplete without hidden loss [0.15ms]
+447 | 	const input = largeFidelityInput(withBrief);
+448 | 	answers = { ...answers, drift: a("on_track"), task_board_5: a("accurate"), task_granularity_5: a("appropriate") };
+449 | 	atReviewPort((call) => ({ ...acceptedAtPort(call), unresolved: call.projection.unresolved ?? [] }));
+450 | 	const h = setup(input.branch, { apiUrl: "https://fixture.invalid/v1/systemone" }, { persist: true }); await h.emit("session_start");
+451 | 	await h.commands.get("jev-audit").handler(mode, h.ctx);
+452 | 	expect(reviewCalls).toHaveLength(1);
+                           ^
+error: expect(received).toHaveLength(expected)
+
+Expected length: 1
+Received length: 0
+
+      at <anonymous> (/home/xz/Code/ai/pi-jev-todo-audit/test/index.test.ts:452:22)
+(fail) P2/P3: full 260 potential primary reports with legal brief stay incomplete without hidden loss [0.24ms]
+485 | 		snapshot([five, six, ...related]), { id: "six-report", type: "message", message: { role: "assistant", content: "Task 6's entire agreed outcome passed and was accepted; no further execution." } }];
+486 | 	answers = { ...answers, drift: a("on_track"), task_board_5: a("accurate"), task_granularity_5: a("appropriate"),
+487 | 		task_status_6: a("actually_completed"), task_evidence_6: a("six-report"), task_board_6: a("accurate"), task_granularity_6: a("appropriate") };
+488 | 	atReviewPort((call) => ({ ...acceptedAtPort(call), unresolved: call.projection.unresolved ?? [] }));
+489 | 	const h = setup(branch, { apiUrl: "https://fixture.invalid/v1/systemone" }, { persist: true }); await h.emit("session_start"); await h.manual();
+490 | 	expect(reviewCalls).toHaveLength(1);
+                           ^
+error: expect(received).toHaveLength(expected)
+
+Expected length: 1
+Received length: 0
+
+      at <anonymous> (/home/xz/Code/ai/pi-jev-todo-audit/test/index.test.ts:490:22)
+(fail) P3: an oversized task evidence set withholds only that finding; a supported sibling still reconciles [1.14ms]
+504 | 		{ apiUrl: "https://fixture.invalid/v1/systemone" }, { persist: true });
+505 | 	answers = { ...answers, current_match: a("not_on_board"), interaction: a("working"), alignment: a("no_in_progress_task"),
+506 | 		drift: a("on_track"), task_board_5: a("accurate"), task_granularity_5: a("appropriate") };
+507 | 	atReviewPort((call) => ({ ...acceptedAtPort(call), unresolved: call.projection.unresolved ?? [] }));
+508 | 	await h.emit("session_start"); await h.manual();
+509 | 	expect(reviewCalls).toHaveLength(1);
+                           ^
+error: expect(received).toHaveLength(expected)
+
+Expected length: 1
+Received length: 0
+
+      at <anonymous> (/home/xz/Code/ai/pi-jev-todo-audit/test/index.test.ts:509:22)
+(fail) P3: an oversized board-matching Choice loses no tasks and grants no work finding, while independent accepted work remains usable [0.99ms]
+532 | 		return result;
+533 | 	}, (options) => options.checkpoint ? scriptedCheckpoints.get(options.checkpoint)! : {});
+534 | 	const h = setup(input.branch, { apiUrl: "https://fixture.invalid/v1/systemone" }, { persist: true }); await h.emit("session_start"); await h.manual();
+535 | 	input.brief.sources = ["other"]; answers.task_evidence_5 = a("other");
+536 | 	await h.manual();
+537 | 	expect(reviewCalls[1].projection.questions.task_evidence_5.criteria).toHaveProperty("task:6"); // prior reference remains uncertain until refreshed
+                          ^
+TypeError: undefined is not an object (evaluating 'reviewCalls[1].projection')
+      at <anonymous> (/home/xz/Code/ai/pi-jev-todo-audit/test/index.test.ts:537:21)
+(fail) I1/R1: changing the remembered primary changes actual candidate definitions, not just the old fact/cursor identity [0.33ms]
+549 | });
+550 | 
+551 | // Decode only the actual projection's metadata. Source bodies stay in request.evidence;
+552 | // never rehydrate a fabricated old request packet to stand in for raw transport.
+553 | const packetAtPort = (call: ReviewCall) => {
+554 | 	const state = String(call.projection.state.audit);
+                            ^
+TypeError: undefined is not an object (evaluating 'call.projection')
+      at packetAtPort (/home/xz/Code/ai/pi-jev-todo-audit/test/index.test.ts:554:23)
+      at <anonymous> (/home/xz/Code/ai/pi-jev-todo-audit/test/index.test.ts:571:17)
+(fail) F1: a supplied current brief is scoped reported data with original source roles, serialized once [0.27ms]
+549 | });
+550 | 
+551 | // Decode only the actual projection's metadata. Source bodies stay in request.evidence;
+552 | // never rehydrate a fabricated old request packet to stand in for raw transport.
+553 | const packetAtPort = (call: ReviewCall) => {
+554 | 	const state = String(call.projection.state.audit);
+                            ^
+TypeError: undefined is not an object (evaluating 'call.projection')
+      at packetAtPort (/home/xz/Code/ai/pi-jev-todo-audit/test/index.test.ts:554:23)
+      at <anonymous> (/home/xz/Code/ai/pi-jev-todo-audit/test/index.test.ts:588:19)
+(fail) F3: missing brief lineage stays a gap, not completion proof; legacy tasks remain useful [0.20ms]
+549 | });
+550 | 
+551 | // Decode only the actual projection's metadata. Source bodies stay in request.evidence;
+552 | // never rehydrate a fabricated old request packet to stand in for raw transport.
+553 | const packetAtPort = (call: ReviewCall) => {
+554 | 	const state = String(call.projection.state.audit);
+                            ^
+TypeError: undefined is not an object (evaluating 'call.projection')
+      at packetAtPort (/home/xz/Code/ai/pi-jev-todo-audit/test/index.test.ts:554:23)
+      at <anonymous> (/home/xz/Code/ai/pi-jev-todo-audit/test/index.test.ts:611:17)
+(fail) F3: coverage cannot erase user, summary or another task; excluded and redacted origins stay gaps [0.32ms]
+549 | });
+550 | 
+551 | // Decode only the actual projection's metadata. Source bodies stay in request.evidence;
+552 | // never rehydrate a fabricated old request packet to stand in for raw transport.
+553 | const packetAtPort = (call: ReviewCall) => {
+554 | 	const state = String(call.projection.state.audit);
+                            ^
+TypeError: undefined is not an object (evaluating 'call.projection')
+      at packetAtPort (/home/xz/Code/ai/pi-jev-todo-audit/test/index.test.ts:554:23)
+      at <anonymous> (/home/xz/Code/ai/pi-jev-todo-audit/test/index.test.ts:625:18)
+(fail) F3: empty reference lists are permitted; malformed brief data stays qualified without breaking legacy prose [0.27ms]
+632 | for (const withReports of [true, false]) test(`A4/A5: factual clarification keeps ${withReports ? "public origins" : "missing origins"} and failure remains UI-only`, async () => {
+633 | 	atReviewPort(() => ({ ...rejectedAtPort(), contextOverflow: true }));
+634 | 	const reports = withReports ? ["report-1", "report-2"].map((id) => ({ id, type: "message", message: { role: "assistant", content: "Parser investigation reported; rollout awaits approval." } })) : [];
+635 | 	const h = setup([user("user", "Investigate #5; rollout awaits approval."), snapshot([task]), ...reports], { legacyFields: [] });
+636 | 	await h.emit("session_start"); await h.manual();
+637 | 	expect(h.sent).toHaveLength(1);
+                      ^
+error: expect(received).toHaveLength(expected)
+
+Expected length: 1
+Received length: 0
+
+      at <anonymous> (/home/xz/Code/ai/pi-jev-todo-audit/test/index.test.ts:637:17)
+(fail) A4/A5: factual clarification keeps public origins and failure remains UI-only [0.32ms]
+632 | for (const withReports of [true, false]) test(`A4/A5: factual clarification keeps ${withReports ? "public origins" : "missing origins"} and failure remains UI-only`, async () => {
+633 | 	atReviewPort(() => ({ ...rejectedAtPort(), contextOverflow: true }));
+634 | 	const reports = withReports ? ["report-1", "report-2"].map((id) => ({ id, type: "message", message: { role: "assistant", content: "Parser investigation reported; rollout awaits approval." } })) : [];
+635 | 	const h = setup([user("user", "Investigate #5; rollout awaits approval."), snapshot([task]), ...reports], { legacyFields: [] });
+636 | 	await h.emit("session_start"); await h.manual();
+637 | 	expect(h.sent).toHaveLength(1);
+                      ^
+error: expect(received).toHaveLength(expected)
+
+Expected length: 1
+Received length: 0
+
+      at <anonymous> (/home/xz/Code/ai/pi-jev-todo-audit/test/index.test.ts:637:17)
+(fail) A4/A5: factual clarification keeps missing origins and failure remains UI-only [0.10ms]
+669 | 	const prior = receipts().length;
+670 | 	for (let i = 0; i < 6; i++) h.branch.push({ id: `later${i}`, type: "message", message: { role: "assistant", content: `New stage ${i}` } });
+671 | 	atReviewPort(() => ({ ...rejectedAtPort(), contextOverflow: true }));
+672 | 	await h.manual();
+673 | 	expect(receipts()).toHaveLength(prior);
+674 | 	expect(h.sent).toHaveLength(1);
+                      ^
+error: expect(received).toHaveLength(expected)
+
+Expected length: 1
+Received length: 0
+
+      at <anonymous> (/home/xz/Code/ai/pi-jev-todo-audit/test/index.test.ts:674:17)
+(fail) F2: an irreducible necessary floor asks once for a scoped account, without completion, wakeup or receipt advance [0.31ms]
+695 | 		user("new-user", "Use CSV instead. Await approval; do not execute rollout."),
+696 | 	], {}, { persist: true });
+697 | 	answers = { ...answers, drift: a("on_track"), task_status_5: a("actionable_now"), task_evidence_5: a("task:5"), work_evidence: a("task:5"),
+698 | 		task_board_5: a("accurate"), task_granularity_5: a("appropriate"), interaction: a("working") };
+699 | 	await h.emit("session_start"); h.hook(); await tick();
+700 | 	expect(reviewCalls).toHaveLength(1);
+                           ^
+error: expect(received).toHaveLength(expected)
+
+Expected length: 1
+Received length: 0
+
+      at <anonymous> (/home/xz/Code/ai/pi-jev-todo-audit/test/index.test.ts:700:22)
+(fail) F2: an older ready brief never supplies permission against a later CSV/approval decision [1.45ms]
+717 | 	const diags = () => branch.filter((e: any) => e.customType === "jev-todo-audit-ledger" && e.data?.kind === "diag").map((e: any) => e.data.diag);
+718 | 	answers = { ...answers, drift: a("on_track"), task_status_5: a("still_ongoing"), task_evidence_5: a("kept"), task_board_5: a("accurate"), task_granularity_5: a("appropriate") };
+719 | 	atReviewPort(completedAtPort);
+720 | 	const first = setup(branch, {}, { persist: true });
+721 | 	await first.emit("session_start"); await first.manual();
+722 | 	expect(reviewCalls).toHaveLength(1);
+                           ^
+error: expect(received).toHaveLength(expected)
+
+Expected length: 1
+Received length: 0
+
+      at <anonymous> (/home/xz/Code/ai/pi-jev-todo-audit/test/index.test.ts:722:22)
+(fail) F4: reload after compaction restores the durable frontier and qualified brief; hidden origins stay gaps, never fabricated evidence [0.40ms]
+770 | 	answers = parserCompletion();
+771 | 	atReviewPort(() => ({ ...rejectedAtPort(), unresolved: ["task_granularity_5"] }));
+772 | 	const h = setup(initial(), {}, { persist: true });
+773 | 	const receipts = () => h.branch.filter((e: any) => e.customType === "jev-todo-audit-ledger" && e.data?.kind === "receipt");
+774 | 	await h.emit("session_start"); await h.manual();
+775 | 	expect(reviewCalls).toHaveLength(1); expect(receipts()).toHaveLength(0);
+                           ^
+error: expect(received).toHaveLength(expected)
+
+Expected length: 1
+Received length: 0
+
+      at <anonymous> (/home/xz/Code/ai/pi-jev-todo-audit/test/index.test.ts:775:22)
+(fail) F4: a partial-answer failure keeps the range incomplete; a successful resumed final view can reconcile [0.19ms]
+790 | 
+791 | test("periodic cadence and user cooldown work without a watchdog", async () => {
+792 | 	scriptParserCompletion();
+793 | 	const h = setup(); await h.emit("session_start");
+794 | 	for (let i = 0; i < 19; i++) { h.branch.push({ type: "message", message: { role: "assistant", content: `Visible progress ${i}` } }); await h.emit("turn_end"); }
+795 | 	expect(reviewCalls).toHaveLength(0); await h.emit("turn_end"); expect(reviewCalls).toHaveLength(1);
+                                                                                          ^
+error: expect(received).toHaveLength(expected)
+
+Expected length: 1
+Received length: 0
+
+      at <anonymous> (/home/xz/Code/ai/pi-jev-todo-audit/test/index.test.ts:795:85)
+(fail) periodic cadence and user cooldown work without a watchdog [0.36ms]
+801 | });
+802 | 
+803 | test("manual bypasses cadence, terminal reconciliation wakes for board work only", async () => {
+804 | 	scriptParserCompletion();
+805 | 	const h = setup(); await h.emit("session_start"); await h.manual();
+806 | 	expect(h.sent).toHaveLength(1); expect(h.sent[0].options).toEqual({ deliverAs: "steer" });
+                      ^
+error: expect(received).toHaveLength(expected)
+
+Expected length: 1
+Received length: 0
+
+      at <anonymous> (/home/xz/Code/ai/pi-jev-todo-audit/test/index.test.ts:806:17)
+(fail) manual bypasses cadence, terminal reconciliation wakes for board work only [0.19ms]
+819 | test("explicit actionable-now with current authorization can wake for execution", async () => {
+820 | 	scriptParserCompletion();
+821 | 	const h = setup([user("user", "Implement #5 now; the next action is to fix the parser rejection case and permission is granted."), snapshot([task])]);
+822 | 	answers = { ...answers, task_status_5: a("actionable_now"), task_granularity_5: a("appropriate"), interaction: a("working") };
+823 | 	await h.emit("session_start"); h.hook(); await tick();
+824 | 	expect(h.sent).toHaveLength(1); expect(h.sent[0].message.content).toContain("CONTINUE"); expect(h.sent[0].options.triggerTurn).toBe(true);
+                      ^
+error: expect(received).toHaveLength(expected)
+
+Expected length: 1
+Received length: 0
+
+      at <anonymous> (/home/xz/Code/ai/pi-jev-todo-audit/test/index.test.ts:824:17)
+(fail) explicit actionable-now with current authorization can wake for execution [1.33ms]
+831 | test("an incomplete terminal review cannot wake the agent for an active task", async () => {
+832 | 	// The service owns missing-member validation; audit consumes only the failed final view.
+833 | 	atReviewPort(() => ({ ...rejectedAtPort(), unresolved: ["task_granularity_5"] }));
+834 | 	const h = setup([user("user", "Implement #5 now; permission is granted."), snapshot([task])]);
+835 | 	await h.emit("session_start"); h.hook(); await tick();
+836 | 	expect(reviewCalls).toHaveLength(1);
+                           ^
+error: expect(received).toHaveLength(expected)
+
+Expected length: 1
+Received length: 0
+
+      at <anonymous> (/home/xz/Code/ai/pi-jev-todo-audit/test/index.test.ts:836:22)
+(fail) an incomplete terminal review cannot wake the agent for an active task [1.30ms]
+840 | test("blocked match and coarse-task judgment cannot override waiting; missing annotation is board-only", async () => {
+841 | 	scriptParserCompletion();
+842 | 	const h = setup([user("user", "Wait for approval before doing anything on #5."), snapshot([task])]);
+843 | 	answers = { ...answers, alignment: a("not_aligned"), task_status_5: a("blocked"), task_granularity_5: a("split_independent_outcomes"), task_board_5: a("needs_reconciliation") };
+844 | 	await h.emit("session_start"); h.hook(); await tick();
+845 | 	expect(h.sent).toHaveLength(1);
+                      ^
+error: expect(received).toHaveLength(expected)
+
+Expected length: 1
+Received length: 0
+
+      at <anonymous> (/home/xz/Code/ai/pi-jev-todo-audit/test/index.test.ts:845:17)
+(fail) blocked match and coarse-task judgment cannot override waiting; missing annotation is board-only [1.32ms]
+(pass) already recorded wait or ongoing-only work does not wake [4.72ms]
+860 | 	}
+861 | });
+862 | 
+863 | test("reworded stops and assistant acknowledgments do not repeat demands, even after reload", async () => {
+864 | 	scriptParserCompletion();
+865 | 	const h = setup(); await h.emit("session_start"); h.hook(); await tick(); expect(h.sent).toHaveLength(1);
+                                                                                                ^
+error: expect(received).toHaveLength(expected)
+
+Expected length: 1
+Received length: 0
+
+      at <anonymous> (/home/xz/Code/ai/pi-jev-todo-audit/test/index.test.ts:865:91)
+(fail) reworded stops and assistant acknowledgments do not repeat demands, even after reload [1.31ms]
+875 | 	const h = setup([user("user", "Work on src/parser.ts, but wait for approval."), snapshot([task]),
+876 | 		{ id: "docs-call", type: "message", message: { role: "assistant", content: [{ type: "toolCall", id: "docs", name: "unfamiliar", arguments: { url: "https://unrelated.example/guide.html" } }] } },
+877 | 		{ id: "docs", type: "message", message: { role: "toolResult", toolCallId: "docs", toolName: "unfamiliar", content: "Unrelated latest visible output" } },
+878 | 	]);
+879 | 	answers = { ...answers, task_status_5: a("blocked"), task_board_5: a("needs_reconciliation") };
+880 | 	await h.emit("session_start"); await h.manual(); expect(h.sent).toHaveLength(1);
+                                                                       ^
+error: expect(received).toHaveLength(expected)
+
+Expected length: 1
+Received length: 0
+
+      at <anonymous> (/home/xz/Code/ai/pi-jev-todo-audit/test/index.test.ts:880:66)
+(fail) board bookkeeping cannot re-arm a blocker when unrelated latest output becomes historical [0.21ms]
+887 | test("new user evidence permits a fresh audit under identical stop metadata", async () => {
+888 | 	scriptParserCompletion();
+889 | 	const h = setup(); await h.emit("session_start"); h.hook(); await tick();
+890 | 	h.branch.push(user("new-user", "Confirmed the updated #5 also passes its new acceptance check.")); await h.emit("message_end", { message: { role: "user" } });
+891 | 	answers.task_evidence_5 = a("new-user"); h.hook(); await tick();
+892 | 	expect(reviewCalls).toHaveLength(2); expect(h.sent).toHaveLength(2);
+                           ^
+error: expect(received).toHaveLength(expected)
+
+Expected length: 2
+Received length: 0
+
+      at <anonymous> (/home/xz/Code/ai/pi-jev-todo-audit/test/index.test.ts:892:22)
+(fail) new user evidence permits a fresh audit under identical stop metadata [2.44ms]
+895 | for (const change of ["user", "board", "branch", "shutdown"]) test(`in-flight result invalidated by ${change} is discarded`, async () => {
+896 | 	answers = parserCompletion();
+897 | 	let release!: (r: ReviewResult) => void;
+898 | 	atReviewPort(() => new Promise<ReviewResult>((resolve) => { release = resolve; }));
+899 | 	const h = setup(); await h.emit("session_start"); const pending = h.manual(); await tick();
+900 | 	expect(reviewCalls).toHaveLength(1);
+                           ^
+error: expect(received).toHaveLength(expected)
+
+Expected length: 1
+Received length: 0
+
+      at <anonymous> (/home/xz/Code/ai/pi-jev-todo-audit/test/index.test.ts:900:22)
+(fail) in-flight result invalidated by user is discarded [1.26ms]
+895 | for (const change of ["user", "board", "branch", "shutdown"]) test(`in-flight result invalidated by ${change} is discarded`, async () => {
+896 | 	answers = parserCompletion();
+897 | 	let release!: (r: ReviewResult) => void;
+898 | 	atReviewPort(() => new Promise<ReviewResult>((resolve) => { release = resolve; }));
+899 | 	const h = setup(); await h.emit("session_start"); const pending = h.manual(); await tick();
+900 | 	expect(reviewCalls).toHaveLength(1);
+                           ^
+error: expect(received).toHaveLength(expected)
+
+Expected length: 1
+Received length: 0
+
+      at <anonymous> (/home/xz/Code/ai/pi-jev-todo-audit/test/index.test.ts:900:22)
+(fail) in-flight result invalidated by board is discarded [1.14ms]
+895 | for (const change of ["user", "board", "branch", "shutdown"]) test(`in-flight result invalidated by ${change} is discarded`, async () => {
+896 | 	answers = parserCompletion();
+897 | 	let release!: (r: ReviewResult) => void;
+898 | 	atReviewPort(() => new Promise<ReviewResult>((resolve) => { release = resolve; }));
+899 | 	const h = setup(); await h.emit("session_start"); const pending = h.manual(); await tick();
+900 | 	expect(reviewCalls).toHaveLength(1);
+                           ^
+error: expect(received).toHaveLength(expected)
+
+Expected length: 1
+Received length: 0
+
+      at <anonymous> (/home/xz/Code/ai/pi-jev-todo-audit/test/index.test.ts:900:22)
+(fail) in-flight result invalidated by branch is discarded [1.14ms]
+895 | for (const change of ["user", "board", "branch", "shutdown"]) test(`in-flight result invalidated by ${change} is discarded`, async () => {
+896 | 	answers = parserCompletion();
+897 | 	let release!: (r: ReviewResult) => void;
+898 | 	atReviewPort(() => new Promise<ReviewResult>((resolve) => { release = resolve; }));
+899 | 	const h = setup(); await h.emit("session_start"); const pending = h.manual(); await tick();
+900 | 	expect(reviewCalls).toHaveLength(1);
+                           ^
+error: expect(received).toHaveLength(expected)
+
+Expected length: 1
+Received length: 0
+
+      at <anonymous> (/home/xz/Code/ai/pi-jev-todo-audit/test/index.test.ts:900:22)
+(fail) in-flight result invalidated by shutdown is discarded [1.15ms]
+909 | test("new stop after an in-flight user change is queued once and not lost with the aborted request", async () => {
+910 | 	answers = parserCompletion();
+911 | 	let release!: (r: ReviewResult) => void; let first = true;
+912 | 	atReviewPort((call) => first ? (first = false, new Promise<ReviewResult>((resolve) => { release = resolve; })) : acceptedAtPort(call));
+913 | 	const h = setup(); await h.emit("session_start"); h.hook(); await tick();
+914 | 	expect(reviewCalls).toHaveLength(1);
+                           ^
+error: expect(received).toHaveLength(expected)
+
+Expected length: 1
+Received length: 0
+
+      at <anonymous> (/home/xz/Code/ai/pi-jev-todo-audit/test/index.test.ts:914:22)
+(fail) new stop after an in-flight user change is queued once and not lost with the aborted request [1.30ms]
+927 | 		{ id: "result", type: "message", message: { role: "toolResult", toolName: "unfamiliar_probe", toolCallId: "probe", isError: true, content: "Acceptance failed: malformed input accepted" } },
+928 | 	];
+929 | 	const h = setup(branch); h.ctx.sessionManager.buildContextEntries = () => branch.filter((entry) => entry.id !== "abandoned");
+930 | 	answers = { ...parserCompletion(), task_status_5: a("blocked"), task_evidence_5: a("user"), task_board_5: a("accurate"), interaction: a("waiting_user") };
+931 | 	await h.emit("session_start"); await h.manual();
+932 | 	const state = JSON.stringify({ request: reviewCalls[0].request, projection: reviewCalls[0].projection });
+                                                           ^
+TypeError: undefined is not an object (evaluating 'reviewCalls[0].request')
+      at <anonymous> (/home/xz/Code/ai/pi-jev-todo-audit/test/index.test.ts:932:54)
+(fail) request retains effective global context, visible failure and task requirements; excludes abandoned/compacted raw payload [0.32ms]
+942 | 	const long = "Relevant acceptance condition for src/parser.ts. ".repeat(200);
+943 | 	const h = setup([user("user", long), snapshot([task])], { activityBudgetChars: 1 });
+944 | 	answers = { ...answers, task_status_5: a("still_ongoing"), task_granularity_5: a("appropriate"), interaction: a("working") };
+945 | 	await h.emit("session_start"); await h.emit("session_start");
+946 | 	for (let i = 0; i < 40; i++) await h.emit("turn_end");
+947 | 	expect(reviewCalls).toHaveLength(3); // Ten-loop cadence; the first ten loops are inside user cooldown.
+                           ^
+error: expect(received).toHaveLength(expected)
+
+Expected length: 3
+Received length: 0
+
+      at <anonymous> (/home/xz/Code/ai/pi-jev-todo-audit/test/index.test.ts:947:22)
+(fail) age and legacy budget do not force splitting or crop context; notice once [0.44ms]
+(pass) terminal empty/all-done boards, disabled extension and malformed hooks are inert [3.52ms]
+962 | test("known opaque API key is absent from evidence, task labels and failure diagnostics", async () => {
+963 | 	process.env.JEV_AUDIT_TEST_KEY = "opaque-credential-no-prefix";
+964 | 	const h = setup([user("user", "Opaque credential opaque-credential-no-prefix appeared in visible text"), snapshot([{ ...task, subject: "opaque-credential-no-prefix" }])]);
+965 | 	atReviewPort(() => ({ ...rejectedAtPort(), errorMessage: "invalid opaque-credential-no-prefix" }));
+966 | 	await h.emit("session_start"); await h.manual();
+967 | 	expect(reviewCalls).toHaveLength(1);
+                           ^
+error: expect(received).toHaveLength(expected)
+
+Expected length: 1
+Received length: 0
+
+      at <anonymous> (/home/xz/Code/ai/pi-jev-todo-audit/test/index.test.ts:967:22)
+(fail) known opaque API key is absent from evidence, task labels and failure diagnostics [0.19ms]
+976 | test("Pi authentication belongs to the service; audit never reads Pi keys or sends HTTP", async () => {
+977 | 	scriptParserCompletion();
+978 | 	let authReads = 0;
+979 | 	const h = setup(initial(), { legacyFields: [] }, { modelRegistry: { getApiKeyForProvider: () => { authReads++; throw new Error("must be service-owned"); } } });
+980 | 	await h.emit("session_start"); await h.manual();
+981 | 	expect(authReads).toBe(0); expect(requests).toHaveLength(0); expect(reviewCalls).toHaveLength(1);
+                                                                                        ^
+error: expect(received).toHaveLength(expected)
+
+Expected length: 1
+Received length: 0
+
+      at <anonymous> (/home/xz/Code/ai/pi-jev-todo-audit/test/index.test.ts:981:83)
+(fail) Pi authentication belongs to the service; audit never reads Pi keys or sends HTTP [0.18ms]
+985 | 
+986 | test("legacy endpoint and key fields warn by name and never supply fallback authentication", async () => {
+987 | 	scriptParserCompletion();
+988 | 	const h = setup(initial(), { apiUrl: "https://openrouter.ai/api/v1/systemone", apiKey: "obsolete-opaque-key", legacyFields: ["apiUrl", "apiKey"] }, { modelRegistry: piRegistry({ openrouter: undefined }) });
+989 | 	await h.emit("session_start"); await h.manual(); await h.manual();
+990 | 	expect(reviewCalls).toHaveLength(2); expect(requests).toHaveLength(0);
+                           ^
+error: expect(received).toHaveLength(expected)
+
+Expected length: 2
+Received length: 0
+
+      at <anonymous> (/home/xz/Code/ai/pi-jev-todo-audit/test/index.test.ts:990:22)
+(fail) legacy endpoint and key fields warn by name and never supply fallback authentication [0.20ms]
+(pass) explicit legacy fields warn even for a custom endpoint; absent legacy fields do not [0.15ms]
+1007 | 	const h = setup(initial(), { legacyFields: [] }, { modelRegistry: { getApiKeyForProvider: () => { authReads++; } } });
+1008 | 	await h.emit("session_start"); await h.manual();
+1009 | 	expect(requests).toHaveLength(0); expect(authReads).toBe(0);
+1010 | 	expect(h.sent).toHaveLength(0);
+1011 | 	const errors = h.ctx.ui.notify.mock.calls.filter((c) => c[1] === "error");
+1012 | 	expect(errors).toHaveLength(1); expect(errors[0][0]).toContain("requires pi-llm-as-jev reviewVersion 1");
+                                                             ^
+error: expect(received).toContain(expected)
+
+Expected to contain: "requires pi-llm-as-jev reviewVersion 1"
+Received: "[jev audit] requires pi-llm-as-jev (judgment service version 1); load/update the shared service. Audit skipped; TODO remains available."
+
+      at <anonymous> (/home/xz/Code/ai/pi-jev-todo-audit/test/index.test.ts:1012:55)
+(fail) missing shared service is reported without attempting legacy or Pi auth fallback [0.19ms]
+1014 | });
+1015 | 
+1016 | test("API failure remains isolated and a later manual check can run", async () => {
+1017 | 	atReviewPort(rejectedAtPort);
+1018 | 	const h = setup(); await h.emit("session_start"); await h.manual(); expect(h.sent).toHaveLength(0);
+1019 | 	scriptParserCompletion(); await h.manual(); expect(h.sent).toHaveLength(1);
+                                                                   ^
+error: expect(received).toHaveLength(expected)
+
+Expected length: 1
+Received length: 0
+
+      at <anonymous> (/home/xz/Code/ai/pi-jev-todo-audit/test/index.test.ts:1019:61)
+(fail) API failure remains isolated and a later manual check can run [0.15ms]
+1030 | 	answers = { ...answers, drift: a("on_track"), task_board_5: a("accurate"), task_granularity_5: a("appropriate") };
+1031 | 	atReviewPort(completedAtPort);
+1032 | 	const h = setup(branch, {}, { persist: true }); await h.emit("session_start"); await h.manual();
+1033 | 	// The pending snapshot is the task's first board state, not a revision of it; e1–e8 are the revisions.
+1034 | 	const trajOf = (state: string) => { const start = state.indexOf('{"records"'); const packet = JSON.parse(state.slice(start, state.indexOf("\nInterpret evidence", start))); const text = packet.records.find((r: any) => r.id === "task:5").text; return JSON.parse(text.slice(0, text.indexOf("\nAge review"))).trajectory; };
+1035 | 	const first = trajOf(String(reviewCalls[0].projection.state.audit));
+                                                ^
+TypeError: undefined is not an object (evaluating 'reviewCalls[0].projection')
+      at <anonymous> (/home/xz/Code/ai/pi-jev-todo-audit/test/index.test.ts:1035:42)
+(fail) task trajectory is bounded, stable across an unchanged repeat, and keeps its first-active origin [0.37ms]
+1065 | 	branch.push(user("approve", "Approved, resume #5.")); await h.emit("message_end", { message: { role: "user" } });
+1066 | 	branch.push(snapshot([{ ...task, description: "resumed" }], "resume"));
+1067 | 	await advance(35);
+1068 | 	expect(reviewCalls).toHaveLength(0); expect(requests).toHaveLength(0); // Board edits alone never request a review.
+1069 | 	await h.manual();
+1070 | 	expect(reviewCalls).toHaveLength(1);
+                            ^
+error: expect(received).toHaveLength(expected)
+
+Expected length: 1
+Received length: 0
+
+      at <anonymous> (/home/xz/Code/ai/pi-jev-todo-audit/test/index.test.ts:1070:22)
+(fail) TODO revisions start segments without paid calls; granularity keeps the first-active origin through resume [0.45ms]
+1084 | 	// Every requested question is answered, so an unchanged repeat has nothing left to ask.
+1085 | 	answers = { ...answers, drift: a("on_track"), task_board_5: a("accurate"), task_granularity_5: a("appropriate") };
+1086 | 	atReviewPort(completedAtPort);
+1087 | 	const h = setup(branch, {}, { persist: true }); await h.emit("session_start");
+1088 | 	const cmd = (args: string) => h.commands.get("jev-audit").handler(args, h.ctx) as Promise<void>;
+1089 | 	await cmd(""); expect(reviewCalls).toHaveLength(1);
+                                           ^
+error: expect(received).toHaveLength(expected)
+
+Expected length: 1
+Received length: 0
+
+      at <anonymous> (/home/xz/Code/ai/pi-jev-todo-audit/test/index.test.ts:1089:37)
+(fail) manual modes: repeat inputs are stable, full requests fresh review without tool bodies, unknown args do nothing [0.30ms]
+1106 | test("changing ignored audit apiUrl preserves the shared-service request identity", async () => {
+1107 | 	// Only shared-service transport identity can invalidate judgment reuse now.
+1108 | 	const branch = [...initial()];
+1109 | 	answers = parserCompletion(); atReviewPort(completedAtPort);
+1110 | 	const h = setup(branch, {}, { persist: true }); await h.emit("session_start"); await h.manual();
+1111 | 	expect(reviewCalls).toHaveLength(1);
+                            ^
+error: expect(received).toHaveLength(expected)
+
+Expected length: 1
+Received length: 0
+
+      at <anonymous> (/home/xz/Code/ai/pi-jev-todo-audit/test/index.test.ts:1111:22)
+(fail) changing ignored audit apiUrl preserves the shared-service request identity [0.18ms]
+1136 | 	await emit("session_start");
+1137 | 	answers = parserCompletion();
+1138 | 	let release!: (v: ReviewResult) => void;
+1139 | 	atReviewPort(() => new Promise<ReviewResult>((resolve) => { release = resolve; }));
+1140 | 	const pending = commands.get("jev-audit").handler("", ctxFor()) as Promise<void>;
+1141 | 	await tick(); expect(reviewCalls).toHaveLength(1);
+                                          ^
+error: expect(received).toHaveLength(expected)
+
+Expected length: 1
+Received length: 0
+
+      at <anonymous> (/home/xz/Code/ai/pi-jev-todo-audit/test/index.test.ts:1141:36)
+(fail) a late response after a branch switch appends no ledger entries to the active branch [1.42ms]
+
+test/state.test.ts:
+(pass) round-trips through the ledger entry; later entries replace earlier ones [0.30ms]
+(pass) branch switch: cursors and anchors pointing at absent loop ids are dropped [0.05ms]
+(pass) old ledger entry types and malformed state are ignored [0.04ms]
+(pass) writeState reports durability honestly [0.06ms]
+(pass) cursor rules: advance, hold open, start position [0.03ms]
+(pass) task reset returns to first-active; permission withdrawal voids anchors but keeps cursors [0.03ms]
+
+test/shared-service-llm.integration.test.ts:
+(skip) LLM review observes real SSE attempts and ignores native numeric gates
+(skip) malformed discrete answer retries count actual sends; zero, missing and catalog estimates differ
+(skip) deadline keeps unfinished SSE usage and cannot accept late answers or charges
+(skip) HTTP 400/invalid_payload is not context recovery or an unobserved SDK retry
+(skip) HTTP 401/context_length_exceeded is not context recovery or an unobserved SDK retry
+(skip) HTTP 429/context_length_exceeded is not context recovery or an unobserved SDK retry
+(skip) HTTP 413/context_length_exceeded is not context recovery or an unobserved SDK retry
+(skip) HTTP 500/internal_error is not context recovery or an unobserved SDK retry
+(skip) overlapping hidden fetches remain visible but never invent a preceding completion
+(skip) an adapter dropping provider events fails accounting without inventing known zeros
+
+test/shared-service-accounting.integration.test.ts:
+(skip) exact rejection survives corrected size hints and protects a single-question superset
+(skip) provider accounting: invalid native members keep reported model/charge and presence (17)
+(skip) provider accounting: invalid native members keep reported model/charge and presence (-1)
+(skip) provider accounting: invalid native members keep reported model/charge and presence (invalid)
+(skip) provider accounting: invalid native members keep reported model/charge and presence (undefined)
+(skip) attempt identities cannot collide across service reloads at the same clock value
+(skip) OpenRouter typed overflow recovers; response charges remain distinct from estimates
+
+test/shared-service-ownership.integration.test.ts:
+(skip) capacity ownership: direct selects its own two-dimensional limits
+(skip) capacity ownership: router selects its own two-dimensional limits
+(skip) capacity ownership: custom selects its own two-dimensional limits
+(skip) capacity ownership: override selects its own two-dimensional limits
+(skip) F1: predicted-request pressure chooses one recovery dimension, not evidence-by-question traversal
+(skip) F1: reported-request pressure chooses one recovery dimension, not evidence-by-question traversal
+(skip) F1: predicted-state pressure chooses one recovery dimension, not evidence-by-question traversal
+(skip) F1: reported-state pressure chooses one recovery dimension, not evidence-by-question traversal
+(skip) capacity ownership: lower density survives reload; unrelated transport cannot borrow it
+(skip) cache ownership: new C sends only C; threshold changes never strengthen cached values
+(skip) cache ownership: legal own keys, exact metadata/order and different question ids stay distinct
+(skip) batch ownership: failed independent question batches resume missing work with frozen priors
+(skip) error ownership: HTTP 401 does not authorize context subdivision
+(skip) error ownership: HTTP 402 does not authorize context subdivision
+(skip) error ownership: HTTP 413 does not authorize context subdivision
+(skip) error ownership: HTTP 422 does not authorize context subdivision
+(skip) error ownership: HTTP 429 does not authorize context subdivision
+(skip) error ownership: HTTP 500 does not authorize context subdivision
+
+test/capacity.test.ts:
+(pass) F1/F2: legacy and covered primary facts stop at the same irreducible floor; a bounded account remains useful [192.38ms]
+(pass) covered long history still stops when retained primary obligations cannot fit [138.86ms]
+(pass) one oversized message is covered by ordered labelled fragments and counts as processed only after its last fragment [19.93ms]
+(pass) F2: a fragmented user constraint cannot disappear to make later work fit [50.28ms]
+(pass) a long user constraint that fits is still retained on later audits [5.07ms]
+(pass) question-dominated overflow splits independent questions over one frozen state and merges only same-state answers [4.30ms]
+(pass) fixed state or a single question that cannot fit terminates with an actionable diagnostic and no advice [2.44ms]
+(pass) a later piece failure never re-buys earlier admitted pieces; resumption pays only the unfinished work [96.50ms]
+(pass) a failure in a later fragment of one record resumes without re-paying earlier fragments [21.19ms]
+(pass) admitted covered tiny reports retain every primary candidate, not a newest-first crop [12.44ms]
+
+test/usage.test.ts:
+(pass) valid, malformed and invalid answers all keep the response model and usage [1.88ms]
+(pass) retries count every attempt; absent usage stays unknown rather than zero [9.28ms]
+(pass) overflow and recovery attempts are each counted [2.17ms]
+(pass) negative or non-numeric usage is unknown, not a fabricated count [0.17ms]
+
+test/shared-service-corpus.integration.test.ts:
+(skip) R14 real corpus: tool-heavy
+(skip) R14 real corpus: text-only+reply
+(skip) R14 real corpus: short
+(skip) R14 real corpus: todo-revisions
+(skip) R14 real corpus: mixed-cached
+(skip) R14 real corpus: failed-later-chunk
+
+test/board.test.ts:
+(pass) board > empty branch → empty board [0.04ms]
+(pass) board > last todo snapshot wins [0.17ms]
+(pass) board > corrupt/non-todo entries skipped [0.04ms]
+(pass) board > isTaskDetails shape check [0.02ms]
+(pass) board > visibleTasks hides deleted [0.02ms]
+(pass) board > renderBoardLines mirrors /todos rows [0.04ms]
+(pass) board > inProgressTasks [0.02ms]
+(pass) board > in_progress entry stamped at transition loop [0.03ms]
+(pass) board > re-entry into in_progress restamps [0.04ms]
+(pass) board > completed task drops stamp [0.02ms]
+(pass) board > staleTaskIds flags only over-span tasks [0.05ms]
+(pass) board > revisions record only actual snapshot changes; reads, no-ops and failed updates add none [0.09ms]
+(pass) board > first-active origin survives updates, pending/resume; a new task never inherits it [0.12ms]
+(pass) task trajectory serializes at most the latest few segments while keeping the first-active origin [0.26ms]
+
+test/session-cache.test.ts:
+(pass) consumer JSONL restores a versioned exact answer without any service checkpoint [0.22ms]
+(pass) acknowledged results survive a new consumer-cache instance [0.11ms]
+(pass) legacy, foreign, unknown-version and malformed records are not cache hits [0.07ms]
+(pass) failed persistence cannot create acknowledged cache membership [0.05ms]
+(pass) stale captures cannot read or write another generation's cache [0.04ms]
+(pass) replaying a new active branch drops prior branch keys [0.02ms]
+(pass) an append that invalidates the capture cannot acknowledge current progress [0.02ms]
+(pass) finite answer fields are copied without private payloads or mutable aliases [0.08ms]
+(pass) cache entries and ambient system/tool definitions are not historical input [0.15ms]
+
+test/ledger.test.ts:
+72 | const records = (branch: unknown[]) => branch.filter((e: any) => e.type === "custom" && e.customType === LEDGER_TYPE) as any[];
+73 | 
+74 | test("business receipts/diagnostics are non-context; shared-service reuse is not charged again", async () => {
+75 | 	const branch: unknown[] = [user("u", "Work on parser.ts"), board];
+76 | 	const h = host(branch); await h.emit("session_start"); await h.manual();
+77 | 	expect(calls).toHaveLength(1);
+                    ^
+error: expect(received).toHaveLength(expected)
+
+Expected length: 1
+Received length: 0
+
+      at <anonymous> (/home/xz/Code/ai/pi-jev-todo-audit/test/ledger.test.ts:77:16)
+(fail) business receipts/diagnostics are non-context; shared-service reuse is not charged again [0.53ms]
+ 96 | test("compaction lifecycle restores business input without treating ledger entries as facts", async () => {
+ 97 | 	const branch: unknown[] = [user("u", "Work on parser.ts"), board];
+ 98 | 	const h = host(branch); await h.emit("session_start"); await h.manual();
+ 99 | 	reply = "reused";
+100 | 	const fresh = host(branch); await fresh.emit("session_compact"); await fresh.manual();
+101 | 	expect(calls).toHaveLength(2); expect(calls[1].request).toEqual(calls[0].request);
+                     ^
+error: expect(received).toHaveLength(expected)
+
+Expected length: 2
+Received length: 0
+
+      at <anonymous> (/home/xz/Code/ai/pi-jev-todo-audit/test/ledger.test.ts:101:16)
+(fail) compaction lifecycle restores business input without treating ledger entries as facts [0.22ms]
+106 | test("abandoned-branch business receipts are not restored into the active history", async () => {
+107 | 	const abandoned: unknown[] = [user("u", "Work on parser.ts"), board];
+108 | 	const h = host(abandoned); await h.emit("session_start"); await h.manual();
+109 | 	const active: unknown[] = [user("u", "Work on parser.ts"), board];
+110 | 	const other = host(active); await other.emit("session_tree"); await other.manual();
+111 | 	expect(calls).toHaveLength(2); expect(calls[1].options.checkpoint).toBeUndefined();
+                     ^
+error: expect(received).toHaveLength(expected)
+
+Expected length: 2
+Received length: 0
+
+      at <anonymous> (/home/xz/Code/ai/pi-jev-todo-audit/test/ledger.test.ts:111:16)
+(fail) abandoned-branch business receipts are not restored into the active history [0.18ms]
+116 | test("a failed business write is not durable and does not prevent the next review", async () => {
+117 | 	const branch: unknown[] = [user("u", "Work on parser.ts"), board];
+118 | 	expect(writeLedger(() => { throw new Error("disk full"); }, { kind: "eval", answers: {} })).toBe(false);
+119 | 	expect(writeLedger(undefined, { kind: "eval", answers: {} })).toBe(false);
+120 | 	const h = host(branch, { appendThrows: true }); await h.emit("session_start"); await h.manual();
+121 | 	expect(calls).toHaveLength(1); expect(branch.some((e: any) => e.type === "custom")).toBe(false);
+                     ^
+error: expect(received).toHaveLength(expected)
+
+Expected length: 1
+Received length: 0
+
+      at <anonymous> (/home/xz/Code/ai/pi-jev-todo-audit/test/ledger.test.ts:121:16)
+(fail) a failed business write is not durable and does not prevent the next review [0.15ms]
+126 | 
+127 | test("acknowledged consumer results advance independently of a volatile service checkpoint", async () => {
+128 | 	durable = false;
+129 | 	const branch: unknown[] = [user("u", "Work on parser.ts"), board];
+130 | 	const h = host(branch); await h.emit("session_start"); await h.manual();
+131 | 	expect(calls).toHaveLength(1);
+                     ^
+error: expect(received).toHaveLength(expected)
+
+Expected length: 1
+Received length: 0
+
+      at <anonymous> (/home/xz/Code/ai/pi-jev-todo-audit/test/ledger.test.ts:131:16)
+(fail) acknowledged consumer results advance independently of a volatile service checkpoint [0.13ms]
+(pass) receipts restore only when their required answers are also recorded; the latest valid one wins [0.09ms]
+148 | test("a main-agent rebuttal changes review input; unanswered advice alone does not", async () => {
+149 | 	const branch: unknown[] = [user("u", "Analyse caching strategies; analysis only."), board,
+150 | 		{ id: "a1", type: "message", message: { role: "assistant", content: "Strategy comparison, part one." } }];
+151 | 	const h = host(branch); await h.emit("session_start"); await h.manual();
+152 | 	branch.push({ id: "jev", type: "custom_message", customType: "jev-todo-audit", display: true, content: "[jev audit] split #5?" });
+153 | 	reply = "reused"; await h.manual(); expect(calls).toHaveLength(2); expect(calls[1].request).toEqual(calls[0].request);
+                                                         ^
+error: expect(received).toHaveLength(expected)
+
+Expected length: 2
+Received length: 0
+
+      at <anonymous> (/home/xz/Code/ai/pi-jev-todo-audit/test/ledger.test.ts:153:52)
+(fail) a main-agent rebuttal changes review input; unanswered advice alone does not [0.19ms]
+160 | 
+161 | test("recovered service diagnostics preserve rejected attempts, successful parts and missing usage", async () => {
+162 | 	reply = "recovered";
+163 | 	const branch: unknown[] = [user("u", "Work on parser.ts"), user("u2", "Also keep the API stable"), board];
+164 | 	const h = host(branch); await h.emit("session_start"); await h.manual();
+165 | 	const diag = records(branch).at(-1).data.diag;
+                                         ^
+TypeError: undefined is not an object (evaluating 'records(branch).at(-1).data')
+      at <anonymous> (/home/xz/Code/ai/pi-jev-todo-audit/test/ledger.test.ts:165:36)
+(fail) recovered service diagnostics preserve rejected attempts, successful parts and missing usage [0.26ms]
+(pass) a receipt's oversized list survives reload; malformed lists are dropped [0.06ms]
+185 | 		const h = host(branch); await h.emit("session_start"); await h.manual();
+186 | 		reply = "reused";
+187 | 		const reloaded = host(branch); await reloaded.emit("session_start"); await reloaded.manual();
+188 | 	} finally { Date.now = realNow; }
+189 | 	const ids = records(branch).filter((e) => e.data.kind === "diag").map((e) => e.data.diag.audit);
+190 | 	expect(ids).toHaveLength(2); expect(new Set(ids).size).toBe(2);
+                   ^
+error: expect(received).toHaveLength(expected)
+
+Expected length: 2
+Received length: 0
+
+      at <anonymous> (/home/xz/Code/ai/pi-jev-todo-audit/test/ledger.test.ts:190:14)
+(fail) audit diagnostic ids stay unique across a reload of the same session [0.20ms]
+
+test/cache.test.ts:
+(pass) P1: evaluate admits 254+fallback but withholds 255+fallback without attempts or rejection training [1.30ms]
+(pass) P1: batch admits 254+fallback but withholds 255+fallback without attempts or rejection training [0.71ms]
+(pass) P1: direct admits 254+fallback but withholds 255+fallback without attempts or rejection training [0.31ms]
+(pass) P1/P3: cached valid siblings survive an oversized non-evidence Choice, with no empty request [0.48ms]
+(pass) every decision category (alignment, lifecycle, granularity, evidence, chunk) is reused with zero provider calls [1.26ms]
+(pass) changed criteria, instructions, options, context, model or endpoint make distinct keys [0.32ms]
+(pass) A/B cached plus C missing sends only C and returns the combined answers [0.26ms]
+(pass) concurrent identical calls share one provider evaluation [1.14ms]
+(pass) partial response keeps valid siblings; missing/invalid answers are never borrowed from older answers [0.45ms]
+(pass) uncertain or low-confidence answers are cached as-is, never strengthened [0.14ms]
+(pass) fresh review bypasses stored answers once and stores the new result [1.57ms]
+(pass) within one forced review, newly completed answers are reused after a later failure; a new forced review re-evaluates [2.05ms]
+(pass) identical question definitions under different keys do not share a cached answer [0.36ms]
+
+test/ownership.test.ts:
+(pass) native Node independent parents and inherited descendants preserve ownership without a shell [244.80ms]
+83 | 	if (marker !== undefined) process.env[OWNER] = marker;
+84 | 	const h = host(); makeExtension(h.pi, h.cfg);
+85 | 	expect(process.env[OWNER]).toBe(String(process.pid));
+86 | 	await h.emit("session_start");
+87 | 	await h.commands.get("jev-audit").handler("", h.ctx);
+88 | 	expect(h.counts().reviews).toBe(1);
+                                 ^
+error: expect(received).toBe(expected)
+
+Expected: 1
+Received: 0
+
+      at <anonymous> (/home/xz/Code/ai/pi-jev-todo-audit/test/ownership.test.ts:88:29)
+(fail) main claims/reuses ownership with marker undefined [0.83ms]
+83 | 	if (marker !== undefined) process.env[OWNER] = marker;
+84 | 	const h = host(); makeExtension(h.pi, h.cfg);
+85 | 	expect(process.env[OWNER]).toBe(String(process.pid));
+86 | 	await h.emit("session_start");
+87 | 	await h.commands.get("jev-audit").handler("", h.ctx);
+88 | 	expect(h.counts().reviews).toBe(1);
+                                 ^
+error: expect(received).toBe(expected)
+
+Expected: 1
+Received: 0
+
+      at <anonymous> (/home/xz/Code/ai/pi-jev-todo-audit/test/ownership.test.ts:88:29)
+(fail) main claims/reuses ownership with marker  [0.12ms]
+83 | 	if (marker !== undefined) process.env[OWNER] = marker;
+84 | 	const h = host(); makeExtension(h.pi, h.cfg);
+85 | 	expect(process.env[OWNER]).toBe(String(process.pid));
+86 | 	await h.emit("session_start");
+87 | 	await h.commands.get("jev-audit").handler("", h.ctx);
+88 | 	expect(h.counts().reviews).toBe(1);
+                                 ^
+error: expect(received).toBe(expected)
+
+Expected: 1
+Received: 0
+
+      at <anonymous> (/home/xz/Code/ai/pi-jev-todo-audit/test/ownership.test.ts:88:29)
+(fail) main claims/reuses ownership with marker 75116 [0.05ms]
+(pass) inherited or invalid owner 75117 suppresses every JEV path before config [0.18ms]
+(pass) inherited or invalid owner not-a-pid suppresses every JEV path before config [0.03ms]
+(pass) inherited or invalid owner 0 suppresses every JEV path before config [0.05ms]
+(pass) inherited or invalid owner  75116 suppresses every JEV path before config [0.03ms]
+(pass) inherited or invalid owner 75116.0 suppresses every JEV path before config [0.02ms]
+
+test/shared-service.integration.test.ts:
+(skip) classifier/http/ordinary: shared audit retains completed stages after failure/reload without charging reuse
+(skip) llm/http/ordinary: shared audit retains completed stages after failure/reload without charging reuse
+(skip) classifier/missing/ordinary: shared audit retains completed stages after failure/reload without charging reuse
+(skip) classifier/none/ordinary: shared audit retains completed stages after failure/reload without charging reuse
+(skip) classifier/http/full: shared audit retains completed stages after failure/reload without charging reuse
+
+test/corpus.test.ts:
+(pass) corpus retains all six workloads and their public text without tool bodies [1.57ms]
+
+test/presplit.test.ts:
+(pass) the two published limits are checked separately so admitted request-wide capacity is not wasted [0.05ms]
+(pass) learning uses the latest usable ratio and minimal rejection sizes, dominating in both dimensions [0.07ms]
+(pass) replay of the live smoke attempts: all 7 rejected envelopes are predicted, none of the 8 admitted ones [0.19ms]
+(pass) an admitted larger different envelope retires size hints but never its exact rejection identity [0.75ms]
+(pass) lower-density admissions permit later batches in memory and after diagnostic replay [3.40ms]
+(pass) a predicted overflow sends nothing, records no rejection and is reported as a pre-split [0.18ms]
+(pass) an irreducible fixed-state prediction admits the useful batch before individual questions [0.96ms]
+(pass) a direct context evaluation still sends single questions for admission instead of ending on a prediction [2.30ms]
+
+test/rolling.test.ts:
+(pass) F1: XML and CSV remain distinguishable in the next packet after routine reports exceed 4K [10.02ms]
+(pass) F2: an old brief cannot erase a later user decision, another task or a needed primary report [10.96ms]
+(pass) an earlier reported blocker and user decision survive a later opinion update; opinions and progress stay separate [3.41ms]
+(pass) F1: a processed uncovered report is retained even beyond the ancillary budget [2.21ms]
+(pass) unchanged input sends nothing; a failed receipt write does not advance progress [3.69ms]
+(pass) F4: chunk 3 failure keeps completed ranges, qualified facts and gaps; resumption sends only unresolved work [7.43ms]
+(pass) partial answers keep completed ones, do not advance, and a retry sends only the missing questions [2.08ms]
+(pass) a short reply does not silently replace a still-applicable earlier report [2.97ms]
+(pass) P1/F1: processed covered reports retain potential primary eligibility without a prior pin [5.07ms]
+
+test/incremental.test.ts:
+(pass) two consecutive audits: the second sends only post-cursor loops; state and cursors persist through the ledger [2.70ms]
+(pass) an incomplete trailing loop is excluded and becomes the next segment once its result arrives [0.81ms]
+(pass) uncertain answer holds the task open; session advances; next run re-asks only the open task from its open loop [0.99ms]
+(pass) persistence failure leaves the previous state and cursors in force [0.46ms]
+(pass) overflow recovery drops trailing whole loops; a single loop that still overflows is reported oversize, cursor kept [0.93ms]
+(pass) missing capacity metadata is surfaced and bounded by the fallback loop count [1.27ms]
+(pass) full mode re-judges from the first loop while keeping prior state only as reset targets [0.87ms]
+
+test/shared-contract.test.ts:
+70 | 					expect(view.omissions.some((o: any) => o.id === "global")).toBe(gap !== "unknown");
+71 | 					expect(JSON.stringify(view)).not.toContain("DO_NOT_EXPORT");
+72 | 				}
+73 | 				inspected = true; return empty();
+74 | 			} };
+75 | 		try { await h.emit("session_start"); await h.manual(); expect(inspected).toBe(true); }
+                                                                                ^
+error: expect(received).toBe(expected)
+
+Expected: true
+Received: false
+
+      at <anonymous> (/home/xz/Code/ai/pi-jev-todo-audit/test/shared-contract.test.ts:75:76)
+(fail) stage omissions keep unavailable entries local and retain unscoped global uncertainty [0.90ms]
+82 | 	const legacy = { version: 1, reviewVersion: 1, review: async () => { calls++; return empty(); } };
+83 | 	globals[key] = legacy;
+84 | 	const h = host(); await h.emit("session_start");
+85 | 	await h.manual(); await h.emit("turn_end");
+86 | 	expect(calls).toBe(0); expect(h.sent).toEqual([]);
+87 | 	expect(h.notices.some((message) => message.includes("reviewCacheVersion 1"))).toBe(true);
+                                                                                    ^
+error: expect(received).toBe(expected)
+
+Expected: true
+Received: false
+
+      at <anonymous> (/home/xz/Code/ai/pi-jev-todo-audit/test/shared-contract.test.ts:87:80)
+(fail) review-v1 without consumer-cache support is explicit incompatibility, never legacy fallback [0.31ms]
+94 | 	await h.emit("turn_end"); await h.emit("turn_end");
+95 | 	expect(h.notices.filter((m) => m.includes("requires pi-llm-as-jev"))).toHaveLength(1);
+96 | 	await h.manual(); expect(h.notices.filter((m) => m.includes("requires pi-llm-as-jev"))).toHaveLength(2);
+97 | 	globals[key] = { version: 1, judge: () => { throw new Error("legacy judge forbidden"); } };
+98 | 	await h.emit("turn_end"); await h.emit("turn_end");
+99 | 	expect(h.notices.filter((m) => m.includes("requires pi-llm-as-jev"))).toHaveLength(3);
+                                                                            ^
+error: expect(received).toHaveLength(expected)
+
+Expected length: 3
+Received length: 2
+
+      at <anonymous> (/home/xz/Code/ai/pi-jev-todo-audit/test/shared-contract.test.ts:99:72)
+(fail) missing/old service notices are bounded; later discovery needs no re-enable and manual dependency errors stay clear [1.49ms]
+120 | 	}
+121 | 	const count = dependencies().length;
+122 | 	await h.emit("turn_end"); await h.emit("turn_end"); expect(dependencies()).toHaveLength(count);
+123 | 	expect(legacyCalls).toBe(0); expect(h.authCalls()).toBe(0); expect(h.sent).toHaveLength(0); expect(h.branch).toHaveLength(2);
+124 | 	globals[key] = { version: 1, reviewVersion: 1, reviewCacheVersion: 1, reviewStagesVersion: 1, review: async () => { calls++; return empty(); } };
+125 | 	await h.emit("turn_end"); expect(calls).toBe(1); expect(dependencies()).toHaveLength(count);
+                                               ^
+error: expect(received).toBe(expected)
+
+Expected: 1
+Received: 0
+
+      at <anonymous> (/home/xz/Code/ai/pi-jev-todo-audit/test/shared-contract.test.ts:125:42)
+(fail) missing: manual ordinary always reports dependency error (before automatic notice) [0.48ms]
+120 | 	}
+121 | 	const count = dependencies().length;
+122 | 	await h.emit("turn_end"); await h.emit("turn_end"); expect(dependencies()).toHaveLength(count);
+123 | 	expect(legacyCalls).toBe(0); expect(h.authCalls()).toBe(0); expect(h.sent).toHaveLength(0); expect(h.branch).toHaveLength(2);
+124 | 	globals[key] = { version: 1, reviewVersion: 1, reviewCacheVersion: 1, reviewStagesVersion: 1, review: async () => { calls++; return empty(); } };
+125 | 	await h.emit("turn_end"); expect(calls).toBe(1); expect(dependencies()).toHaveLength(count);
+                                               ^
+error: expect(received).toBe(expected)
+
+Expected: 1
+Received: 0
+
+      at <anonymous> (/home/xz/Code/ai/pi-jev-todo-audit/test/shared-contract.test.ts:125:42)
+(fail) missing: manual ordinary always reports dependency error (after automatic notice) [0.21ms]
+120 | 	}
+121 | 	const count = dependencies().length;
+122 | 	await h.emit("turn_end"); await h.emit("turn_end"); expect(dependencies()).toHaveLength(count);
+123 | 	expect(legacyCalls).toBe(0); expect(h.authCalls()).toBe(0); expect(h.sent).toHaveLength(0); expect(h.branch).toHaveLength(2);
+124 | 	globals[key] = { version: 1, reviewVersion: 1, reviewCacheVersion: 1, reviewStagesVersion: 1, review: async () => { calls++; return empty(); } };
+125 | 	await h.emit("turn_end"); expect(calls).toBe(1); expect(dependencies()).toHaveLength(count);
+                                               ^
+error: expect(received).toBe(expected)
+
+Expected: 1
+Received: 0
+
+      at <anonymous> (/home/xz/Code/ai/pi-jev-todo-audit/test/shared-contract.test.ts:125:42)
+(fail) missing: manual full always reports dependency error (before automatic notice) [0.14ms]
+120 | 	}
+121 | 	const count = dependencies().length;
+122 | 	await h.emit("turn_end"); await h.emit("turn_end"); expect(dependencies()).toHaveLength(count);
+123 | 	expect(legacyCalls).toBe(0); expect(h.authCalls()).toBe(0); expect(h.sent).toHaveLength(0); expect(h.branch).toHaveLength(2);
+124 | 	globals[key] = { version: 1, reviewVersion: 1, reviewCacheVersion: 1, reviewStagesVersion: 1, review: async () => { calls++; return empty(); } };
+125 | 	await h.emit("turn_end"); expect(calls).toBe(1); expect(dependencies()).toHaveLength(count);
+                                               ^
+error: expect(received).toBe(expected)
+
+Expected: 1
+Received: 0
+
+      at <anonymous> (/home/xz/Code/ai/pi-jev-todo-audit/test/shared-contract.test.ts:125:42)
+(fail) missing: manual full always reports dependency error (after automatic notice) [0.20ms]
+114 | 		expect(dependencies()).toHaveLength(1); expect(dependencies()[0].level).toBe("warning");
+115 | 	}
+116 | 	for (let i = 0; i < 2; i++) {
+117 | 		const count = dependencies().length;
+118 | 		await h.manual(mode);
+119 | 		expect(dependencies()).toHaveLength(count + 1); expect(dependencies().at(-1)!.level).toBe("error");
+                               ^
+error: expect(received).toHaveLength(expected)
+
+Expected length: 1
+Received length: 0
+
+      at <anonymous> (/home/xz/Code/ai/pi-jev-todo-audit/test/shared-contract.test.ts:119:26)
+(fail) old: manual ordinary always reports dependency error (before automatic notice) [0.40ms]
+109 | 	if (dependency === "old") globals[key] = { version: 1, judge: () => { legacyCalls++; throw new Error("legacy fallback forbidden"); } };
+110 | 	const h = host(); await h.emit("session_start");
+111 | 	const dependencies = () => h.noticeEvents.filter(n => n.text.includes("requires pi-llm-as-jev"));
+112 | 	if (autoFirst) {
+113 | 		await h.emit("turn_end"); await h.emit("turn_end");
+114 | 		expect(dependencies()).toHaveLength(1); expect(dependencies()[0].level).toBe("warning");
+                               ^
+error: expect(received).toHaveLength(expected)
+
+Expected length: 1
+Received length: 0
+
+      at <anonymous> (/home/xz/Code/ai/pi-jev-todo-audit/test/shared-contract.test.ts:114:26)
+(fail) old: manual ordinary always reports dependency error (after automatic notice) [0.56ms]
+114 | 		expect(dependencies()).toHaveLength(1); expect(dependencies()[0].level).toBe("warning");
+115 | 	}
+116 | 	for (let i = 0; i < 2; i++) {
+117 | 		const count = dependencies().length;
+118 | 		await h.manual(mode);
+119 | 		expect(dependencies()).toHaveLength(count + 1); expect(dependencies().at(-1)!.level).toBe("error");
+                               ^
+error: expect(received).toHaveLength(expected)
+
+Expected length: 1
+Received length: 0
+
+      at <anonymous> (/home/xz/Code/ai/pi-jev-todo-audit/test/shared-contract.test.ts:119:26)
+(fail) old: manual full always reports dependency error (before automatic notice) [0.31ms]
+109 | 	if (dependency === "old") globals[key] = { version: 1, judge: () => { legacyCalls++; throw new Error("legacy fallback forbidden"); } };
+110 | 	const h = host(); await h.emit("session_start");
+111 | 	const dependencies = () => h.noticeEvents.filter(n => n.text.includes("requires pi-llm-as-jev"));
+112 | 	if (autoFirst) {
+113 | 		await h.emit("turn_end"); await h.emit("turn_end");
+114 | 		expect(dependencies()).toHaveLength(1); expect(dependencies()[0].level).toBe("warning");
+                               ^
+error: expect(received).toHaveLength(expected)
+
+Expected length: 1
+Received length: 0
+
+      at <anonymous> (/home/xz/Code/ai/pi-jev-todo-audit/test/shared-contract.test.ts:114:26)
+(fail) old: manual full always reports dependency error (after automatic notice) [0.53ms]
+140 | 			answers[id] = { type: "choice", choice: choices[id], confidence: 0, probabilities: Object.fromEntries(Object.keys(q.criteria).map((label) => [label, label === choices[id] ? 1 : 0])) };
+141 | 		}
+142 | 		return { ...empty(), answers };
+143 | 	} };
+144 | 	await h.emit("session_start"); await h.manual();
+145 | 	expect(calls).toBe(1); expect(h.sent).toHaveLength(1);
+                     ^
+error: expect(received).toBe(expected)
+
+Expected: 1
+Received: 0
+
+      at <anonymous> (/home/xz/Code/ai/pi-jev-todo-audit/test/shared-contract.test.ts:145:16)
+(fail) service-accepted LLM choices with zero compatibility numbers still reconcile, never authorize execution [0.31ms]
+169 | 			calls.push({ request, options });
+170 | 			return { ...empty(), stopReason: "error", errorMessage: `Scripted failure ${secret} ${projectSecret}` };
+171 | 		} };
+172 | 		await h.emit("session_start"); await h.manual(); await h.manual();
+173 | 		// Assert outside the isolated audit callback: a swallowed fixture error cannot pass.
+174 | 		expect(calls).toHaveLength(2); expect(h.authCalls()).toBe(0); expect(h.sent).toHaveLength(0);
+                      ^
+error: expect(received).toHaveLength(expected)
+
+Expected length: 2
+Received length: 0
+
+      at <anonymous> (/home/xz/Code/ai/pi-jev-todo-audit/test/shared-contract.test.ts:174:17)
+(fail) old audit credentials remain redacted data, never auth or service configuration [1.11ms]
+
+test/state-verdict.test.ts:
+(pass) stored completion report yields the existing 'reported, not independently verified' correction [0.44ms]
+(pass) an open (uncertain) task yields no answer and the verdict fails closed for it [0.12ms]
+(pass) a scope whose cursor is behind the branch tip is not current [0.04ms]
+(pass) voided authorization anchor blocks execution advice; in_progress task without granularity never wakes [0.11ms]
+(pass) off-board current work with drift yields a return/create advisory through the unchanged gates [0.09ms]
+
+test/shared-service-boundary.integration.test.ts:
+(skip) R16: incremental partial stages preserves source facts and resumes only unfinished work
+(skip) R16: incremental single stage preserves source facts and resumes only unfinished work
+(skip) R02: compaction gaps and id-less authority are new evidence, not covered by an old frontier
+(skip) native missing member is not a final answer or durable stage; only that member is retried
+(skip) explicit local withholding keeps independent final choices without advancing coverage
+(skip) 1 records and 12 questions get one fixed-state admission; diagnostics match exact wire bytes
+(skip) 6 records and 12 questions get one fixed-state admission; diagnostics match exact wire bytes
+(skip) 69 records and 12 questions get one fixed-state admission; diagnostics match exact wire bytes
+(skip) same fresh token resumes after reload; a new token buys new work and token text never persists
+(skip) unfinished transport remains explicit at deadline; late settlement cannot change receipts or returned accounting
+(skip) cancelled joiner owns no provider attempt and cannot cancel the owner's transport
+(skip) R01: irreducible retained facts stop at the first leaf and rejected wires stay rejected after reload
+(skip) R06: mid-record full recovery reuses completed fragments without claiming the whole source
+(skip) R06 safety: fragment loss cannot authorize actually_completed
+(skip) R06 safety: fragment loss cannot authorize actionable_now
+(skip) R15: channel learning and exact rejections survive reload; fresh work reports real pre-splits
+(skip) R10: failed service appends cannot acknowledge durable stages or avoid payment after reload
+(skip) projection cannot silently omit a required question or ambiguously mark it unresolved
+(skip) all questions explicitly withheld produce no request and no coverage
+(skip) projection descriptor mutations cannot replace original sources or forge bounds
+(skip) throwing and asynchronously rejecting projectors fail without dispatch or unhandled rejection
+(skip) pre-abort stages survive, a switched branch receives no late writes, and reload pays only unfinished work
+(skip) locally withheld task evidence does not suppress an independently supported sibling correction
+(skip) provider error bodies never enter review errors or persisted diagnostics
+
+test/amplification.test.ts:
+(pass) admissible TypeSafe fixed prefix and 1 new records use one complete batch (reported usage) [259.75ms]
+(pass) admissible TypeSafe fixed prefix and 6 new records use one complete batch (reported usage) [13.41ms]
+(pass) admissible TypeSafe fixed prefix and 69 new records use one complete batch (reported usage) [15.15ms]
+(pass) admissible TypeSafe fixed prefix and 1 new records use one complete batch (missing usage) [13.50ms]
+(pass) admissible TypeSafe fixed prefix and 6 new records use one complete batch (missing usage) [13.59ms]
+(pass) admissible TypeSafe fixed prefix and 69 new records use one complete batch (missing usage) [15.31ms]
+(pass) admissible request-only fixed prefix and 1 new records use one complete batch (reported usage) [13.05ms]
+(pass) admissible request-only fixed prefix and 6 new records use one complete batch (reported usage) [13.35ms]
+(pass) admissible request-only fixed prefix and 69 new records use one complete batch (reported usage) [16.39ms]
+(pass) admissible request-only fixed prefix and 1 new records use one complete batch (missing usage) [12.20ms]
+(pass) admissible request-only fixed prefix and 6 new records use one complete batch (missing usage) [12.35ms]
+(pass) admissible request-only fixed prefix and 69 new records use one complete batch (missing usage) [14.13ms]
+(pass) admissible request-stricter fixed prefix and 1 new records use one complete batch (reported usage) [12.34ms]
+(pass) admissible request-stricter fixed prefix and 6 new records use one complete batch (reported usage) [12.26ms]
+(pass) admissible request-stricter fixed prefix and 69 new records use one complete batch (reported usage) [14.28ms]
+(pass) admissible request-stricter fixed prefix and 1 new records use one complete batch (missing usage) [13.94ms]
+(pass) admissible request-stricter fixed prefix and 6 new records use one complete batch (missing usage) [12.47ms]
+(pass) admissible request-stricter fixed prefix and 69 new records use one complete batch (missing usage) [13.98ms]
+(pass) admissible OpenRouter fixed prefix and 1 new records use one complete batch (reported usage) [12.21ms]
+(pass) admissible OpenRouter fixed prefix and 6 new records use one complete batch (reported usage) [12.31ms]
+(pass) admissible OpenRouter fixed prefix and 69 new records use one complete batch (reported usage) [13.94ms]
+(pass) admissible OpenRouter fixed prefix and 1 new records use one complete batch (missing usage) [12.10ms]
+(pass) admissible OpenRouter fixed prefix and 6 new records use one complete batch (missing usage) [12.22ms]
+(pass) admissible OpenRouter fixed prefix and 69 new records use one complete batch (missing usage) [15.99ms]
+(pass) a disputed prediction followed by true overflow preserves admitted facts and stops at the primary floor [192.35ms]
+(pass) confirmed fixed-state failure stops before sibling scopes (1 records) [16.15ms]
+(pass) confirmed fixed-state failure stops before sibling scopes (6 records) [91.04ms]
+(pass) confirmed fixed-state failure stops before sibling scopes (69 records) [74.01ms]
+(pass) a request-wide fixed-floor admission never resends a rejected single-question superset [12.67ms]
+(pass) question-only overflow resumes missing same-state batches without repaying completed questions [3.86ms]
+
+test/consumer-cache.integration.test.ts:
+(skip) J04 public audit reload uses consumer JSONL with a new empty-ledger service and zero inference
+(skip) J08 failed consumer persistence advances no frontier and delivers no final advice
+(skip) J08 a branch change fences late native results, cache writes and final advice
+(skip) J06 TODO macro-history append reuses sealed business stages and reduces the entire outbound packet
+(skip) J07 retained source facts distinguish CSV and later permission withdrawal after sealed-prefix caching
+(skip) J13 old session and native identity recover through >30s healthy SDK streaming, durable reload, stall and cancellation
+(skip) J05 independently validated LLM A/B survive C failure and cold retry buys only C
+(skip) J11 caller stages share one native deadline and late transport cannot commit the final stage
+(skip) J11 invalid or asynchronous stage plans make zero provider attempts
+(skip) review fix: an all-withheld provisional prefix cannot disappear into successful tail judgment
+(skip) review fix: llm cache-store cancellation fences subsequent judgment publication
+(skip) review fix: native cache-store cancellation fences subsequent judgment publication
+(skip) review fix: a durable tail cannot bridge a nondurable prefix
+(skip) review fix: id-less historical authority remains usable and replays from consumer cache
+(skip) review fix: completed full becomes the durable ordinary baseline, then another full is new
+(skip) review fix: unfinished full resumes acknowledged questions after consumer and service reload
+(skip) review fix: failed full pending acknowledgement cannot select a new ordinary baseline
+(skip) review fix: failed full complete acknowledgement cannot select a new ordinary baseline
+(skip) review fix: input changed synchronously during receipt append cannot publish final advice
+(skip) review fix: unfinished full never supplies the ordinary namespace
+(skip) dependency gate: omit unused granularity across cold reload and restore it after dependency completion
+(skip) stage omissions: private session metadata cannot repurchase unchanged judgments
+(skip) stage omissions: metadata before id-less history preserves cold cache identity
+(skip) stage omissions: unsupported tail cannot contaminate root or sealed prefix
+(skip) stage omissions: redacted tail cannot contaminate root or sealed prefix
+(skip) stage omissions: prefix call keeps range-local uncertainty until its result is visible
+(skip) stage omissions: tail call keeps range-local uncertainty until its result is visible
+(skip) stage omissions: redacted-prefix call keeps range-local uncertainty until its result is visible
+(skip) J06 scale: free-text append retains originals and irreducible final input stays incomplete
+(skip) J04/J11 raw results survive service loss and current native thresholds are reapplied
+(skip) J01 exact consumer-cache identity changes with actual model
+(skip) J01 exact consumer-cache identity changes with actual transport
+(skip) J01 exact consumer-cache identity changes with actual question
+(skip) J01 exact consumer-cache identity changes with actual fact
+(skip) J01 exact consumer-cache identity changes with actual source-role
+
+test/verdict.test.ts:
+(pass) evidence-grounded verdict > aligned parallel work is silent, age is not a split verdict [0.15ms]
+(pass) evidence-grounded verdict > no aggregate answer does not suppress a supported sibling correction [0.14ms]
+(pass) evidence-grounded verdict > low-confidence aggregate does not suppress valid per-task completion [0.06ms]
+(pass) evidence-grounded verdict > blocked current match cannot also be claimed or split [0.07ms]
+(pass) evidence-grounded verdict > actually_completed excludes claim/continue/split for the same task [0.08ms]
+(pass) evidence-grounded verdict > cancelled excludes claim/continue/split for the same task [0.02ms]
+(pass) evidence-grounded verdict > deliberately_deferred excludes claim/continue/split for the same task [0.03ms]
+(pass) evidence-grounded verdict > blocked excludes claim/continue/split for the same task [0.03ms]
+(pass) evidence-grounded verdict > future excludes claim/continue/split for the same task [0.01ms]
+(pass) evidence-grounded verdict > unclear excludes claim/continue/split for the same task [0.03ms]
+(pass) evidence-grounded verdict > cancelled task is individually deleted [0.05ms]
+(pass) evidence-grounded verdict > recorded blocking/deferred/future states do not wake waiting agent [0.06ms]
+(pass) evidence-grounded verdict > one missing blocker annotation permits only a board-only turn [0.04ms]
+(pass) evidence-grounded verdict > ongoing is not actionable even when matched and warranted [0.03ms]
+(pass) evidence-grounded verdict > explicit authorized actionable task can wake, pending task can be claimed [0.11ms]
+(pass) evidence-grounded verdict > an incomplete final piece cannot wake the agent: CONTINUE requires the granularity verdict [0.11ms]
+(pass) evidence-grounded verdict > actionable_now cannot override waiting_user [0.02ms]
+(pass) evidence-grounded verdict > actionable_now cannot override waiting_external [0.01ms]
+(pass) evidence-grounded verdict > actionable_now cannot override idle
+(pass) evidence-grounded verdict > actionable_now cannot override unclear
+(pass) evidence-grounded verdict > unresolved or missing dependency prevents execution [0.06ms]
+(pass) evidence-grounded verdict > dependency guard makes granularity unobservable for every lifecycle branch [2.62ms]
+(pass) evidence-grounded verdict > per-active-task granularity affects only its own task [0.09ms]
+(pass) evidence-grounded verdict > one overall goal can have supported checkpoints [0.04ms]
+(pass) evidence-grounded verdict > appropriate does not split even an old task [0.02ms]
+(pass) evidence-grounded verdict > not_applicable does not split even an old task
+(pass) evidence-grounded verdict > blocked does not split even an old task
+(pass) evidence-grounded verdict > insufficient_evidence does not split even an old task
+(pass) evidence-grounded verdict > clarify_done_criteria asks clarification, not subdivision or terminal restart [0.06ms]
+(pass) evidence-grounded verdict > clarify_next_action asks clarification, not subdivision or terminal restart [0.04ms]
+(pass) evidence-grounded verdict > partial global context prevents splitting, not independent completion [0.06ms]
+(pass) evidence-grounded verdict > omitted optional history does not veto explicitly authorized current work [0.07ms]
+(pass) evidence-grounded verdict > missing required authorization still prevents continuation in a partial packet [0.03ms]
+(pass) evidence-grounded verdict > legacy aggregate granularity is ignored [0.02ms]
+(pass) evidence-grounded verdict > invalid/low confidence NaN has no corrective authority [0.02ms]
+(pass) evidence-grounded verdict > invalid/low confidence Infinity has no corrective authority
+(pass) evidence-grounded verdict > invalid/low confidence -1 has no corrective authority
+(pass) evidence-grounded verdict > invalid/low confidence 1.01 has no corrective authority
+(pass) evidence-grounded verdict > invalid/low confidence 0.2 has no corrective authority
+(pass) evidence-grounded verdict > missing anchor is not evidence [0.02ms]
+(pass) evidence-grounded verdict > insufficient_evidence anchor is not evidence
+(pass) evidence-grounded verdict > latest unavailable user evidence cannot be replaced with older authority [0.05ms]
+(pass) evidence-grounded verdict > unavailable task requirements withhold only that task's correction [0.06ms]
+(pass) evidence-grounded verdict > missing context fails closed [0.02ms]
+(pass) evidence-grounded verdict > unusable completion source {"advice":true} [0.04ms]
+(pass) evidence-grounded verdict > unusable completion source {"complete":false} [0.01ms]
+(pass) evidence-grounded verdict > unusable completion source {"isError":true} [0.02ms]
+(pass) evidence-grounded verdict > unusable completion source {"kind":"tool_result"} [0.01ms]
+(pass) evidence-grounded verdict > unusable completion source {"kind":"shell"} [0.02ms]
+(pass) evidence-grounded verdict > unusable completion source {"kind":"summary"} [0.02ms]
+(pass) evidence-grounded verdict > unusable completion source {"kind":"supplement"}
+(pass) evidence-grounded verdict > unknown/missing lifecycle cannot be overridden by current_match [0.04ms]
+(pass) evidence-grounded verdict > warrant gates pending/empty/all-done boards [0.11ms]
+(pass) evidence-grounded verdict > claim requires supported actionable matching task; drift needs its own confidence [0.12ms]
+(pass) evidence-grounded verdict > unchanged issue suppressed; blocker bookkeeping does not re-arm it [0.15ms]
+(pass) leader evidence contract > a main-agent report can support completion but is phrased as reported, never as verified execution [0.08ms]
+(pass) leader evidence contract > a main-agent report cannot cancel scope or create execution permission [0.04ms]
+(pass) leader evidence contract > a returned tool event alone never establishes completion [0.09ms]
+
+109 tests skipped:
+(skip) native real service: first-start status diagnostic and native reload ownership
+(skip) native bun: first-start dispatch, independent update, and real reload
+(skip) native npm: first-start dispatch, independent update, and real reload
+(skip) native safety: scope, selections, failures and recovery
+(skip) LLM review observes real SSE attempts and ignores native numeric gates
+(skip) malformed discrete answer retries count actual sends; zero, missing and catalog estimates differ
+(skip) deadline keeps unfinished SSE usage and cannot accept late answers or charges
+(skip) HTTP 400/invalid_payload is not context recovery or an unobserved SDK retry
+(skip) HTTP 401/context_length_exceeded is not context recovery or an unobserved SDK retry
+(skip) HTTP 429/context_length_exceeded is not context recovery or an unobserved SDK retry
+(skip) HTTP 413/context_length_exceeded is not context recovery or an unobserved SDK retry
+(skip) HTTP 500/internal_error is not context recovery or an unobserved SDK retry
+(skip) overlapping hidden fetches remain visible but never invent a preceding completion
+(skip) an adapter dropping provider events fails accounting without inventing known zeros
+(skip) exact rejection survives corrected size hints and protects a single-question superset
+(skip) provider accounting: invalid native members keep reported model/charge and presence (17)
+(skip) provider accounting: invalid native members keep reported model/charge and presence (-1)
+(skip) provider accounting: invalid native members keep reported model/charge and presence (invalid)
+(skip) provider accounting: invalid native members keep reported model/charge and presence (undefined)
+(skip) attempt identities cannot collide across service reloads at the same clock value
+(skip) OpenRouter typed overflow recovers; response charges remain distinct from estimates
+(skip) capacity ownership: direct selects its own two-dimensional limits
+(skip) capacity ownership: router selects its own two-dimensional limits
+(skip) capacity ownership: custom selects its own two-dimensional limits
+(skip) capacity ownership: override selects its own two-dimensional limits
+(skip) F1: predicted-request pressure chooses one recovery dimension, not evidence-by-question traversal
+(skip) F1: reported-request pressure chooses one recovery dimension, not evidence-by-question traversal
+(skip) F1: predicted-state pressure chooses one recovery dimension, not evidence-by-question traversal
+(skip) F1: reported-state pressure chooses one recovery dimension, not evidence-by-question traversal
+(skip) capacity ownership: lower density survives reload; unrelated transport cannot borrow it
+(skip) cache ownership: new C sends only C; threshold changes never strengthen cached values
+(skip) cache ownership: legal own keys, exact metadata/order and different question ids stay distinct
+(skip) batch ownership: failed independent question batches resume missing work with frozen priors
+(skip) error ownership: HTTP 401 does not authorize context subdivision
+(skip) error ownership: HTTP 402 does not authorize context subdivision
+(skip) error ownership: HTTP 413 does not authorize context subdivision
+(skip) error ownership: HTTP 422 does not authorize context subdivision
+(skip) error ownership: HTTP 429 does not authorize context subdivision
+(skip) error ownership: HTTP 500 does not authorize context subdivision
+(skip) R14 real corpus: tool-heavy
+(skip) R14 real corpus: text-only+reply
+(skip) R14 real corpus: short
+(skip) R14 real corpus: todo-revisions
+(skip) R14 real corpus: mixed-cached
+(skip) R14 real corpus: failed-later-chunk
+(skip) classifier/http/ordinary: shared audit retains completed stages after failure/reload without charging reuse
+(skip) llm/http/ordinary: shared audit retains completed stages after failure/reload without charging reuse
+(skip) classifier/missing/ordinary: shared audit retains completed stages after failure/reload without charging reuse
+(skip) classifier/none/ordinary: shared audit retains completed stages after failure/reload without charging reuse
+(skip) classifier/http/full: shared audit retains completed stages after failure/reload without charging reuse
+(skip) R16: incremental partial stages preserves source facts and resumes only unfinished work
+(skip) R16: incremental single stage preserves source facts and resumes only unfinished work
+(skip) R02: compaction gaps and id-less authority are new evidence, not covered by an old frontier
+(skip) native missing member is not a final answer or durable stage; only that member is retried
+(skip) explicit local withholding keeps independent final choices without advancing coverage
+(skip) 1 records and 12 questions get one fixed-state admission; diagnostics match exact wire bytes
+(skip) 6 records and 12 questions get one fixed-state admission; diagnostics match exact wire bytes
+(skip) 69 records and 12 questions get one fixed-state admission; diagnostics match exact wire bytes
+(skip) same fresh token resumes after reload; a new token buys new work and token text never persists
+(skip) unfinished transport remains explicit at deadline; late settlement cannot change receipts or returned accounting
+(skip) cancelled joiner owns no provider attempt and cannot cancel the owner's transport
+(skip) R01: irreducible retained facts stop at the first leaf and rejected wires stay rejected after reload
+(skip) R06: mid-record full recovery reuses completed fragments without claiming the whole source
+(skip) R06 safety: fragment loss cannot authorize actually_completed
+(skip) R06 safety: fragment loss cannot authorize actionable_now
+(skip) R15: channel learning and exact rejections survive reload; fresh work reports real pre-splits
+(skip) R10: failed service appends cannot acknowledge durable stages or avoid payment after reload
+(skip) projection cannot silently omit a required question or ambiguously mark it unresolved
+(skip) all questions explicitly withheld produce no request and no coverage
+(skip) projection descriptor mutations cannot replace original sources or forge bounds
+(skip) throwing and asynchronously rejecting projectors fail without dispatch or unhandled rejection
+(skip) pre-abort stages survive, a switched branch receives no late writes, and reload pays only unfinished work
+(skip) locally withheld task evidence does not suppress an independently supported sibling correction
+(skip) provider error bodies never enter review errors or persisted diagnostics
+(skip) J04 public audit reload uses consumer JSONL with a new empty-ledger service and zero inference
+(skip) J08 failed consumer persistence advances no frontier and delivers no final advice
+(skip) J08 a branch change fences late native results, cache writes and final advice
+(skip) J06 TODO macro-history append reuses sealed business stages and reduces the entire outbound packet
+(skip) J07 retained source facts distinguish CSV and later permission withdrawal after sealed-prefix caching
+(skip) J13 old session and native identity recover through >30s healthy SDK streaming, durable reload, stall and cancellation
+(skip) J05 independently validated LLM A/B survive C failure and cold retry buys only C
+(skip) J11 caller stages share one native deadline and late transport cannot commit the final stage
+(skip) J11 invalid or asynchronous stage plans make zero provider attempts
+(skip) review fix: an all-withheld provisional prefix cannot disappear into successful tail judgment
+(skip) review fix: llm cache-store cancellation fences subsequent judgment publication
+(skip) review fix: native cache-store cancellation fences subsequent judgment publication
+(skip) review fix: a durable tail cannot bridge a nondurable prefix
+(skip) review fix: id-less historical authority remains usable and replays from consumer cache
+(skip) review fix: completed full becomes the durable ordinary baseline, then another full is new
+(skip) review fix: unfinished full resumes acknowledged questions after consumer and service reload
+(skip) review fix: failed full pending acknowledgement cannot select a new ordinary baseline
+(skip) review fix: failed full complete acknowledgement cannot select a new ordinary baseline
+(skip) review fix: input changed synchronously during receipt append cannot publish final advice
+(skip) review fix: unfinished full never supplies the ordinary namespace
+(skip) dependency gate: omit unused granularity across cold reload and restore it after dependency completion
+(skip) stage omissions: private session metadata cannot repurchase unchanged judgments
+(skip) stage omissions: metadata before id-less history preserves cold cache identity
+(skip) stage omissions: unsupported tail cannot contaminate root or sealed prefix
+(skip) stage omissions: redacted tail cannot contaminate root or sealed prefix
+(skip) stage omissions: prefix call keeps range-local uncertainty until its result is visible
+(skip) stage omissions: tail call keeps range-local uncertainty until its result is visible
+(skip) stage omissions: redacted-prefix call keeps range-local uncertainty until its result is visible
+(skip) J06 scale: free-text append retains originals and irreducible final input stays incomplete
+(skip) J04/J11 raw results survive service loss and current native thresholds are reapplied
+(skip) J01 exact consumer-cache identity changes with actual model
+(skip) J01 exact consumer-cache identity changes with actual transport
+(skip) J01 exact consumer-cache identity changes with actual question
+(skip) J01 exact consumer-cache identity changes with actual fact
+(skip) J01 exact consumer-cache identity changes with actual source-role
+
+
+93 tests failed:
+(fail) A1: one full ordinary advisory body is visible with notifyOnAligned=false [1.37ms]
+(fail) A1: a visible ordinary advisory needs no delivery receipt with notifyOnAligned=false [0.20ms]
+(fail) A1: one full ordinary advisory body is visible with notifyOnAligned=true [0.10ms]
+(fail) A1: a visible ordinary advisory needs no delivery receipt with notifyOnAligned=true [0.08ms]
+(fail) A1/A6: only an exact terminal shared footer folds; quoted evidence and unknown endings stay visible [0.23ms]
+(fail) A6: headless delivery has the same content, keys and options without requiring a UI [0.52ms]
+(fail) A7: generated clarification redacts known secrets before either reader sees it [0.21ms]
+(fail) I1: fact-only material change refreshes the same-label review [0.32ms]
+(fail) I1: source-only material change refreshes the same-label review [0.12ms]
+(fail) I1: coverage-only material change refreshes the same-label review [0.12ms]
+(fail) I1: role-only material change refreshes the same-label review [0.12ms]
+(fail) I1: a no-op board read keeps identical brief evaluations reusable [0.28ms]
+(fail) I1: a same-id reported fact refreshes an identical terminal stop without rearming acknowledgment advice [3.04ms]
+(fail) I1: in-flight fact change suppresses stale corrections [1.33ms]
+(fail) I1: in-flight source change suppresses stale corrections [1.18ms]
+(fail) I1: in-flight coverage change suppresses stale corrections [1.15ms]
+(fail) I1: in-flight report change suppresses stale corrections [1.15ms]
+(fail) I1: in-flight role change suppresses stale corrections [1.16ms]
+(fail) I1: in-flight effective-history change suppresses stale corrections [1.10ms]
+(fail) P1: cold covered completion report stays selectable with empty sources [0.24ms]
+(fail) P1: cold covered completion report stays selectable with support-only sources [0.10ms]
+(fail) P1: full covered completion report stays selectable with empty sources [0.09ms]
+(fail) P1: full covered completion report stays selectable with support-only sources [0.08ms]
+(fail) P1/F1: a processed completion report stays whole and selectable without a prior primary pin [0.24ms]
+(fail) A3: a 256-option Choice exposes the complete scoped clarification once [0.43ms]
+(fail) P2: cold known task-object scopes bound evidence without excluding public primary reports [1.31ms]
+(fail) P2: full known task-object scopes bound evidence without excluding public primary reports [0.86ms]
+(fail) P2/P3: cold 260 potential primary reports without brief stay incomplete without hidden loss [0.39ms]
+(fail) P2/P3: cold 260 potential primary reports with legal brief stay incomplete without hidden loss [0.30ms]
+(fail) P2/P3: full 260 potential primary reports without brief stay incomplete without hidden loss [0.15ms]
+(fail) P2/P3: full 260 potential primary reports with legal brief stay incomplete without hidden loss [0.24ms]
+(fail) P3: an oversized task evidence set withholds only that finding; a supported sibling still reconciles [1.14ms]
+(fail) P3: an oversized board-matching Choice loses no tasks and grants no work finding, while independent accepted work remains usable [0.99ms]
+(fail) I1/R1: changing the remembered primary changes actual candidate definitions, not just the old fact/cursor identity [0.33ms]
+(fail) F1: a supplied current brief is scoped reported data with original source roles, serialized once [0.27ms]
+(fail) F3: missing brief lineage stays a gap, not completion proof; legacy tasks remain useful [0.20ms]
+(fail) F3: coverage cannot erase user, summary or another task; excluded and redacted origins stay gaps [0.32ms]
+(fail) F3: empty reference lists are permitted; malformed brief data stays qualified without breaking legacy prose [0.27ms]
+(fail) A4/A5: factual clarification keeps public origins and failure remains UI-only [0.32ms]
+(fail) A4/A5: factual clarification keeps missing origins and failure remains UI-only [0.10ms]
+(fail) F2: an irreducible necessary floor asks once for a scoped account, without completion, wakeup or receipt advance [0.31ms]
+(fail) F2: an older ready brief never supplies permission against a later CSV/approval decision [1.45ms]
+(fail) F4: reload after compaction restores the durable frontier and qualified brief; hidden origins stay gaps, never fabricated evidence [0.40ms]
+(fail) F4: a partial-answer failure keeps the range incomplete; a successful resumed final view can reconcile [0.19ms]
+(fail) periodic cadence and user cooldown work without a watchdog [0.36ms]
+(fail) manual bypasses cadence, terminal reconciliation wakes for board work only [0.19ms]
+(fail) explicit actionable-now with current authorization can wake for execution [1.33ms]
+(fail) an incomplete terminal review cannot wake the agent for an active task [1.30ms]
+(fail) blocked match and coarse-task judgment cannot override waiting; missing annotation is board-only [1.32ms]
+(fail) reworded stops and assistant acknowledgments do not repeat demands, even after reload [1.31ms]
+(fail) board bookkeeping cannot re-arm a blocker when unrelated latest output becomes historical [0.21ms]
+(fail) new user evidence permits a fresh audit under identical stop metadata [2.44ms]
+(fail) in-flight result invalidated by user is discarded [1.26ms]
+(fail) in-flight result invalidated by board is discarded [1.14ms]
+(fail) in-flight result invalidated by branch is discarded [1.14ms]
+(fail) in-flight result invalidated by shutdown is discarded [1.15ms]
+(fail) new stop after an in-flight user change is queued once and not lost with the aborted request [1.30ms]
+(fail) request retains effective global context, visible failure and task requirements; excludes abandoned/compacted raw payload [0.32ms]
+(fail) age and legacy budget do not force splitting or crop context; notice once [0.44ms]
+(fail) known opaque API key is absent from evidence, task labels and failure diagnostics [0.19ms]
+(fail) Pi authentication belongs to the service; audit never reads Pi keys or sends HTTP [0.18ms]
+(fail) legacy endpoint and key fields warn by name and never supply fallback authentication [0.20ms]
+(fail) missing shared service is reported without attempting legacy or Pi auth fallback [0.19ms]
+(fail) API failure remains isolated and a later manual check can run [0.15ms]
+(fail) task trajectory is bounded, stable across an unchanged repeat, and keeps its first-active origin [0.37ms]
+(fail) TODO revisions start segments without paid calls; granularity keeps the first-active origin through resume [0.45ms]
+(fail) manual modes: repeat inputs are stable, full requests fresh review without tool bodies, unknown args do nothing [0.30ms]
+(fail) changing ignored audit apiUrl preserves the shared-service request identity [0.18ms]
+(fail) a late response after a branch switch appends no ledger entries to the active branch [1.42ms]
+(fail) business receipts/diagnostics are non-context; shared-service reuse is not charged again [0.53ms]
+(fail) compaction lifecycle restores business input without treating ledger entries as facts [0.22ms]
+(fail) abandoned-branch business receipts are not restored into the active history [0.18ms]
+(fail) a failed business write is not durable and does not prevent the next review [0.15ms]
+(fail) acknowledged consumer results advance independently of a volatile service checkpoint [0.13ms]
+(fail) a main-agent rebuttal changes review input; unanswered advice alone does not [0.19ms]
+(fail) recovered service diagnostics preserve rejected attempts, successful parts and missing usage [0.26ms]
+(fail) audit diagnostic ids stay unique across a reload of the same session [0.20ms]
+(fail) main claims/reuses ownership with marker undefined [0.83ms]
+(fail) main claims/reuses ownership with marker  [0.12ms]
+(fail) main claims/reuses ownership with marker 75116 [0.05ms]
+(fail) stage omissions keep unavailable entries local and retain unscoped global uncertainty [0.90ms]
+(fail) review-v1 without consumer-cache support is explicit incompatibility, never legacy fallback [0.31ms]
+(fail) missing/old service notices are bounded; later discovery needs no re-enable and manual dependency errors stay clear [1.49ms]
+(fail) missing: manual ordinary always reports dependency error (before automatic notice) [0.48ms]
+(fail) missing: manual ordinary always reports dependency error (after automatic notice) [0.21ms]
+(fail) missing: manual full always reports dependency error (before automatic notice) [0.14ms]
+(fail) missing: manual full always reports dependency error (after automatic notice) [0.20ms]
+(fail) old: manual ordinary always reports dependency error (before automatic notice) [0.40ms]
+(fail) old: manual ordinary always reports dependency error (after automatic notice) [0.56ms]
+(fail) old: manual full always reports dependency error (before automatic notice) [0.31ms]
+(fail) old: manual full always reports dependency error (after automatic notice) [0.53ms]
+(fail) service-accepted LLM choices with zero compatibility numbers still reconcile, never authorize execution [0.31ms]
+(fail) old audit credentials remain redacted data, never auth or service configuration [1.11ms]
+
+ 319 pass
+ 109 skip
+ 93 fail
+ 3003 expect() calls
+Ran 521 tests across 34 files. [2.54s]

@@ -18,7 +18,7 @@ const factory = `
 const KEY=Symbol.for('pi-llm-as-jev:service');
 export default function(pi) {
  const trace=globalThis[Symbol.for('jev-delivery-test-state')];
- const service={version:1,reviewVersion:1,review:async()=>{throw Error('Readiness must not infer');}};
+ const service={version:1,judge:async()=>{throw Error('Readiness must not infer');}};
  pi.registerCommand('llm-as-jev',{handler:async()=>{}});
  pi.registerCommand('llm-as-jev-classifier',{handler:async()=>{}});
  pi.registerProvider('fixture-provider',{});
@@ -121,7 +121,7 @@ for (const names of [["llm-as-jev", "llm-as-jev-classifier"], ["llm-as-jev:1", "
 		await h.emit("session_start"); expectUnchanged(before, h);
 	});
 }
-for (const standalone of [{ version: 1, reviewVersion: 1, review: async () => ({}) }, { version: 1, judge: async () => ({}) }]) {
+for (const standalone of [{ version: 1, reviewVersion: 1, reviewCacheVersion: 1, reviewStagesVersion: 1, review: async () => ({}) }, { version: 1, judge: async () => ({}) }]) {
 	test(`pre-published service is preserved with reviewVersion ${standalone.reviewVersion}`, async () => {
 		globals[key] = standalone; const h = activate();
 		await h.emit("session_start"); expect(install).not.toHaveBeenCalled();
@@ -140,7 +140,7 @@ test("provisioning command is callable and read-only before startup", async () =
 	expect(readFileSync(settingsFile, "utf8")).toBe(before);
 	expect(trace.starts).toBe(0);
 	for (const version of [undefined, 2]) {
-		const incompatible = { ...(version === undefined ? {} : { version }), reviewVersion: 1, review: async () => { throw Error("Status must not infer"); } };
+		const incompatible = { ...(version === undefined ? {} : { version }), reviewVersion: 1, reviewCacheVersion: 1, reviewStagesVersion: 1, review: async () => { throw Error("Status must not infer"); } };
 		globals[key] = incompatible;
 		h.notices.length = 0;
 		await command.handler("", h.ctx);
@@ -150,7 +150,7 @@ test("provisioning command is callable and read-only before startup", async () =
 		expect(readFileSync(settingsFile, "utf8")).toBe(before);
 		expect(trace.starts).toBe(0);
 	}
-	globals[key] = { version: 1, reviewVersion: 1, review: async () => { throw Error("Status must not infer"); } };
+	globals[key] = { version: 1, judge: async () => { throw Error("Status must not infer"); } };
 	h.notices.length = 0;
 	await command.handler("", h.ctx);
 	expect(h.notices.join("\n")).toContain("Judgment service is available");
@@ -191,7 +191,7 @@ test("first startup persists once and replays once, without duplicate commands/p
 	expect(install).toHaveBeenCalledTimes(1);
 	expect(trace.starts).toBe(3); // Later host events are forwarded, not new activations.
 	expect(h.commands.size).toBe(3); expect(h.providers).toEqual(["fixture-provider"]);
-	expect(typeof (globals[key] as { review: unknown }).review).toBe("function");
+	expect(typeof (globals[key] as { judge: unknown }).judge).toBe("function");
 	await h.emit("session_shutdown"); expect(globals[key]).toBeUndefined();
 	expect(trace.shutdowns).toBe(1);
 });
@@ -269,7 +269,7 @@ test("only matching enabled service resources activate, without installing unrel
 
 test("retired activation shutdown cannot delete a replacement handle", async () => {
 	const h = activate(); await h.emit("session_start"); expect(globals[key]).toBeDefined();
-	const replacement = { version: 1, reviewVersion: 1, marker: "gen2", review: async () => ({}) };
+	const replacement = { version: 1, reviewVersion: 1, reviewCacheVersion: 1, reviewStagesVersion: 1, marker: "gen2", review: async () => ({}) };
 	globals[key] = replacement; await h.emit("session_shutdown", { reason: "reload" });
 	expect(globals[key]).toBe(replacement); await h.emit("session_start"); expect(trace.starts).toBe(1);
 });
@@ -309,9 +309,9 @@ test("factory failure leaves no handle and does not retry from audit events", as
 	expect(h.notices.join("\n")).not.toContain("private failure details");
 });
 test("incompatible newly installed service is diagnosed without downgrade", async () => {
-	serviceFactory = factory.replace("reviewVersion:1", "reviewVersion:99");
+	serviceFactory = factory.replace("version:1", "version:99");
 	const h = activate(); await h.emit("session_start");
-	expect(h.notices.join("\n")).toContain("incompatible with review version 1");
+	expect(h.notices.join("\n")).toContain("incompatible with judge version 1");
 	expect(install).toHaveBeenCalledTimes(1); expect(settings().packages).toEqual([root, SOURCE]);
 });
 

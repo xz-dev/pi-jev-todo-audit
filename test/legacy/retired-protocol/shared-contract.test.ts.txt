@@ -44,6 +44,51 @@ function host(overrides = {}) {
 const empty = (backend: "llm" | "classifier" = "llm"): ReviewResult => ({ answers: {}, dropped: [], backend, model: "fixture/discrete", stopReason: "stop",
 	reuse: { hits: 0, joined: 0, sent: 0 }, progress: { stages: [] }, unresolved: [], diagnostics: { attempts: [], attemptCount: 0, observationCoverage: "complete", usage: { inputTokens: { knownSum: 0, missing: 0 }, outputTokens: { knownSum: 0, missing: 0 }, costUsd: { knownSum: 0, missing: 0 } } } });
 
+test("stage omissions keep unavailable entries local and retain unscoped global uncertainty", async () => {
+	for (const gap of ["unknown", "summary", "global"] as const) {
+		const h = host();
+		if (gap === "global") Reflect.deleteProperty(h.ctx.sessionManager, "buildContextEntries");
+		else h.branch.push(gap === "summary" ? { id: "tail", type: "compaction", summary: "" }
+			: { id: "tail", type: "future_entry", privatePayload: "DO_NOT_EXPORT" });
+		let inspected = false;
+		globals[key] = { version: 1, reviewVersion: 1, reviewCacheVersion: 1, reviewStagesVersion: 1,
+			review: async (request: JudgeRequest, options: ReviewOptions) => {
+				const decode = (state: any) => {
+					const text = state.audit as string, start = text.indexOf("\n", text.indexOf("Macro-level evidence")) + 1;
+					return JSON.parse(text.slice(start, text.indexOf("\nInterpret evidence", start)));
+				};
+				const frames = request.evidence!.map(record => ({ record }));
+				const frame = { evidence: frames.slice(0, 1), completed: [], previousAnswers: {}, final: false } as Parameters<NonNullable<ReviewOptions["projectStage"]>>[0];
+				const root = decode(request.state), prefix = decode(options.projectStage!(frame).state);
+				const final = decode(options.projectStage!({ ...frame, evidence: frames, final: true }).state);
+				for (const early of [root, prefix]) expect(early.omissions.some((o: any) => o.id === "tail")).toBe(false);
+				if (gap !== "global") {
+					expect(final.omissions.some((o: any) => o.id === "tail")).toBe(true);
+					expect(final.records.find((r: any) => r.id === "tail")).toMatchObject({ complete: false, kind: "unavailable" });
+				}
+				for (const view of [root, prefix, final]) {
+					expect(view.omissions.some((o: any) => o.id === "global")).toBe(gap !== "unknown");
+					expect(JSON.stringify(view)).not.toContain("DO_NOT_EXPORT");
+				}
+				inspected = true; return empty();
+			} };
+		try { await h.emit("session_start"); await h.manual(); expect(inspected).toBe(true); }
+		finally { await h.emit("session_shutdown"); }
+	}
+});
+
+test("review-v1 without consumer-cache support is explicit incompatibility, never legacy fallback", async () => {
+	let calls = 0;
+	const legacy = { version: 1, reviewVersion: 1, review: async () => { calls++; return empty(); } };
+	globals[key] = legacy;
+	const h = host(); await h.emit("session_start");
+	await h.manual(); await h.emit("turn_end");
+	expect(calls).toBe(0); expect(h.sent).toEqual([]);
+	expect(h.notices.some((message) => message.includes("reviewCacheVersion 1"))).toBe(true);
+	expect(globals[key]).toBe(legacy);
+	await h.emit("session_shutdown");
+});
+
 test("missing/old service notices are bounded; later discovery needs no re-enable and manual dependency errors stay clear", async () => {
 	const h = host(); await h.emit("session_start");
 	await h.emit("turn_end"); await h.emit("turn_end");
@@ -53,7 +98,7 @@ test("missing/old service notices are bounded; later discovery needs no re-enabl
 	await h.emit("turn_end"); await h.emit("turn_end");
 	expect(h.notices.filter((m) => m.includes("requires pi-llm-as-jev"))).toHaveLength(3);
 	let calls = 0;
-	globals[key] = { version: 1, reviewVersion: 1, review: async () => { calls++; return empty(); } };
+	globals[key] = { version: 1, reviewVersion: 1, reviewCacheVersion: 1, reviewStagesVersion: 1, review: async () => { calls++; return empty(); } };
 	await h.emit("turn_end"); expect(calls).toBe(1); expect(h.authCalls()).toBe(0);
 	expect(h.sent).toHaveLength(0); await h.emit("session_shutdown");
 });
@@ -76,7 +121,7 @@ test(`${dependency}: manual ${mode || "ordinary"} always reports dependency erro
 	const count = dependencies().length;
 	await h.emit("turn_end"); await h.emit("turn_end"); expect(dependencies()).toHaveLength(count);
 	expect(legacyCalls).toBe(0); expect(h.authCalls()).toBe(0); expect(h.sent).toHaveLength(0); expect(h.branch).toHaveLength(2);
-	globals[key] = { version: 1, reviewVersion: 1, review: async () => { calls++; return empty(); } };
+	globals[key] = { version: 1, reviewVersion: 1, reviewCacheVersion: 1, reviewStagesVersion: 1, review: async () => { calls++; return empty(); } };
 	await h.emit("turn_end"); expect(calls).toBe(1); expect(dependencies()).toHaveLength(count);
 	await h.manual(mode); expect(calls).toBe(2); expect(h.authCalls()).toBe(0); expect(h.sent).toHaveLength(0);
 	await h.emit("session_shutdown");
@@ -85,7 +130,7 @@ test(`${dependency}: manual ${mode || "ordinary"} always reports dependency erro
 test("service-accepted LLM choices with zero compatibility numbers still reconcile, never authorize execution", async () => {
 	const h = host({ confidenceThreshold: 0.99 });
 	let calls = 0;
-	globals[key] = { version: 1, reviewVersion: 1, review: async (request: JudgeRequest, options: ReviewOptions) => {
+	globals[key] = { version: 1, reviewVersion: 1, reviewCacheVersion: 1, reviewStagesVersion: 1, review: async (request: JudgeRequest, options: ReviewOptions) => {
 		calls++; expect(options.minConfidence).toBe(0.99);
 		const projected = options.projectStage!({ evidence: request.evidence!.map((record) => ({ record })), completed: [], previousAnswers: {}, final: true });
 		const choices: Record<string, string> = { alignment: "aligned", current_match: "5", interaction: "waiting_user", drift: "on_track", task_status_5: "actually_completed", task_evidence_5: "user", work_evidence: "user", task_board_5: "accurate", task_granularity_5: "appropriate" };
@@ -120,7 +165,7 @@ test("old audit credentials remain redacted data, never auth or service configur
 		h.branch[0].message.content += ` ${secret} ${projectSecret}`;
 		h.branch[1].message.details.tasks[0].subject += ` ${projectSecret}`;
 		const calls: { request: JudgeRequest; options: ReviewOptions }[] = [];
-		globals[key] = { version: 1, reviewVersion: 1, review: async (request: JudgeRequest, options: ReviewOptions) => {
+		globals[key] = { version: 1, reviewVersion: 1, reviewCacheVersion: 1, reviewStagesVersion: 1, review: async (request: JudgeRequest, options: ReviewOptions) => {
 			calls.push({ request, options });
 			return { ...empty(), stopReason: "error", errorMessage: `Scripted failure ${secret} ${projectSecret}` };
 		} };

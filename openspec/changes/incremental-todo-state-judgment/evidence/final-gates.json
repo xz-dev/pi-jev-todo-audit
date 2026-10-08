@@ -1,0 +1,78 @@
+[
+  {
+    "gate": "final-typecheck",
+    "exitCode": 0,
+    "command": [
+      "npm",
+      "run",
+      "typecheck"
+    ],
+    "candidate": "f29159b475acbcf2e53de4c7ff2cba63d8307459ed6a20de1551adf7e4f34409"
+  },
+  {
+    "gate": "final-default",
+    "exitCode": 0,
+    "command": [
+      "bun",
+      "test"
+    ],
+    "candidate": "f29159b475acbcf2e53de4c7ff2cba63d8307459ed6a20de1551adf7e4f34409"
+  },
+  {
+    "gate": "final-cross-repo",
+    "exitCode": 0,
+    "command": [
+      "bun",
+      "test",
+      "test/partial-progress.test.ts",
+      "test/incremental-lifecycle.integration.test.ts"
+    ],
+    "candidate": "f29159b475acbcf2e53de4c7ff2cba63d8307459ed6a20de1551adf7e4f34409"
+  },
+  {
+    "gate": "final-replay",
+    "exitCode": 0,
+    "command": [
+      "bun",
+      "test/replay-incremental.ts",
+      "/home/xz/.pi/agent/sessions/--home-xz-Code-ai-pi-jev-todo-audit--/2026-10-07T05-55-40-571Z_01a114ee-8d9a-703f-bef4-752ac39a2d7e.jsonl",
+      "370fbf7b",
+      "90429fca"
+    ],
+    "candidate": "f29159b475acbcf2e53de4c7ff2cba63d8307459ed6a20de1551adf7e4f34409"
+  },
+  {
+    "gate": "final-pack",
+    "exitCode": 0,
+    "command": [
+      "npm",
+      "pack",
+      "--dry-run",
+      "--ignore-scripts",
+      "--offline",
+      "--json"
+    ],
+    "candidate": "f29159b475acbcf2e53de4c7ff2cba63d8307459ed6a20de1551adf7e4f34409"
+  },
+  {
+    "gate": "final-spec",
+    "exitCode": 0,
+    "command": [
+      "openspec",
+      "validate",
+      "incremental-todo-state-judgment",
+      "--strict"
+    ],
+    "candidate": "f29159b475acbcf2e53de4c7ff2cba63d8307459ed6a20de1551adf7e4f34409"
+  },
+  {
+    "gate": "final-diff",
+    "exitCode": 0,
+    "command": [
+      "git",
+      "diff",
+      "--check"
+    ],
+    "candidate": "f29159b475acbcf2e53de4c7ff2cba63d8307459ed6a20de1551adf7e4f34409"
+  }
+]

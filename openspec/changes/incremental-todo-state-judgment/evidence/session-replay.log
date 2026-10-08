@@ -1,0 +1,61 @@
+{
+  "fixture": {
+    "firstLeaf": "370fbf7b",
+    "secondLeaf": "90429fca",
+    "firstHash": "10f6cf4c264fdb0e56aefe03d0984ca38a9c1fffbc08655b5c2d1f589f5f2941",
+    "secondHash": "561fb62999650413b79f7c74c04b012fbaa6c75a2dd4bd1f7a90f4c3e7167f42",
+    "entries": [
+      1547,
+      1555
+    ],
+    "projectedLoops": [
+      35,
+      37
+    ],
+    "unfinishedTasks": [
+      9,
+      9
+    ]
+  },
+  "first": {
+    "requests": 15,
+    "bytes": 772360,
+    "questions": 576,
+    "uniqueEvidence": 193,
+    "complete": true,
+    "scopes": 12,
+    "failed": []
+  },
+  "second": {
+    "requests": 1,
+    "bytes": 50469,
+    "questions": 48,
+    "uniqueEvidence": 19,
+    "complete": true,
+    "scopes": 1,
+    "repeatedEvidenceCount": 0,
+    "failed": []
+  },
+  "coldBaseline": {
+    "requests": 15,
+    "bytes": 784454,
+    "questions": 576,
+    "uniqueEvidence": 212,
+    "complete": true
+  },
+  "tokens": "unknown; synthetic transport supplied no usage",
+  "cost": "no live inference; no provider billing measurement",
+  "semanticAccuracy": "not evaluated; no-change replies are scripted",
+  "adapter": "installed pi-ai native adapter; actual sibling service source",
+  "capacity": {
+    "backend": "classifier",
+    "model": "typesafe/jev-latest",
+    "limits": {
+      "contextWindow": 32000
+    },
+    "limitSource": "model",
+    "tokensPerByte": 0.5714285714285714,
+    "prior": true,
+    "envelopeOverheadBytes": 0
+  }
+}

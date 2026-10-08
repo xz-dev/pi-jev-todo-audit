@@ -1,0 +1,280 @@
+-- Model the consumer cache boundary using Lean core/Std; accepted foundations are propext and Quot.sound.
+import Std
+
+set_option autoImplicit false
+
+namespace AuditSessionCache
+
+-- Identity components stand for service-computed execution, question and effective-input identities;
+-- their construction, collision resistance and factual truth are outside this process model.
+structure Key where
+  execution : Nat
+  question : Nat
+  input : Nat
+  deriving DecidableEq, Repr
+
+-- A generation denotes the captured session/branch/input ownership; only acknowledged keys are stored.
+structure State where
+  generation : Nat
+  durableKeys : List Key
+  frontier : Nat
+  deriving DecidableEq, Repr
+
+-- The projection supplies event provenance. This model does not infer provenance from message text.
+inductive Event where
+  | historical
+  | bookkeeping
+  | ambient
+  deriving DecidableEq, Repr
+
+-- Initialization and lookup admit only exact keys in the current generation.
+def initial (generation : Nat) : State := ⟨generation, [], 0⟩
+
+def lookup (s : State) (captured : Nat) (key : Key) : Bool :=
+  decide (captured = s.generation ∧ key ∈ s.durableKeys)
+
+-- Validation and persistence acknowledgements are explicit inputs, not inferred from a model opinion.
+def store (s : State) (captured : Nat) (key : Key)
+    (validated acknowledged : Bool) : State :=
+  if captured = s.generation ∧ validated = true ∧ acknowledged = true then
+    { s with durableKeys := key :: s.durableKeys }
+  else s
+
+-- Progress requires independently verified source coverage and every required durable evaluation.
+abbrev mayAdvance (s : State) (captured : Nat) (required : List Key)
+    (sourcesVerified : Bool) : Prop :=
+  captured = s.generation ∧ sourcesVerified = true ∧
+    required.all (lookup s captured) = true
+
+def advance (s : State) (captured : Nat) (required : List Key)
+    (sourcesVerified : Bool) (through : Nat) : State :=
+  if mayAdvance s captured required sourcesVerified then
+    { s with frontier := max s.frontier through }
+  else s
+
+-- A branch switch drops the old cache; bookkeeping and ambient context cannot create historical input.
+def switchBranch (s : State) : State := initial (s.generation + 1)
+
+def reviseInput (revision : Nat) : Event → Nat
+  | .historical => revision + 1
+  | .bookkeeping | .ambient => revision
+
+-- These lemmas cover rejection, acknowledged membership, exactness and separation from progress.
+theorem failed_write_preserves_state (s : State) (captured : Nat) (key : Key) :
+    store s captured key true false = s := by
+  simp [store]
+
+theorem stale_write_preserves_state (s : State) (captured : Nat) (key : Key)
+    (h : captured ≠ s.generation) : store s captured key true true = s := by
+  simp [store, h]
+
+theorem invalid_answer_preserves_state (s : State) (captured : Nat) (key : Key) :
+    store s captured key false true = s := by
+  simp [store]
+
+theorem acknowledged_answer_is_reusable (s : State) (key : Key) :
+    lookup (store s s.generation key true true) s.generation key = true := by
+  simp [lookup, store]
+
+theorem storing_does_not_advance (s : State) (captured : Nat) (key : Key)
+    (validated acknowledged : Bool) :
+    (store s captured key validated acknowledged).frontier = s.frontier := by
+  unfold store
+  split <;> rfl
+
+theorem changed_key_is_not_a_hit (generation : Nat) (stored requested : Key)
+    (h : requested ≠ stored) :
+    lookup (store (initial generation) generation stored true true)
+      generation requested = false := by
+  simp [lookup, store, initial, h]
+
+-- These lemmas establish source/durability guards, branch isolation and evidence-projection behavior.
+theorem advancing_requires_durable_sources (s : State) (captured : Nat)
+    (required : List Key) (sourcesVerified : Bool) (through : Nat)
+    (h : (advance s captured required sourcesVerified through).frontier ≠ s.frontier) :
+    mayAdvance s captured required sourcesVerified := by
+  by_cases guard : mayAdvance s captured required sourcesVerified
+  · exact guard
+  · simp [advance, guard] at h
+
+theorem branch_switch_drops_membership (s : State) (captured : Nat) (key : Key) :
+    lookup (switchBranch s) captured key = false := by
+  simp [lookup, switchBranch, initial]
+
+theorem nonhistorical_events_preserve_revision (revision : Nat) :
+    reviseInput revision .bookkeeping = revision ∧
+    reviseInput revision .ambient = revision := by
+  exact ⟨rfl, rfl⟩
+
+-- Intent tokens denote branch-local persisted selections. JSONL encoding and replay validation are outside this model.
+structure FullIntent where
+  baseline : Nat
+  pending : Option Nat
+  deriving DecidableEq, Repr
+
+-- Starting a new acknowledged intent isolates retries without replacing the ordinary baseline.
+def beginFull (s : FullIntent) (token : Nat) (acknowledged : Bool) : FullIntent :=
+  if acknowledged = true ∧ s.pending = none ∧ token ≠ s.baseline then
+    { s with pending := some token }
+  else s
+
+-- Promotion requires a matching pending intent, complete scopes, current ownership and acknowledgement.
+-- These booleans are supplied contracts, not proofs of factual completeness or persistence behavior.
+def finishFull (s : FullIntent) (token : Nat) (complete current acknowledged : Bool) : FullIntent :=
+  if s.pending = some token ∧ complete = true ∧ current = true ∧ acknowledged = true then
+    ⟨token, none⟩
+  else s
+
+-- Pending or unacknowledged work cannot promote; an acknowledged complete intent selects its token.
+theorem beginning_keeps_baseline (s : FullIntent) (token : Nat) (ack : Bool) :
+    (beginFull s token ack).baseline = s.baseline := by
+  unfold beginFull
+  split <;> rfl
+
+theorem unacknowledged_full_keeps_baseline (s : FullIntent) (token : Nat) (complete current : Bool) :
+    finishFull s token complete current false = s := by
+  simp [finishFull]
+
+theorem completed_full_selects_baseline (s : FullIntent) (token : Nat)
+    (h : s.pending = some token) :
+    finishFull s token true true true = ⟨token, none⟩ := by
+  simp [finishFull, h]
+
+-- Cumulative required keys include earlier stages, so a missing earlier key blocks even a durable tail.
+theorem missing_prefix_blocks_frontier (s : State) (captured : Nat) (key : Key)
+    (earlier tail : List Key) (through : Nat) (member : key ∈ earlier)
+    (missing : lookup s captured key = false) :
+    advance s captured (earlier ++ tail) true through = s := by
+  unfold advance
+  split
+  · rename_i guard
+    have checked := List.all_eq_true.mp guard.2.2 key (List.mem_append_left tail member)
+    simp [missing] at checked
+  · rfl
+
+-- These six opaque atoms model declared macro-source facts, not the dynamic TypeScript JSON schema.
+-- Encoding changes representation only; source truth and the validity of the projection are assumptions.
+structure MacroSource where
+  identity : Nat
+  role : Nat
+  order : Nat
+  call : Nat
+  status : Nat
+  text : Nat
+  deriving DecidableEq, Repr
+
+-- Ordered tuple rows retain every modeled value instead of replacing source facts with an opinion.
+abbrev Columns := Nat × Nat × Nat × Nat × Nat × Nat
+
+def encodeSource (s : MacroSource) : Columns :=
+  (s.identity, s.role, s.order, s.call, s.status, s.text)
+
+def decodeSource (c : Columns) : MacroSource :=
+  ⟨c.1, c.2.1, c.2.2.1, c.2.2.2.1, c.2.2.2.2.1, c.2.2.2.2.2⟩
+
+def packSources (sources : List MacroSource) : List Columns := sources.map encodeSource
+
+def unpackSources (rows : List Columns) : List MacroSource := rows.map decodeSource
+
+-- Element and list round trips establish preservation of the modeled fields and chronological order.
+theorem source_roundtrip (source : MacroSource) : decodeSource (encodeSource source) = source := by
+  cases source
+  rfl
+
+theorem history_roundtrip (sources : List MacroSource) :
+    unpackSources (packSources sources) = sources := by
+  induction sources with
+  | nil => rfl
+  | cons head tail ih => simp [packSources, unpackSources, source_roundtrip] at *; exact ih
+
+-- Dependency blockage is a supplied current-board fact. This abstracts possible reads in the
+-- existing lifecycle branches, not classifier accuracy or equivalence with the TypeScript program.
+inductive LifecycleBranch where
+  | completed | cancelled | deferred | blocked | future | unclear | ongoing | actionable
+  deriving DecidableEq, Repr
+
+-- Request selection and potential answer consumption share the same structural guard.
+def requestsGranularity (inProgress dependencyBlocked : Bool) : Bool :=
+  inProgress && !dependencyBlocked
+
+def mayReadGranularity (dependencyBlocked : Bool) : LifecycleBranch → Bool
+  | .ongoing | .actionable => !dependencyBlocked
+  | _ => false
+
+-- Under blockage, no modeled lifecycle branch can consume the omitted granularity answer.
+theorem blocked_dependency_skips_granularity (inProgress : Bool) (life : LifecycleBranch) :
+    requestsGranularity inProgress true = false ∧ mayReadGranularity true life = false := by
+  constructor
+  · cases inProgress <;> rfl
+  · cases life <;> rfl
+
+-- A source identity denotes an explicit supplied original, including an unavailable-entry marker.
+-- Unscoped/global uncertainty is never retired; establishing the association is outside this model.
+def includeGap (source : Option Nat) (supplied : List Nat) : Bool :=
+  match source with
+  | none => true
+  | some id => decide (id ∈ supplied)
+
+-- Local gaps occur exactly with their source; admission/global gaps remain in every range.
+theorem absent_source_gap_is_excluded (id : Nat) (supplied : List Nat) (h : id ∉ supplied) :
+    includeGap (some id) supplied = false := by
+  simp [includeGap, h]
+
+theorem present_source_gap_is_retained (id : Nat) (supplied : List Nat) (h : id ∈ supplied) :
+    includeGap (some id) supplied = true := by
+  simp [includeGap, h]
+
+theorem global_gap_is_retained (supplied : List Nat) : includeGap none supplied = true := by
+  rfl
+
+-- Different reasons attached to one source remain separate; source-based filtering is not deduplication.
+theorem same_source_gaps_are_retained (id : Nat) (supplied : List Nat)
+    (firstReason secondReason : Nat) (h : id ∈ supplied) :
+    [(some id, firstReason), (some id, secondReason)].filter
+      (fun gap => includeGap gap.1 supplied) = [(some id, firstReason), (some id, secondReason)] := by
+  simp [includeGap, h]
+
+-- The combined safety claim covers this total finite transition model, not arbitrary-text compression
+-- or equivalence with the TypeScript implementation. Source validity remains an explicit input.
+theorem process_is_correct (s : State) (captured : Nat) (key : Key)
+    (required : List Key) (sourcesVerified : Bool) (through : Nat) :
+    store s captured key true false = s ∧
+    (captured ≠ s.generation → store s captured key true true = s) ∧
+    (store s captured key true true).frontier = s.frontier ∧
+    ((advance s captured required sourcesVerified through).frontier ≠ s.frontier →
+      mayAdvance s captured required sourcesVerified) ∧
+    lookup (switchBranch s) captured key = false ∧
+    (∀ sources, unpackSources (packSources sources) = sources) ∧
+    (∀ intent token ack, (beginFull intent token ack).baseline = intent.baseline) ∧
+    (∀ intent token complete current, finishFull intent token complete current false = intent) ∧
+    (∀ earlier tail, key ∈ earlier → lookup s captured key = false →
+      advance s captured (earlier ++ tail) true through = s) ∧
+    (∀ inProgress life, requestsGranularity inProgress true = false ∧
+      mayReadGranularity true life = false) ∧
+    (∀ supplied, includeGap none supplied = true) ∧
+    (∀ id supplied, includeGap (some id) supplied = decide (id ∈ supplied)) ∧
+    (∀ id supplied (firstReason secondReason : Nat), id ∈ supplied →
+      [(some id, firstReason), (some id, secondReason)].filter
+        (fun gap => includeGap gap.1 supplied) = [(some id, firstReason), (some id, secondReason)]) := by
+  exact ⟨failed_write_preserves_state s captured key,
+    stale_write_preserves_state s captured key,
+    storing_does_not_advance s captured key true true,
+    advancing_requires_durable_sources s captured required sourcesVerified through,
+    branch_switch_drops_membership s captured key, history_roundtrip,
+    beginning_keeps_baseline, unacknowledged_full_keeps_baseline,
+    (fun earlier tail member missing => missing_prefix_blocks_frontier s captured key earlier tail through member missing),
+    blocked_dependency_skips_granularity, global_gap_is_retained, (fun _ _ => rfl),
+    same_source_gaps_are_retained⟩
+
+#print axioms process_is_correct
+
+end AuditSessionCache
+
+-- Deterministic stdout states the modeled boundary without performing cache or filesystem effects.
+def main : IO Unit := do
+  IO.println "Audit session cache: only current acknowledged evaluations are reusable."
+  IO.println "Progress requires durable keys and verified sources; ambient/bookkeeping are not history."
+  IO.println "Ordered macro-source tuples round-trip exactly; text and authority are not inferred or retired."
+  IO.println "Full intent does not promote before acknowledgement; cumulative progress cannot bridge a missing earlier key."
+  IO.println "A declared unfinished dependency suppresses granularity requests; every modeled lifecycle branch leaves that answer unread."
+  IO.println "Source-scoped gaps follow supplied originals; global or unscoped gaps remain visible in every range."

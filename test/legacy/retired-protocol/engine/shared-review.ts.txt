@@ -1,13 +1,14 @@
 /** Business projection/receipt adapter. All dispatch, subdivision and reuse belong to the service. */
 import type { BoardSnapshot } from "./board.js";
 import { redact, type AuditContext, type EvidenceRecord } from "./context.js";
-import type { ClassifierQuestion, JsonObject, ReviewEvidenceFrame, ReviewResult, ReviewService } from "./judgment-client.js";
+import type { ClassifierQuestion, JsonObject, ReviewCache, ReviewEvidenceFrame, ReviewResult, ReviewService } from "./judgment-client.js";
 import { entryOf, retainedFrom, type Rolling, type RollingOutcome } from "./rolling.js";
+import { auditStageEnds } from "./history-stages.js";
 import { buildAuditRequest, groupAnswers, type ChoiceAnswer, type TerminalStopInfo, type WithheldChoice } from "./typesafe.js";
 
 export async function reviewShared(a: {
 	service: ReviewService; board: BoardSnapshot; context: AuditContext; inputKey: string;
-	rolling?: Rolling; processed: Set<string>;
+	rolling?: Rolling; processed: Set<string>; cache?: ReviewCache;
 	threshold: number; timeoutMs: number; signal: AbortSignal; fresh?: string; secrets?: readonly string[];
 	stop?: TerminalStopInfo; commit: (receipt: Rolling) => boolean;
 }): Promise<RollingOutcome & { review: ReviewResult }> {
@@ -15,7 +16,8 @@ export async function reviewShared(a: {
 	const history = a.context.records.filter((r) => r.kind !== "supplement");
 	// Reconstruct the SAME review after interruption/repeat: its starting seed is
 	// not its newest completed checkpoint. New input can start from the latest receipt.
-	const origin: NonNullable<Rolling["reviewOrigin"]> = !a.fresh && a.rolling?.reviewOrigin?.inputKey === a.inputKey
+	const origin: NonNullable<Rolling["reviewOrigin"]> = a.cache ? { inputKey: a.inputKey }
+		: !a.fresh && a.rolling?.reviewOrigin?.inputKey === a.inputKey
 		? a.rolling.reviewOrigin
 		: !a.fresh && a.rolling?.serviceCheckpoint && !a.rolling.inputKey.endsWith(":partial")
 			? { inputKey: a.inputKey, checkpoint: a.rolling.serviceCheckpoint, through: a.rolling.through }
@@ -36,21 +38,51 @@ export async function reviewShared(a: {
 	});
 	let lastContext = a.context;
 	let withheld: WithheldChoice[] = [];
+	let persistenceFailed = false;
 	let through: string | undefined = origin.through;
 	// The old HTTP boundary redacted these strings too. Credentials remain local
 	// redaction inputs, never shared-service auth/config options. Preserve JSON keys.
+	// Remembered task-source selections only widen explicit object-scope eligibility.
+	// Public reports are already candidates; a cached label is never a new fact or authority.
+	const primaryTaskSources = new Set(Object.entries(a.rolling?.opinions ?? {}).filter(([id, value]) =>
+		(id === "work_evidence" || /^task_evidence_\d+$/.test(id)) && value.choice.startsWith("task:")).map(([, value]) => value.choice));
 	const project = (context: AuditContext, externalEvidence?: Set<string>): ReturnType<typeof buildAuditRequest> =>
-		JSON.parse(JSON.stringify(buildAuditRequest(a.board, context, "shared-service", a.stop, externalEvidence),
+		JSON.parse(JSON.stringify(buildAuditRequest(a.board, context, "shared-service", a.stop, externalEvidence, primaryTaskSources, !!a.cache),
 			(_key, value) => typeof value === "string" ? redact(value, a.secrets) : value));
-	const root = project({ ...a.context, records: supplements });
+	// Tool absence is relative to the supplied range: never borrow a later result,
+	// or invalidate a sealed prefix because a different call was appended in the tail.
+	// Unavailable entries have explicit non-authoritative records, so their gaps can follow their range.
+	// Truly unscoped/global admission gaps remain conservative in every range.
+	const sourceIds = new Set(a.context.records.map((r) => r.id));
+	const omissionsFor = (records: EvidenceRecord[]): AuditContext["omissions"] => {
+		if (!a.cache) return a.context.omissions;
+		const included = new Set(records.flatMap((r) => [r.id, ...(r.fragment ? [r.fragment.of] : [])]));
+		const pending = new Map<string, string>();
+		for (const record of records) {
+			if (record.kind === "tool_call" && record.callId) pending.set(record.callId, record.fragment?.of ?? record.id);
+			else if (record.kind === "tool_result" && record.callId && record.complete) pending.delete(record.callId);
+		}
+		return [...a.context.omissions.filter((o) => o.reason !== "tool result unavailable" &&
+			(o.reason === "effective compaction-aware context unavailable" || !sourceIds.has(o.id) || included.has(o.id))),
+			...[...pending.values()].map((id) => ({ id, reason: "tool result unavailable" }))];
+	};
+	const root = project({ ...a.context, records: supplements, omissions: omissionsFor(supplements) });
 	const review = await a.service.review({
 		state: { audit: root.state },
 		questions: Object.fromEntries(Object.entries(root.questions).filter(([, q]) => Object.keys(q.criteria).length <= 255)) as Record<string, ClassifierQuestion>,
 		evidence: newRecords.map(({ id, text, ...metadata }) => ({ id, text, metadata: metadata as unknown as JsonObject })),
 	}, {
+		cache: a.cache && {
+			lookup: (key) => a.cache!.lookup(key),
+			store: (key, answer) => {
+				try { const saved = a.cache!.store(key, answer); if (!saved) persistenceFailed = true; return saved; }
+				catch { persistenceFailed = true; return false; }
+			},
+		},
 		checkpoint: origin.checkpoint,
 		minConfidence: a.threshold, timeoutMs: a.timeoutMs, signal: a.signal, fresh: a.fresh,
-		projectionRevision: "audit-source-projection/1",
+		projectionRevision: a.cache ? "audit-source-projection/5" : "audit-source-projection/1",
+		planStages: a.cache ? auditStageEnds : undefined,
 		projectStage: (stage) => {
 			// Completed bounds are processing metadata. Retain the actual source facts,
 			// including original text after fragments, never substitute old opinions.
@@ -58,12 +90,16 @@ export async function reviewShared(a: {
 			// text here would reinsert the unsent remainder into fixed state and
 			// make otherwise recoverable later fragments irreducible.
 			const doneIds = new Set(stage.completed.filter((f) => !f.bounds || f.bounds.end === f.bounds.total).map((f) => f.bounds?.of ?? f.record.id));
-			const retained = retainedFrom(history.filter((r) => priorRecords.includes(r) || doneIds.has(r.id))).records;
+			const prior = history.filter((r) => priorRecords.includes(r) || doneIds.has(r.id));
+			// The declared macro accumulation is lossless column encoding, not a label-based retirement.
+			// Keep every original locally for source eligibility and final authority validation.
+			const retained = a.cache ? prior : retainedFrom(prior).records;
 			const piece = stage.evidence.map(framed);
 			const fragments = piece.filter((record) => record.fragment);
-			lastContext = { ...a.context, records: [...retained, ...piece, ...supplements],
+			const records = [...retained, ...piece, ...supplements];
+			lastContext = { ...a.context, records,
 				globalComplete: a.context.globalComplete && fragments.length === 0,
-				omissions: [...a.context.omissions, ...fragments.map((record) => ({ id: entryOf(record),
+				omissions: [...omissionsFor(records), ...fragments.map((record) => ({ id: entryOf(record),
 					reason: `unavailable: only source fragment ${record.fragment!.start}-${record.fragment!.end}/${record.fragment!.total} is in this stage; prior opinions are not source facts` }))],
 				rolling: { opinions: stage.previousAnswers, progress: { processedThrough: through ?? null, final: stage.final } } };
 			const req = project(lastContext, new Set(piece.map((r) => r.id)));
@@ -73,7 +109,7 @@ export async function reviewShared(a: {
 			return { state: { audit: req.state }, questions: Object.fromEntries(Object.entries(req.questions).filter(([id]) => !blocked.has(id))) as Record<string, ClassifierQuestion>, unresolved: [...blocked] };
 		},
 		onProgress: (stage) => {
-			if (!stage.durable) return;
+			if (a.cache || !stage.durable) return;
 			const done = stage.sources.filter((s) => !s.bounds || s.bounds.end === s.bounds.total);
 			const tail = done.at(-1);
 			const nextThrough = tail ? entryOf(originals.get(tail.id)!) : through;
@@ -82,10 +118,32 @@ export async function reviewShared(a: {
 				opinions: stage.opinions as Record<string, ChoiceAnswer>, answerKeys: [], serviceCheckpoint: stage.checkpoint, reviewOrigin: origin })) through = nextThrough;
 		},
 	});
-	const ok = review.stopReason === "stop";
+	// Consumer progress depends on consumer evaluations, not the service ledger.
+	// Reconstruct exact historical input on reload; a prior label/cursor is not sufficient to retire it.
+	if (a.cache && !a.signal.aborted) {
+		const answerKeys = new Set<string>(), sourceIds = new Set<string>();
+		for (const stage of review.progress.stages) {
+			// Later durable work cannot bridge a missing dependency in the cumulative frontier.
+			if (!stage.cache?.durable) { persistenceFailed = true; break; }
+			for (const key of stage.cache.keys) answerKeys.add(key);
+			const done = stage.sources.filter((s) => !s.bounds || s.bounds.end === s.bounds.total);
+			if (done.some((s) => !originals.has(s.id))) { persistenceFailed = true; break; }
+			for (const source of done) sourceIds.add(entryOf(originals.get(source.id)!));
+			const tail = done.at(-1);
+			if (!tail && stage.sources.length) continue;
+			const nextThrough = tail ? entryOf(originals.get(tail.id)!) : through;
+			if (!a.commit({ cacheVersion: 1, through: nextThrough, sourceIds: [...sourceIds],
+				...(a.fresh ? { fresh: a.fresh } : {}), inputKey: stage.final ? a.inputKey : `${a.inputKey}:partial`,
+				opinions: stage.opinions as Record<string, ChoiceAnswer>, answerKeys: [...answerKeys] })) {
+				persistenceFailed = true; break;
+			}
+			through = nextThrough;
+		}
+	}
+	const ok = review.stopReason === "stop" && !persistenceFailed;
 	return { review, context: lastContext, reuse: review.reuse,
 		result: { ...(ok ? { ok: true as const, answers: groupAnswers(review.answers as Record<string, ChoiceAnswer>) }
-			: { ok: false as const, error: review.errorMessage ?? "shared review incomplete", contextOverflow: review.contextOverflow }), ...(withheld.length ? { withheld } : {}) },
+			: { ok: false as const, error: persistenceFailed ? "consumer cache/progress persistence failed" : review.errorMessage ?? "shared review incomplete", contextOverflow: review.contextOverflow }), ...(withheld.length ? { withheld } : {}) },
 		final: ok, complete: ok && review.unresolved.length === 0, unchanged: ok && review.diagnostics.attemptCount === 0,
 		recovered: ok && review.diagnostics.attempts.some((x) => x.errorCategory === "overflow"),
 		...(review.contextOverflow ? { needsAccount: true } : {}),

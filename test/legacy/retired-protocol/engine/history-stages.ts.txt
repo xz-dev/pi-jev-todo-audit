@@ -1,0 +1,42 @@
+/** Business-owned stable blocks and lossless macro-event representation. No inferred facts or summaries. */
+import type { EvidenceRecord } from "./context.js";
+import type { ReviewEvidenceFrame } from "./judgment-client.js";
+
+const BLOCK_BYTES = 32 * 1024;
+const macro = (kind: unknown) => kind === "tool_call" || kind === "tool_result" || kind === "shell";
+const bytes = (value: unknown) => Buffer.byteLength(JSON.stringify(value));
+
+/** Seal large prefixes at original source boundaries; always review the useful partial tail. */
+export function auditStageEnds(frames: readonly ReviewEvidenceFrame[]): number[] {
+	// Free-text histories have no declared sufficient smaller representation. Keep their conservative path.
+	if (frames.filter((f) => macro(f.record.metadata?.kind)).reduce((n, f) => n + bytes(f.record), 0) < BLOCK_BYTES) return [];
+	const ends: number[] = [];
+	let used = 0;
+	for (const [index, frame] of frames.entries()) {
+		used += bytes(frame.record);
+		if (used >= BLOCK_BYTES && macro(frame.record.metadata?.kind)) { ends.push(index + 1); used = 0; }
+	}
+	return ends;
+}
+
+/** Columns replace repeated field names only. Every source value, role, ID and ordering remains present. */
+export function packToolHistory(records: readonly EvidenceRecord[], external: ReadonlySet<string>): unknown[] {
+	const packed: unknown[] = [];
+	let run: EvidenceRecord[] = [];
+	const flush = () => {
+		if (!run.length) return;
+		const columns = [...new Set(run.flatMap((r) => Object.entries(r).filter(([, value]) => value !== undefined).map(([key]) => key)))];
+		const block = { kind: "tool_history", encoding: "columns/1", columns,
+			rows: run.map((r) => { const fields = Object.fromEntries(Object.entries(r)); return columns.map((key) => fields[key] ?? null); }) };
+		if (run.length > 1 && bytes(block) < bytes(run)) packed.push(block); else packed.push(...run);
+		run = [];
+	};
+	for (const record of records) {
+		// Null means an absent column. Non-scalar/unknown shapes and fragments stay explicit.
+		if (macro(record.kind) && record.complete && !external.has(record.id) && !record.fragment &&
+			Object.values(record).every((v) => v === undefined || typeof v === "string" || typeof v === "boolean")) run.push(record);
+		else { flush(); packed.push(record); }
+	}
+	flush();
+	return packed;
+}

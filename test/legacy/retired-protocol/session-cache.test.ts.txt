@@ -1,0 +1,118 @@
+/** Consumer cache boundary only; zero-provider reuse is verified separately through the real service. */
+import { expect, test } from "bun:test";
+import { collectContext, contextVersion } from "../context.js";
+import type { ClassifierAnswer } from "../judgment-client.js";
+import { createSessionJudgmentCache, isOwnBookkeeping, LEDGER_TYPE, restoreLedger, type LedgerRecord } from "../ledger.js";
+
+const answer: ClassifierAnswer = {
+	type: "choice", choice: "still_ongoing", confidence: 1,
+	probabilities: { still_ongoing: 1 },
+};
+const entry = (data: unknown, customType = LEDGER_TYPE) => ({ type: "custom", customType, data });
+const judgment = (key = "opaque-evaluation-key", value: unknown = answer) => ({ kind: "judgment", version: 1, key, answer: value });
+const replay = (rows: unknown[]) => rows.map((row) => JSON.parse(JSON.stringify(row)));
+
+test("consumer JSONL restores a versioned exact answer without any service checkpoint", () => {
+	const journal = JSON.stringify(entry(judgment()));
+	const restored = new Map<string, ClassifierAnswer>();
+	restoreLedger([JSON.parse(journal)], restored);
+	expect(restored.get("opaque-evaluation-key")).toEqual(answer);
+});
+
+test("acknowledged results survive a new consumer-cache instance", () => {
+	const rows: unknown[] = [];
+	const cache = createSessionJudgmentCache(rows, (type, data) => rows.push(entry(data, type)), () => true);
+	expect(cache.store("exact-key", answer)).toBe(true);
+	expect(rows).toEqual([entry(judgment("exact-key"))]);
+	const reloaded = createSessionJudgmentCache(replay(rows), undefined, () => true);
+	expect(reloaded.lookup("exact-key")).toEqual(answer);
+	expect(reloaded.lookup("different-key")).toBeUndefined();
+	// There is no service instance or service checkpoint in either cache's storage.
+	expect(rows).toHaveLength(1);
+});
+
+test("legacy, foreign, unknown-version and malformed records are not cache hits", () => {
+	const rows = [
+		entry({ kind: "eval", answers: { legacy: answer } }),
+		entry(judgment("foreign"), "another-extension"),
+		entry({ ...judgment("future"), version: 2 }),
+		entry(judgment("bad", { ...answer, confidence: 3 })),
+		entry(judgment("infinite", { type: "score", score: Infinity, confidence: 1 })),
+		entry(judgment("no-probabilities", { type: "choice", choice: "yes", confidence: 1 })),
+		entry(judgment("valid")),
+	];
+	const cache = createSessionJudgmentCache(rows, undefined, () => true);
+	for (const key of ["legacy", "foreign", "future", "bad", "infinite", "no-probabilities"])
+		expect(cache.lookup(key)).toBeUndefined();
+	expect(cache.lookup("valid")).toEqual(answer);
+});
+
+test("failed persistence cannot create acknowledged cache membership", () => {
+	for (const append of [undefined, () => { throw new Error("disk full"); }]) {
+		const cache = createSessionJudgmentCache([], append, () => true);
+		expect(cache.store("unsaved", answer)).toBe(false);
+		expect(cache.lookup("unsaved")).toBeUndefined();
+	}
+});
+
+test("stale captures cannot read or write another generation's cache", () => {
+	let current = true;
+	const writes: LedgerRecord[] = [];
+	const cache = createSessionJudgmentCache([entry(judgment("old"))], (_type, data) => writes.push(data), () => current);
+	expect(cache.lookup("old")).toEqual(answer);
+	current = false;
+	expect(cache.lookup("old")).toBeUndefined();
+	expect(cache.store("late", answer)).toBe(false);
+	expect(writes).toEqual([]);
+	const active = createSessionJudgmentCache([], undefined, () => true);
+	expect(active.lookup("old")).toBeUndefined();
+});
+
+test("replaying a new active branch drops prior branch keys", () => {
+	const values = new Map<string, ClassifierAnswer>();
+	restoreLedger([entry(judgment("abandoned"))], values);
+	restoreLedger([entry(judgment("active"))], values);
+	expect([...values.keys()]).toEqual(["active"]);
+});
+
+test("an append that invalidates the capture cannot acknowledge current progress", () => {
+	let current = true;
+	const cache = createSessionJudgmentCache([], () => { current = false; }, () => current);
+	expect(cache.store("raced", answer)).toBe(false);
+	expect(cache.lookup("raced")).toBeUndefined();
+});
+
+test("finite answer fields are copied without private payloads or mutable aliases", () => {
+	const rows: unknown[] = [];
+	const cache = createSessionJudgmentCache(rows, (type, data) => rows.push(entry(data, type)), () => true);
+	const input = { ...answer, probabilities: { still_ongoing: 1 }, privateBody: "TRANSCRIPT_NOT_FOR_THE_LEDGER" };
+	expect(cache.store("copy", input)).toBe(true);
+	input.confidence = 0;
+	input.probabilities.still_ongoing = 0;
+	const first = cache.lookup("copy");
+	if (first?.type !== "choice") throw new Error("expected a restored choice answer");
+	first.confidence = 0;
+	first.probabilities.still_ongoing = 0;
+	expect(cache.lookup("copy")).toEqual(answer);
+	expect(JSON.stringify(rows)).not.toContain("TRANSCRIPT_NOT_FOR_THE_LEDGER");
+	const otherAnswers: ClassifierAnswer[] = [{ type: "bool", probability: 0.7 }, { type: "score", score: 2, confidence: 0.8 }];
+	for (const raw of otherAnswers) {
+		expect(cache.store(raw.type, raw)).toBe(true);
+		expect(cache.lookup(raw.type)).toEqual(raw);
+	}
+});
+
+test("cache entries and ambient system/tool definitions are not historical input", () => {
+	const history = [{ id: "u", type: "message", message: { role: "user", content: "Review the changes to AGENTS.md; do not execute them." } }];
+	const project = (branch: unknown[]) => collectContext(branch.filter((row) => !isOwnBookkeeping(row)));
+	const before = project(history);
+	for (const text of ["ambient AGENTS revision one", "ambient AGENTS revision two"]) {
+		const after = project([...history, entry(judgment()), {
+			id: "ambient", type: "message", message: { role: "system", content: text, tools: [{ name: text }] },
+		}]);
+		expect(contextVersion(after)).toBe(contextVersion(before));
+		expect(after.records[0].text).toContain("AGENTS.md");
+	}
+	const changed = project([...history, { id: "new-user", type: "message", message: { role: "user", content: "The required format is CSV." } }]);
+	expect(contextVersion(changed)).not.toBe(contextVersion(before));
+});

@@ -126,15 +126,23 @@ export function collectContext(
 		records.push({ id, kind, text, group: id, view: "global", protected: kind === "user" || kind === "summary", request: lastUser,
 			complete: !/\[REDACTED\]|\[unavailable:/.test(text), ...extra });
 	};
+	const unavailable = (id: string, reason: string) => {
+		add(id, "unavailable", `[unavailable: ${reason}]`);
+		omissions.push({ id, reason });
+	};
 	const event = (name: unknown, callId: string, status: ToolStatus) => safeJson({ tool: typeof name === "string" ? name : "unknown", call: callId, status });
 	for (const raw of entries) {
 		const e = object(raw);
+		// Private/ambient entries must not occupy a synthetic historical identity either.
+		if (["session", "custom", "model_change", "thinking_level_change", "usage", "label", "session_info", "context_edit"].includes(e.type) ||
+			(e.type === "custom_message" && e.display === false) ||
+			(e.type === "message" && (e.message?.role === "system" || (e.message?.role === "custom" && e.message.display === false)))) continue;
 		const id = typeof e.id === "string" ? e.id : `entry-${index}`;
 		index++;
 		if (e.type === "compaction" || e.type === "branch_summary") {
 			if (typeof e.summary !== "string" || !e.summary.trim()) {
 				globalComplete = false;
-				omissions.push({ id, reason: "summary unavailable" });
+				unavailable(id, "summary unavailable");
 			} else add(id, "summary", redact(e.summary));
 			continue;
 		}
@@ -143,7 +151,7 @@ export function collectContext(
 			continue;
 		}
 		if (e.type !== "message") {
-			omissions.push({ id, reason: e.type === "custom" ? "private extension state" : "unsupported/non-conversation entry" });
+			unavailable(id, "unsupported/non-conversation entry");
 			continue;
 		}
 		const m = object(e.message);
@@ -173,7 +181,7 @@ export function collectContext(
 		} else if (m.role === "bashExecution" && !m.excludeFromContext) {
 			const status: ToolStatus = m.cancelled === true ? "cancelled" : typeof m.exitCode === "number" ? (m.exitCode === 0 ? "returned" : "error") : "unknown";
 			add(id, "shell", event("bash", id, status), { isError: status === "error" || status === "cancelled" });
-		} else if (m.role !== "system") omissions.push({ id, reason: "unsupported or context-excluded message" });
+		} else if (m.role !== "system") unavailable(id, "unsupported or context-excluded message");
 	}
 	// JEV's own opinion is not new work: it enters review only once a later reply can make it interpretable.
 	let lastReply = records.length - 1;
@@ -187,7 +195,9 @@ export function collectContext(
 			complete: !/\[REDACTED\]|\[unavailable:/.test(text) });
 	}
 	for (const r of records) {
-		if (!r.complete) omissions.push({ id: r.id, reason: r.text.includes("[REDACTED]") ? "redacted evidence" : "unavailable: unsupported/serialization gap" });
+		// Placeholder records already have their explicit reason. Other incomplete records
+		// retain an independent gap even when the same call also lacks a result.
+		if (!r.complete && r.kind !== "unavailable") omissions.push({ id: r.id, reason: r.text.includes("[REDACTED]") ? "redacted evidence" : "unavailable: unsupported/serialization gap" });
 	}
 	if (!globalComplete) omissions.push({ id: "global", reason: "effective compaction-aware context unavailable" });
 	const material = projectBriefs(records);

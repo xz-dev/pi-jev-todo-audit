@@ -1,0 +1,3 @@
+'IncrementalAudit.process_is_correct' depends on axioms: [propext]
+'IncrementalAudit.suffix_contains_no_old_loop' depends on axioms: [propext]
+'IncrementalAudit.complete_loop_has_every_result' depends on axioms: [propext, Quot.sound]

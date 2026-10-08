@@ -1,6 +1,8 @@
 import { expect, test } from "bun:test";
-import { collectContext, safeJson, type AuditContext } from "../context.js";
-import { buildAuditRequest } from "../typesafe.js";
+import { collectContext, contextVersion, safeJson, type AuditContext } from "../context.js";
+import { groupLoops } from "../loops.js";
+import { buildChangeRequest } from "../questions.js";
+import { emptyState } from "../state.js";
 
 const user = (id: string, content: string) => ({ id, type: "message", message: { role: "user", content } });
 const assistant = (id: string, content: unknown) => ({ id, type: "message", message: { role: "assistant", content } });
@@ -10,7 +12,36 @@ const pair = (id: string, args: unknown, result: string, isError = false) => [
 ];
 const board = { tasks: [{ id: 5, subject: "Parser", description: "src/parser.ts must reject malformed input; await approval before deployment.", owner: "parser-worker", blockedBy: [7], metadata: { expectation: "Malformed input rejected", unusualReason: "Approval not granted" }, status: "in_progress" as const }], nextId: 8 };
 const collect = (entries: unknown[]) => collectContext(entries, board.tasks.map((value) => ({ id: `task:${value.id}`, value })));
-const state = (context: AuditContext) => buildAuditRequest(board, context, "jev-latest").state;
+/** What leaves the process for a first full segment (all loops, no stored state). */
+const request = (context: AuditContext) => buildChangeRequest({ board, state: emptyState(), segment: groupLoops(context.records), anchors: new Map(), taskIds: [5], session: true });
+const state = (context: AuditContext) => request(context).state;
+
+test("ignored metadata cannot renumber id-less history or its call/source associations", () => {
+	const history = [user("unused", "Review XML; await approval."), ...pair("check", {}, "ok"), assistant("unused", "Reported progress only.")]
+		.map(({ id: _id, ...entry }) => entry);
+	const expected = collectContext(history);
+	for (const type of ["session", "custom", "model_change", "thinking_level_change", "usage", "label", "session_info", "context_edit"]) {
+		const metadata = { type, id: "private", data: { private: "NOT_EVIDENCE" } };
+		const actual = collectContext([metadata, history[0], metadata, ...history.slice(1)]);
+		expect(actual).toEqual(expected);
+		expect(contextVersion(actual)).toBe(contextVersion(expected));
+	}
+	expect(expected.records.find((r) => r.kind === "tool_result")?.group).toBe(expected.records.find((r) => r.kind === "tool_call")?.id);
+	const changed = collectContext([history[0], user("new", "Change scope to CSV."), ...history.slice(1)]);
+	expect(contextVersion(changed)).not.toBe(contextVersion(expected));
+});
+
+test("pending redacted calls retain both independent gaps", () => {
+	const entries = [user("u", "Review only."), assistant("call", [{ type: "toolCall", id: "c", name: "sk-offlinefixturetool", arguments: {} }])];
+	const pending = collectContext(entries);
+	const returned = collectContext([...entries, { id: "result", type: "message", message: { role: "toolResult", toolCallId: "c", toolName: "read", isError: false, content: "private" } }]);
+	const redaction = { id: "call:call:c", reason: "redacted evidence" };
+	expect(pending.omissions).toContainEqual(redaction);
+	expect(pending.omissions).toContainEqual({ id: "call:call:c", reason: "tool result unavailable" });
+	expect(returned.omissions).toContainEqual(redaction);
+	expect(returned.omissions.some((o) => o.reason === "tool result unavailable")).toBe(false);
+	expect(returned.records.find((r) => r.id === "call:call:c")).toEqual(pending.records.find((r) => r.id === "call:call:c"));
+});
 
 test("tools are projected to name, call identity/order and status; arguments and bodies never leave", () => {
 	const context = collect([
@@ -124,7 +155,7 @@ test("visible audit advice retains producer identity but is not a selectable sou
 		assistant("rebuttal", "The parser task is one coherent outcome; its checks are already tracked as #6.")]);
 	const record = context.records.find((r) => r.id === "advice");
 	expect(record?.advice).toBe(true); expect(record?.producer).toBe("jev-todo-audit");
-	const req = buildAuditRequest(board, context, "jev-latest");
+	const req = request(context);
 	expect(req.questions.task_evidence_5.criteria.advice).toBeUndefined();
 	// The main agent's reply is new review input, and the question it answers stays identifiable.
 	expect(req.state).toContain("already tracked as #6"); expect(req.state).toContain("Split src/parser.ts task");

@@ -46,12 +46,11 @@ afterEach(() => {
 function host() {
 	const handlers = new Map<string, any[]>(), commands = new Map<string, any>(), bus = new Map<string, any[]>();
 	let keys = 0, requests = 0, reviews = 0, injected = 0, written = 0, configReads = 0;
-	services[serviceKey] = { version: 1, reviewVersion: 1, review: async () => {
+	services[serviceKey] = { version: 1, judge: async () => {
 		reviews++;
 		// Ownership tests stop at the service port; no transport or inference is simulated.
 		return { answers: {}, dropped: [], backend: "llm", model: "fixture/offline", stopReason: "error", errorMessage: "scripted no-provider result",
-			reuse: { hits: 0, joined: 0, sent: 0 }, progress: { stages: [] }, unresolved: [],
-			diagnostics: { attempts: [], attemptCount: 0, observationCoverage: "complete", usage: { inputTokens: { knownSum: 0, missing: 0 }, outputTokens: { knownSum: 0, missing: 0 }, costUsd: { knownSum: 0, missing: 0 } } } };
+			reuse: { hits: 0, joined: 0, sent: 0 } };
 	} };
 	const branch: any[] = [
 		{ id: "u", type: "message", message: { role: "user", content: "Analyse only; do not deploy." } },

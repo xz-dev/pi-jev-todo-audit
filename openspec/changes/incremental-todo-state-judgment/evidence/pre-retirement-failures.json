@@ -1,0 +1,382 @@
+{
+  "counts": {
+    "test/index.test.ts": 69,
+    "test/ledger.test.ts": 8,
+    "test/ownership.test.ts": 3,
+    "test/shared-contract.test.ts": 13
+  },
+  "failures": [
+    {
+      "file": "test/index.test.ts",
+      "test": "A1: one full ordinary advisory body is visible with notifyOnAligned=false"
+    },
+    {
+      "file": "test/index.test.ts",
+      "test": "A1: a visible ordinary advisory needs no delivery receipt with notifyOnAligned=false"
+    },
+    {
+      "file": "test/index.test.ts",
+      "test": "A1: one full ordinary advisory body is visible with notifyOnAligned=true"
+    },
+    {
+      "file": "test/index.test.ts",
+      "test": "A1: a visible ordinary advisory needs no delivery receipt with notifyOnAligned=true"
+    },
+    {
+      "file": "test/index.test.ts",
+      "test": "A1/A6: only an exact terminal shared footer folds; quoted evidence and unknown endings stay visible"
+    },
+    {
+      "file": "test/index.test.ts",
+      "test": "A6: headless delivery has the same content, keys and options without requiring a UI"
+    },
+    {
+      "file": "test/index.test.ts",
+      "test": "A7: generated clarification redacts known secrets before either reader sees it"
+    },
+    {
+      "file": "test/index.test.ts",
+      "test": "I1: fact-only material change refreshes the same-label review"
+    },
+    {
+      "file": "test/index.test.ts",
+      "test": "I1: source-only material change refreshes the same-label review"
+    },
+    {
+      "file": "test/index.test.ts",
+      "test": "I1: coverage-only material change refreshes the same-label review"
+    },
+    {
+      "file": "test/index.test.ts",
+      "test": "I1: role-only material change refreshes the same-label review"
+    },
+    {
+      "file": "test/index.test.ts",
+      "test": "I1: a no-op board read keeps identical brief evaluations reusable"
+    },
+    {
+      "file": "test/index.test.ts",
+      "test": "I1: a same-id reported fact refreshes an identical terminal stop without rearming acknowledgment advice"
+    },
+    {
+      "file": "test/index.test.ts",
+      "test": "I1: in-flight fact change suppresses stale corrections"
+    },
+    {
+      "file": "test/index.test.ts",
+      "test": "I1: in-flight source change suppresses stale corrections"
+    },
+    {
+      "file": "test/index.test.ts",
+      "test": "I1: in-flight coverage change suppresses stale corrections"
+    },
+    {
+      "file": "test/index.test.ts",
+      "test": "I1: in-flight report change suppresses stale corrections"
+    },
+    {
+      "file": "test/index.test.ts",
+      "test": "I1: in-flight role change suppresses stale corrections"
+    },
+    {
+      "file": "test/index.test.ts",
+      "test": "I1: in-flight effective-history change suppresses stale corrections"
+    },
+    {
+      "file": "test/index.test.ts",
+      "test": "P1: cold covered completion report stays selectable with empty sources"
+    },
+    {
+      "file": "test/index.test.ts",
+      "test": "P1: cold covered completion report stays selectable with support-only sources"
+    },
+    {
+      "file": "test/index.test.ts",
+      "test": "P1: full covered completion report stays selectable with empty sources"
+    },
+    {
+      "file": "test/index.test.ts",
+      "test": "P1: full covered completion report stays selectable with support-only sources"
+    },
+    {
+      "file": "test/index.test.ts",
+      "test": "P1/F1: a processed completion report stays whole and selectable without a prior primary pin"
+    },
+    {
+      "file": "test/index.test.ts",
+      "test": "A3: a 256-option Choice exposes the complete scoped clarification once"
+    },
+    {
+      "file": "test/index.test.ts",
+      "test": "P2: cold known task-object scopes bound evidence without excluding public primary reports"
+    },
+    {
+      "file": "test/index.test.ts",
+      "test": "P2: full known task-object scopes bound evidence without excluding public primary reports"
+    },
+    {
+      "file": "test/index.test.ts",
+      "test": "P2/P3: cold 260 potential primary reports without brief stay incomplete without hidden loss"
+    },
+    {
+      "file": "test/index.test.ts",
+      "test": "P2/P3: cold 260 potential primary reports with legal brief stay incomplete without hidden loss"
+    },
+    {
+      "file": "test/index.test.ts",
+      "test": "P2/P3: full 260 potential primary reports without brief stay incomplete without hidden loss"
+    },
+    {
+      "file": "test/index.test.ts",
+      "test": "P2/P3: full 260 potential primary reports with legal brief stay incomplete without hidden loss"
+    },
+    {
+      "file": "test/index.test.ts",
+      "test": "P3: an oversized task evidence set withholds only that finding; a supported sibling still reconciles"
+    },
+    {
+      "file": "test/index.test.ts",
+      "test": "P3: an oversized board-matching Choice loses no tasks and grants no work finding, while independent accepted work remains usable"
+    },
+    {
+      "file": "test/index.test.ts",
+      "test": "I1/R1: changing the remembered primary changes actual candidate definitions, not just the old fact/cursor identity"
+    },
+    {
+      "file": "test/index.test.ts",
+      "test": "F1: a supplied current brief is scoped reported data with original source roles, serialized once"
+    },
+    {
+      "file": "test/index.test.ts",
+      "test": "F3: missing brief lineage stays a gap, not completion proof; legacy tasks remain useful"
+    },
+    {
+      "file": "test/index.test.ts",
+      "test": "F3: coverage cannot erase user, summary or another task; excluded and redacted origins stay gaps"
+    },
+    {
+      "file": "test/index.test.ts",
+      "test": "F3: empty reference lists are permitted; malformed brief data stays qualified without breaking legacy prose"
+    },
+    {
+      "file": "test/index.test.ts",
+      "test": "A4/A5: factual clarification keeps public origins and failure remains UI-only"
+    },
+    {
+      "file": "test/index.test.ts",
+      "test": "A4/A5: factual clarification keeps missing origins and failure remains UI-only"
+    },
+    {
+      "file": "test/index.test.ts",
+      "test": "F2: an irreducible necessary floor asks once for a scoped account, without completion, wakeup or receipt advance"
+    },
+    {
+      "file": "test/index.test.ts",
+      "test": "F2: an older ready brief never supplies permission against a later CSV/approval decision"
+    },
+    {
+      "file": "test/index.test.ts",
+      "test": "F4: reload after compaction restores the durable frontier and qualified brief; hidden origins stay gaps, never fabricated evidence"
+    },
+    {
+      "file": "test/index.test.ts",
+      "test": "F4: a partial-answer failure keeps the range incomplete; a successful resumed final view can reconcile"
+    },
+    {
+      "file": "test/index.test.ts",
+      "test": "periodic cadence and user cooldown work without a watchdog"
+    },
+    {
+      "file": "test/index.test.ts",
+      "test": "manual bypasses cadence, terminal reconciliation wakes for board work only"
+    },
+    {
+      "file": "test/index.test.ts",
+      "test": "explicit actionable-now with current authorization can wake for execution"
+    },
+    {
+      "file": "test/index.test.ts",
+      "test": "an incomplete terminal review cannot wake the agent for an active task"
+    },
+    {
+      "file": "test/index.test.ts",
+      "test": "blocked match and coarse-task judgment cannot override waiting; missing annotation is board-only"
+    },
+    {
+      "file": "test/index.test.ts",
+      "test": "reworded stops and assistant acknowledgments do not repeat demands, even after reload"
+    },
+    {
+      "file": "test/index.test.ts",
+      "test": "board bookkeeping cannot re-arm a blocker when unrelated latest output becomes historical"
+    },
+    {
+      "file": "test/index.test.ts",
+      "test": "new user evidence permits a fresh audit under identical stop metadata"
+    },
+    {
+      "file": "test/index.test.ts",
+      "test": "in-flight result invalidated by user is discarded"
+    },
+    {
+      "file": "test/index.test.ts",
+      "test": "in-flight result invalidated by board is discarded"
+    },
+    {
+      "file": "test/index.test.ts",
+      "test": "in-flight result invalidated by branch is discarded"
+    },
+    {
+      "file": "test/index.test.ts",
+      "test": "in-flight result invalidated by shutdown is discarded"
+    },
+    {
+      "file": "test/index.test.ts",
+      "test": "new stop after an in-flight user change is queued once and not lost with the aborted request"
+    },
+    {
+      "file": "test/index.test.ts",
+      "test": "request retains effective global context, visible failure and task requirements; excludes abandoned/compacted raw payload"
+    },
+    {
+      "file": "test/index.test.ts",
+      "test": "age and legacy budget do not force splitting or crop context; notice once"
+    },
+    {
+      "file": "test/index.test.ts",
+      "test": "known opaque API key is absent from evidence, task labels and failure diagnostics"
+    },
+    {
+      "file": "test/index.test.ts",
+      "test": "Pi authentication belongs to the service; audit never reads Pi keys or sends HTTP"
+    },
+    {
+      "file": "test/index.test.ts",
+      "test": "legacy endpoint and key fields warn by name and never supply fallback authentication"
+    },
+    {
+      "file": "test/index.test.ts",
+      "test": "missing shared service is reported without attempting legacy or Pi auth fallback"
+    },
+    {
+      "file": "test/index.test.ts",
+      "test": "API failure remains isolated and a later manual check can run"
+    },
+    {
+      "file": "test/index.test.ts",
+      "test": "task trajectory is bounded, stable across an unchanged repeat, and keeps its first-active origin"
+    },
+    {
+      "file": "test/index.test.ts",
+      "test": "TODO revisions start segments without paid calls; granularity keeps the first-active origin through resume"
+    },
+    {
+      "file": "test/index.test.ts",
+      "test": "manual modes: repeat inputs are stable, full requests fresh review without tool bodies, unknown args do nothing"
+    },
+    {
+      "file": "test/index.test.ts",
+      "test": "changing ignored audit apiUrl preserves the shared-service request identity"
+    },
+    {
+      "file": "test/index.test.ts",
+      "test": "a late response after a branch switch appends no ledger entries to the active branch"
+    },
+    {
+      "file": "test/ledger.test.ts",
+      "test": "business receipts/diagnostics are non-context; shared-service reuse is not charged again"
+    },
+    {
+      "file": "test/ledger.test.ts",
+      "test": "compaction lifecycle restores business input without treating ledger entries as facts"
+    },
+    {
+      "file": "test/ledger.test.ts",
+      "test": "abandoned-branch business receipts are not restored into the active history"
+    },
+    {
+      "file": "test/ledger.test.ts",
+      "test": "a failed business write is not durable and does not prevent the next review"
+    },
+    {
+      "file": "test/ledger.test.ts",
+      "test": "acknowledged consumer results advance independently of a volatile service checkpoint"
+    },
+    {
+      "file": "test/ledger.test.ts",
+      "test": "a main-agent rebuttal changes review input; unanswered advice alone does not"
+    },
+    {
+      "file": "test/ledger.test.ts",
+      "test": "recovered service diagnostics preserve rejected attempts, successful parts and missing usage"
+    },
+    {
+      "file": "test/ledger.test.ts",
+      "test": "audit diagnostic ids stay unique across a reload of the same session"
+    },
+    {
+      "file": "test/ownership.test.ts",
+      "test": "main claims/reuses ownership with marker undefined"
+    },
+    {
+      "file": "test/ownership.test.ts",
+      "test": "main claims/reuses ownership with marker "
+    },
+    {
+      "file": "test/ownership.test.ts",
+      "test": "main claims/reuses ownership with marker 75116"
+    },
+    {
+      "file": "test/shared-contract.test.ts",
+      "test": "stage omissions keep unavailable entries local and retain unscoped global uncertainty"
+    },
+    {
+      "file": "test/shared-contract.test.ts",
+      "test": "review-v1 without consumer-cache support is explicit incompatibility, never legacy fallback"
+    },
+    {
+      "file": "test/shared-contract.test.ts",
+      "test": "missing/old service notices are bounded; later discovery needs no re-enable and manual dependency errors stay clear"
+    },
+    {
+      "file": "test/shared-contract.test.ts",
+      "test": "missing: manual ordinary always reports dependency error (before automatic notice)"
+    },
+    {
+      "file": "test/shared-contract.test.ts",
+      "test": "missing: manual ordinary always reports dependency error (after automatic notice)"
+    },
+    {
+      "file": "test/shared-contract.test.ts",
+      "test": "missing: manual full always reports dependency error (before automatic notice)"
+    },
+    {
+      "file": "test/shared-contract.test.ts",
+      "test": "missing: manual full always reports dependency error (after automatic notice)"
+    },
+    {
+      "file": "test/shared-contract.test.ts",
+      "test": "old: manual ordinary always reports dependency error (before automatic notice)"
+    },
+    {
+      "file": "test/shared-contract.test.ts",
+      "test": "old: manual ordinary always reports dependency error (after automatic notice)"
+    },
+    {
+      "file": "test/shared-contract.test.ts",
+      "test": "old: manual full always reports dependency error (before automatic notice)"
+    },
+    {
+      "file": "test/shared-contract.test.ts",
+      "test": "old: manual full always reports dependency error (after automatic notice)"
+    },
+    {
+      "file": "test/shared-contract.test.ts",
+      "test": "service-accepted LLM choices with zero compatibility numbers still reconcile, never authorize execution"
+    },
+    {
+      "file": "test/shared-contract.test.ts",
+      "test": "old audit credentials remain redacted data, never auth or service configuration"
+    }
+  ]
+}

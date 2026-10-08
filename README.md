@@ -1,10 +1,10 @@
 # pi-jev-todo-audit
 
-A [Pi](https://pi.dev) extension that checks whether the [`@juicesharp/rpiv-todo`](https://www.npmjs.com/package/@juicesharp/rpiv-todo) board matches the work visible in the conversation. It builds task-specific Choice questions and obtains accepted judgments through [pi-llm-as-jev](https://github.com/xz-dev/pi-llm-as-jev)'s `reviewVersion: 1` service, using its selected native classifier or discrete LLM backend.
+A [Pi](https://pi.dev) extension that checks whether the [`@juicesharp/rpiv-todo`](https://www.npmjs.com/package/@juicesharp/rpiv-todo) board matches visible work. It sends finite, task-specific change questions to [pi-llm-as-jev](https://github.com/xz-dev/pi-llm-as-jev)'s `version: 1` / `judge()` service, using its independently selected native classifier or LLM backend.
 
 jev acts as a **macro-level engineering lead, not a worker**: it sees goals, task definitions, reported outcomes, broad progress, user decisions and open questions, not execution detail. The extension is advisory. It replays persisted `todo` snapshots, never mutates tasks directly, and asks the main agent to make any justified update.
 
-The design goal is to avoid paying again for unchanged judgments without hiding required facts. Audit owns business questions, source projection, scheduling, receipts and safe advice; the shared service owns backend selection, native policy, raw cache, capacity/recovery and attempt accounting. Pi owns authentication and transport. Reports, advisory opinions and processing progress remain separate. Persistence uses non-context Pi `appendEntry` records; there is no database or summarizer model. Offline reuse checks do not guarantee lower live billing.
+Audit owns business state, source references, complete-loop cursors, scheduling and safe advice. The service owns backend selection, timeout interpretation and compatibility; Pi owns authentication and transport. Audit state is stored in non-context session JSONL entries. There is no summarizer model, generated free-text memory or requirement for a final whole-history review. See [the current incremental protocol](docs/incremental-judgment.md) and [bounded verification evidence](openspec/changes/incremental-todo-state-judgment/evidence/verification.md).
 
 ## Install
 
@@ -64,7 +64,7 @@ own provenance even when `index.ts` is filtered out.
 
 ### Installation is not backend readiness
 
-Requires a loaded **pi-llm-as-jev service with `version: 1`, `reviewVersion: 1` and `review()`**. Native reviews use the xz-dev fork's released classifier API and public `fetch` option; no private Pi observation patch is required. Configure model selection in the shared service and credentials/endpoints in Pi (see [Configuration](#configuration)). An already-loaded extension continues running its old code until reloaded/restarted; updating files alone does not validate the running process.
+Requires a loaded **pi-llm-as-jev service with `version: 1` and `judge()`**. `capacityVersion: 1` / `describeSelection({path: "judge"})` provides selected-model limits; absent metadata produces a warning and bounded loop-count fallback, not a guessed token window. Configure model selection in the service and credentials/endpoints in Pi (see [Configuration](#configuration)). Updating files does not activate or verify an already-running installed extension.
 
 Startup diagnostics distinguish installation, registration and activation failures.
 A successful clone alone is not durable registration or backend readiness. Audit
@@ -90,14 +90,23 @@ This is an inheritance convention, not a security boundary or universal agent-ro
 ## When it audits
 
 - **Periodic:** every 10 completed loops by default, except when at most 10 loops have elapsed since the latest user message. A skipped audit is not deferred.
-- **Manual:** `/jev-audit` bypasses interval and cooldown but still reuses stored results and reviews only new input; an unchanged repeat makes no request. `/jev-audit full` forces a fresh reassessment of the whole projected history (still without tool arguments or bodies). If a forced review fails partway, retrying `full` in the same extension load reuses its fresh-review token and completed parts; a new load does not retain that in-memory token. After success it becomes the ordinary baseline; the next `full` starts a new fresh review. Any other argument prints usage and sends nothing.
+- **Manual:** `/jev-audit` bypasses cadence/cooldown and judges only complete loops after each scope's cursor (or from its unresolved open loop). `/jev-audit full` durably invalidates previous judgments before rebuilding; failure cannot resurrect the old verdict. Ordinary audits can continue durable partial progress. A new `full` command starts a new reset, not a historical cache token. Unknown arguments print usage without sending.
 - **Optional terminal check:** consumes `user-ready` on `pi:semantic-hook:v1` when [pi-continue-watchdog](https://github.com/xz-dev/pi-continue-watchdog) publishes an autonomous stop (`AI_UNLOCK`, `ERROR_UNLOCK`, `EXHAUSTED`, `DECISION_FAILED`). An empty/all-finished board needs no terminal check. Without that producer, periodic/manual audits still work; no watchdog dependency is imported. Human-abort kinds are not accepted.
 
 Stop metadata is evidence, not proof of completion or permission to resume. Rewording a stop reason is not new work. New user decisions, work results or board changes can permit a new audit under the same stop reason.
 
-A TODO snapshot change starts a new state segment for review, but **does not trigger a paid call by itself**; cadence and cooldown are unchanged.
+A TODO snapshot change does **not trigger a paid call by itself**. Segments use complete assistant/tool loops, not TODO revisions or arbitrary character blocks.
 
-The service writes validated answers before checkpoint references. Audit advances its business frontier only from acknowledged durable progress and a successful, still-current business receipt append. If persistence fails, valid final choices can still support advice, but no durable frontier is claimed and a reload may need new provider work. Failed/aborted reviews have empty final answers; already committed earlier stages remain historical progress, not permission to act.
+Audit advances a task/session cursor only after every required scope answer is accepted and the state append succeeds under current input/branch ownership. Missing or uncertain answers hold only their scope. Persistence failure prevents advice from the uncommitted result; user abort, branch change and late service responses cannot publish stale results.
+
+## Current judgment protocol
+
+See [state, questions, capacity and recovery](docs/incremental-judgment.md). The implementation and question wording remain under the active change's acceptance gates; no installed-copy activation or live-provider validation is implied.
+
+<details>
+<summary>Historical review/cache protocol — superseded, retained for migration evidence</summary>
+
+The following sections describe the retired `review()` consumer, **not the active runtime**. Current behavior is documented above.
 
 ## What jev receives
 
@@ -277,6 +286,8 @@ Diagnostics contain no transcript bodies, credentials or raw provider extras,
 and do not trigger inference. Bytes describe serialized shape, not tokens or
 billing. Late events cannot mutate returned accounting or write on a new branch.
 
+</details>
+
 ## Configuration
 
 ### Selection and credentials move out of audit
@@ -326,7 +337,7 @@ notice and is not loaded.
 | `interval` | Audit every Nth completed loop | `10` |
 | `cooldownLoops` | Skip periodic audit at or below this distance from the latest user message; independent of interval | `10` |
 | `confidenceThreshold` | Native service gate only; never substitutes for evidence checks or gates LLM choices | `0.5` |
-| `timeoutMs` | Whole service-review budget, not a fresh timeout for each retry | `30000` |
+| `timeoutMs` | One value per service call: native logical-call deadline, LLM per-request transport inactivity; setup is bounded in both modes | unset: service backend default (native 60 s deadline; LLM = Pi `httpIdleTimeoutMs`, default 300 s) |
 | `activityBudgetChars` | Deprecated and ignored; explicit values produce a bounded notice | no budget |
 | `notifyOnAligned` | Also notify on aligned audits | `false` |
 | `staleAuditSpans` | Diagnostic age threshold in audit intervals, not a split rule | `3` |
@@ -337,6 +348,21 @@ Headless main sessions still persist custom messages; notices require host UI
 support. Suppressed child processes exit before loading this configuration.
 
 ## Verification and limitations
+
+Current local checks:
+
+```sh
+bun test
+bun run typecheck
+PI_JUDGMENT_SOURCE="/path/to/pi-llm-as-jev" bun test \
+  test/partial-progress.test.ts test/incremental-lifecycle.integration.test.ts
+openspec validate incremental-todo-state-judgment --strict
+```
+
+The cross-repo checks use the actual sibling service and installed Pi native adapter with an offline HTTP fixture. They measure transmitted bytes and lifecycle behavior, not model accuracy or live billing. Default-suite skips and retired assertions are not passes. See the [verification and retirement map](openspec/changes/incremental-todo-state-judgment/evidence/verification.md).
+
+<details>
+<summary>Historical verification notes — earlier protocol, not current acceptance commands</summary>
 
 ```sh
 bun test
@@ -388,6 +414,8 @@ Ownership tests also drive the native Node parent/child/grandchild fixture. CI's
 `PI_JUDGMENT_SOURCE=... PI_CLASSIFIER_SOURCE=... bun test/compare-workloads.ts` uses the actual owner path. `bun test/compare-workloads.ts --baseline` reads the committed historical core/corpus without checkout; it is not a full historical build. Serialization/byte accounting differs, so neither those measurements nor synthetic model answers prove token savings, live billing, model accuracy, installed activation or publication. These offline suites perform no live inference; installed-host validation is recorded separately.
 
 API/serialization/consumer failures remain isolated from the agent loop. The extension neither guarantees that the main agent obeys a steer nor provides a hard tool blocker. The current rpiv-todo persistence shape is the only private-data adapter; incompatible snapshots cannot be treated as authoritative task state.
+
+</details>
 
 ## License
 

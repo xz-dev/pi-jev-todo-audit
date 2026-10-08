@@ -40,8 +40,9 @@ export interface AuditConfig {
 	notifyOnAligned: boolean;
 	/** Deprecated endpoint; loaded but never used for dispatch. */
 	apiUrl: string;
-	/** Request timeout in ms. */
-	timeoutMs: number;
+	/** Optional per-call duration passed to the service. Unset: the service
+	 * applies its backend default (native 60 s deadline; LLM Pi's HTTP idle timeout). */
+	timeoutMs?: number;
 	/** Deprecated: parsed for compatibility, never used as an evidence budget. */
 	activityBudgetChars?: number;
 	/** Audits an in_progress task may span before being flagged stale. */
@@ -59,7 +60,7 @@ export const DEFAULT_CONFIG: AuditConfig = {
 	enabled: true,
 	notifyOnAligned: false,
 	apiUrl: "https://api.typesafe.ai/v1/systemone",
-	timeoutMs: 30_000,
+	timeoutMs: undefined,
 	activityBudgetChars: undefined,
 	staleAuditSpans: 3,
 };
@@ -148,7 +149,7 @@ function applyLayer(cfg: AuditConfig, o: Record<string, unknown>, readLayer = o)
 		enabled: typeof o.enabled === "boolean" ? o.enabled : cfg.enabled,
 		notifyOnAligned: typeof o.notifyOnAligned === "boolean" ? o.notifyOnAligned : cfg.notifyOnAligned,
 		apiUrl: str(o.apiUrl) ?? cfg.apiUrl,
-		timeoutMs: num(o.timeoutMs, cfg.timeoutMs, 1_000),
+		timeoutMs: typeof o.timeoutMs === "number" ? num(o.timeoutMs, cfg.timeoutMs ?? 1_000, 1_000) : cfg.timeoutMs,
 		activityBudgetChars: typeof o.activityBudgetChars === "number" ? o.activityBudgetChars : cfg.activityBudgetChars,
 		staleAuditSpans: num(o.staleAuditSpans, cfg.staleAuditSpans, 1),
 		contextLimits: limits(o.contextLimits) ?? cfg.contextLimits,

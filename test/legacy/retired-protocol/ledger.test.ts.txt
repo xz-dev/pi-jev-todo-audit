@@ -19,7 +19,7 @@ beforeEach(() => {
 	process.env.PI_JEV_TODO_AUDIT_OWNER_PID = String(process.pid); process.env.JEV_LEDGER_KEY = "sk-ledger-test";
 	calls = []; errors = []; http = 0; reply = "sent"; durable = true;
 	globalThis.fetch = (() => { http++; throw new Error("Consumer HTTP forbidden"); }) as unknown as typeof fetch;
-	globals[key] = { version: 1, reviewVersion: 1, review: async (request: JudgeRequest, options: ReviewOptions): Promise<ReviewResult> => {
+	globals[key] = { version: 1, reviewVersion: 1, reviewCacheVersion: 1, reviewStagesVersion: 1, review: async (request: JudgeRequest, options: ReviewOptions): Promise<ReviewResult> => {
 		calls.push({ request: structuredClone(request), options });
 		const projected = options.projectStage!({ evidence: request.evidence!.map((record) => ({ record })), completed: [], previousAnswers: {}, final: true });
 		const answers = Object.fromEntries(Object.entries(projected.questions).map(([id, q]) => {
@@ -31,7 +31,13 @@ beforeEach(() => {
 		const attempts: ReviewAttemptObservation[] = reply === "reused" ? [] : reply === "sent" ? [answered(1)] : [
 			{ id: `script-${calls.length}#1`, ordinal: 1, phase: "end", outcome: "response", status: 400, errorCategory: "overflow" }, answered(2), answered(3),
 		];
-		const stage = { final: true, checkpoint: String(calls.length).padStart(64, "0"), sources: request.evidence!.map(({ id }) => ({ id })), evidenceIds: request.evidence!.map(({ id }) => id), opinions: answers, durable };
+		// Scripted opaque service identities; real key construction/reuse is covered by nativeFixture.
+		const acknowledgements = Object.entries(answers).map(([id, answer]) => {
+			const key = `scripted-evaluation:${id}`;
+			return { key, saved: reply === "reused" ? options.cache!.lookup(key) !== undefined : options.cache!.store(key, answer) };
+		});
+		const stage = { final: true, checkpoint: String(calls.length).padStart(64, "0"), sources: request.evidence!.map(({ id }) => ({ id })), evidenceIds: request.evidence!.map(({ id }) => id), opinions: answers, durable,
+			cache: { keys: acknowledgements.map((a) => a.key), durable: acknowledgements.every((a) => a.saved) } };
 		options.onProgress!(stage);
 		return { answers, dropped: [], backend: "classifier", model: "scripted/service", stopReason: "stop", unresolved: [], progress: { stages: [stage] },
 			reuse: reply === "reused" ? { hits: 9, joined: 0, sent: 0 } : { hits: 0, joined: 0, sent: 9 },
@@ -70,14 +76,15 @@ test("business receipts/diagnostics are non-context; shared-service reuse is not
 	const h = host(branch); await h.emit("session_start"); await h.manual();
 	expect(calls).toHaveLength(1);
 	const ledger = records(branch);
-	expect(ledger.map((e) => e.data.kind)).toEqual(["receipt", "diag"]); // raw answers belong to the service, never an audit eval cache
+	expect(ledger.map((e) => e.data.kind)).toEqual([...Array(9).fill("judgment"), "receipt", "diag"]);
+	expect(ledger.find((e) => e.data.kind === "receipt").data.receipt.cacheVersion).toBe(1);
 	expect(JSON.stringify(ledger)).not.toContain("Work on parser.ts"); expect(JSON.stringify(ledger)).not.toContain("sk-ledger-test");
 	const diag = ledger.at(-1).data.diag;
 	expect(diag).toMatchObject({ label: "manual", hits: 0, outcome: "completed", range: { from: null, to: "board" } }); expect(diag.misses).toBeGreaterThan(0);
 	expect(diag.attempts).toHaveLength(1);
 	expect(diag.attempts[0]).toMatchObject({ id: "script-1#1", outcome: "answered", model: "jev-1.13", inputTokens: 50, outputTokens: "unknown", stateBytes: 1234, questionBytes: 567 });
 	expect(diag.usage).toEqual({ inputTokens: 50, outputTokens: 0, unreported: { outputTokens: 1 } });
-	expect(collectContext(branch).omissions.some((o) => o.reason === "private extension state")).toBe(true);
+	expect(collectContext(branch)).toEqual(collectContext(branch.filter((e: any) => e.type !== "custom")));
 	reply = "reused";
 	await h.manual(); expect(calls).toHaveLength(2); expect(calls[1].request).toEqual(calls[0].request);
 	expect(records(branch).at(-1).data.diag).toMatchObject({ outcome: "unchanged", misses: 0, attempts: [], usage: { inputTokens: 0, outputTokens: 0 } });
@@ -117,13 +124,13 @@ test("a failed business write is not durable and does not prevent the next revie
 	expect(calls[1].request).toEqual(calls[0].request);
 });
 
-test("volatile service progress cannot advance the business receipt", async () => {
+test("acknowledged consumer results advance independently of a volatile service checkpoint", async () => {
 	durable = false;
 	const branch: unknown[] = [user("u", "Work on parser.ts"), board];
 	const h = host(branch); await h.emit("session_start"); await h.manual();
 	expect(calls).toHaveLength(1);
-	expect(records(branch).some((e) => e.data.kind === "receipt")).toBe(false);
-	expect(records(branch).at(-1).data.diag.range).toEqual({ from: null, to: null });
+	expect(records(branch).filter((e) => e.data.kind === "receipt")).toHaveLength(1);
+	expect(records(branch).at(-1).data.diag.range).toEqual({ from: null, to: "board" });
 });
 
 test("receipts restore only when their required answers are also recorded; the latest valid one wins", () => {

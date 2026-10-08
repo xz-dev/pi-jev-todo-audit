@@ -119,6 +119,7 @@ export interface JudgeOptions {
 	/** Per-question override of `minConfidence`. */
 	thresholds?: Record<string, ThresholdRule>;
 	signal?: AbortSignal;
+	/** Actual LLM: per-attempt streaming inactivity; native classifier: one whole-call deadline. */
 	timeoutMs?: number;
 	/** Force a review; retries within this token reuse new judgments. */
 	fresh?: string;
@@ -137,12 +138,60 @@ export interface JudgeResult {
 	reuse: { hits: number; joined: number; sent: number };
 	/** Reported nested usage only, never invented. */
 	usage?: Usage;
+	/** Capacity in force for this call's overflow prediction (capacityVersion 1). */
+	capacity?: CapacityDisclosure;
+	/** Logical backend dispatch input sizes, before SDK transport wrapping.
+	 * These are UTF-8 bytes, not tokens, HTTP retry counts or provider usage.
+	 * Empty means no dispatch; absent means setup failed before collection.
+	 */
+	inputDimensions?: {
+		stateBytes: number;
+		questionBytes: number;
+		longestQuestionBytes: number;
+	}[];
+}
+
+/**
+ * Capacity disclosure (capacityVersion 1): the selected backend/model and the
+ * input limits the service applies to its overflow prediction. Limits are
+ * declared, not proven: `source` says where each came from. Absent limits
+ * mean unknown metadata, never an inferred value.
+ */
+export interface CapacityDisclosure {
+	backend: "classifier" | "llm";
+	/** `provider/modelid`. */
+	model: string;
+	/** Tokens. Any field may be absent when no metadata declares it. */
+	limits: {
+		request?: number;
+		stateAndLongestQuestion?: number;
+		contextWindow?: number;
+	};
+	/** Where `limits` came from; `none` when every field is absent. */
+	limitSource: "override" | "channel" | "model" | "none";
+	/** Usable input tokens per sent UTF-8 byte: learned from usage, else the prior. */
+	tokensPerByte: number;
+	/** True while `tokensPerByte` is the conservative prior, not provider-reported usage. */
+	prior: boolean;
+	/** Bytes the service reserves for its own LLM request envelope (0 for native). */
+	envelopeOverheadBytes: number;
 }
 
 export interface JudgmentService {
 	version: 1;
 	judge(req: JudgeRequest, opts?: JudgeOptions): Promise<JudgeResult>;
 	availability(): Promise<{ classifier?: string; llm?: string }>;
+	/** Presence advertises `describeSelection()` and `JudgeResult.capacity`. */
+	capacityVersion?: 1;
+	/**
+	 * Resolve what a judgment would use now and its declared capacity. Read-only:
+	 * no inference, no writes, no cache mutation. Error when no backend resolves.
+	 */
+	describeSelection?(opts?: {
+		signal?: AbortSignal;
+		/** Which entry point the limits are for; `review` applies built-in channel constants. Default `judge`. */
+		path?: "judge" | "review";
+	}): Promise<CapacityDisclosure | { error: string }>;
 }
 
 // ---------------------------------------------------------------------------
@@ -163,18 +212,43 @@ export interface ReviewStageProjection {
 	unresolved?: string[];
 }
 
+/**
+ * Consumer-owned durable raw results. Keys are opaque, versioned and computed after actual selection/projection.
+ * @deprecated Consumers persist their own judgment state; kept callable for reviewVersion 1 clients.
+ */
+export interface ReviewCache {
+	/** Return only an acknowledged result from the current consumer scope; the service revalidates it. */
+	lookup(key: string): unknown;
+	/** Synchronous durability acknowledgement. False/throw never advances consumer progress. */
+	store(key: string, answer: ClassifierAnswer): boolean;
+}
+
 export interface ReviewOptions extends JudgeOptions {
-	/** Stable business scope/revision, required when projectStage is provided. */
+	/**
+	 * Requires reviewCacheVersion: 1. Independent of the service's legacy checkpoint ledger.
+	 * @deprecated Not required for correctness; the service does not depend on it.
+	 */
+	cache?: ReviewCache;
+	/**
+	 * @deprecated Business staging belongs to the consumer; pack input via describeSelection().
+	 * Requires reviewStagesVersion: 1 and projectionRevision. Return strictly increasing
+	 * exclusive frame ends for sealed business prefixes. Each is provisional; the
+	 * remaining tail (possibly empty) is final. Frames cannot be omitted or reordered.
+	 * The entire plan retains one admitted backend and native whole-call deadline.
+	 */
+	planStages?: (evidence: readonly ReviewEvidenceFrame[]) => readonly number[];
+	/** @deprecated Stable business scope/revision, required when projectStage is provided. */
 	projectionRevision?: string;
+	/** @deprecated See planStages. */
 	projectStage?: (stage: {
 		evidence: readonly ReviewEvidenceFrame[];
 		completed: readonly ReviewEvidenceFrame[];
 		previousAnswers: Readonly<Record<string, ClassifierAnswer>>;
 		final: boolean;
 	}) => ReviewStageProjection;
-	/** Advisory seed id, validated by the service against the active branch. */
+	/** @deprecated Advisory seed id, validated by the service against the active branch. */
 	checkpoint?: string;
-	/** Notification only; synchronous exceptions/rejected promises are isolated. */
+	/** @deprecated Notification only; synchronous exceptions/rejected promises are isolated. */
 	onProgress?: (progress: ReviewStageProgress) => void;
 }
 
@@ -190,6 +264,8 @@ export interface ReviewStageProgress {
 	evidenceIds: string[];
 	/** Whether the service acknowledged this stage as durably checkpointed. */
 	durable: boolean;
+	/** Consumer-cache acknowledgement, separate from service checkpoint durability and legacy onProgress. */
+	cache?: { keys: string[]; durable: boolean };
 }
 
 /** Completed-stage observations; inspect `durable` before claiming persistence. */
@@ -274,6 +350,10 @@ export interface ReviewResult extends JudgeResult {
  */
 export interface ReviewService extends JudgmentService {
 	reviewVersion: 1;
+	/** @deprecated Presence advertises the optional consumer-owned cache port and stage cache acknowledgements. */
+	reviewCacheVersion?: 1;
+	/** @deprecated Generic business-directed source partitioning under one logical execution. */
+	reviewStagesVersion?: 1;
 	/**
 	 * Resumable review: durably records completed stages, reuses validated
 	 * raw answers, reports actual attempts. A failed or aborted review still

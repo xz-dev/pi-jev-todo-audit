@@ -55,7 +55,7 @@ test("first managed startup registers one unqualified service package without ch
 		writeFileSync(join(serviceDir, "service.ts"), `
 			const key = Symbol.for("pi-llm-as-jev:service");
 			export default function(pi) {
-				const service = { version: 1, reviewVersion: 1, review: async () => ({}) };
+				const service = { version: 1, reviewVersion: 1, reviewCacheVersion: 1, reviewStagesVersion: 1, review: async () => ({}) };
 				pi.registerCommand("llm-as-jev", { description: "Fixture configuration", handler: async () => {} });
 				pi.on("session_start", () => { globalThis[key] = service; });
 				pi.on("session_shutdown", () => { if (globalThis[key] === service) delete globalThis[key]; });

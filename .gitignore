@@ -1,4 +1,6 @@
 node_modules/
 *.log
+# Bounded acceptance evidence for the active change is tracked on purpose.
+!openspec/changes/**/evidence/*.log
 
 .pi/

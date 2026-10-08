@@ -1,0 +1,660 @@
+/** Actual audit/service/native-adapter boundaries; only session storage and HTTP transport are controlled. */
+import { afterEach, beforeEach, expect, test } from "bun:test";
+import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
+import makeExtension from "../index.js";
+import { DEFAULT_CONFIG } from "../config.js";
+import type { JudgeRequest, ReviewResult } from "../judgment-client.js";
+import { createSessionJudgmentCache, LEDGER_TYPE, restoreLedger } from "../ledger.js";
+import { nativeFixture } from "./shared-native-fixture.js";
+import { collectContext } from "../context.js";
+import { llmFixture, llmEvents, llmSse, encodeLlmEvents } from "./shared-llm-fixture.js";
+
+const enabled = !!process.env.PI_JUDGMENT_SOURCE && !!process.env.PI_CLASSIFIER_SOURCE;
+const key = Symbol.for("pi-llm-as-jev:service"), globals = globalThis as Record<symbol, unknown>;
+let previous: unknown, owner: string | undefined, fetch: typeof globalThis.fetch;
+beforeEach(() => {
+	previous = globals[key]; owner = process.env.PI_JEV_TODO_AUDIT_OWNER_PID; fetch = globalThis.fetch;
+	process.env.PI_JEV_TODO_AUDIT_OWNER_PID = String(process.pid);
+	globalThis.fetch = (() => { throw new Error("Uncontrolled network/consumer HTTP is forbidden"); }) as unknown as typeof fetch;
+});
+afterEach(() => {
+	if (previous === undefined) delete globals[key]; else globals[key] = previous;
+	if (owner === undefined) delete process.env.PI_JEV_TODO_AUDIT_OWNER_PID; else process.env.PI_JEV_TODO_AUDIT_OWNER_PID = owner;
+	globalThis.fetch = fetch;
+});
+
+const journalReplay = (rows: unknown[]): any[] => rows.map((row) => JSON.parse(JSON.stringify(row)));
+const evaluations = (rows: any[]) => rows.filter((row) => row.customType === LEDGER_TYPE && row.data?.kind === "judgment");
+const answer = (q: any, choice: string, confidence = 0.9) => {
+	if (!Object.hasOwn(q.criteria, choice)) throw new Error(`Fixture chose an undeclared label: ${choice}`);
+	return { type: "choice", choice, confidence, probabilities: Object.fromEntries(Object.keys(q.criteria).map((label) => [label, label === choice ? 1 : 0])) };
+};
+
+/** Independent decoder of the actual model-facing representation, including current external sources. */
+function outboundContext(state: any): any {
+	const text = state.fixed.audit as string;
+	const start = text.indexOf("\n", text.indexOf("Macro-level evidence")) + 1;
+	return JSON.parse(text.slice(start, text.indexOf("\nInterpret evidence", start)));
+}
+function outboundRecords(state: any): any[] {
+	const context = outboundContext(state);
+	const external = new Map<string, string>(state.evidence.map((r: any) => [r.id, r.text]));
+	return context.records.flatMap((record: any) => {
+		if (record.encoding !== "columns/1") return [record];
+		expect(new Set(record.columns).size).toBe(record.columns.length);
+		return record.rows.map((row: unknown[]) => {
+			expect(row.length).toBe(record.columns.length);
+			return Object.fromEntries(record.columns.flatMap((column: string, i: number) => row[i] === null ? [] : [[column, row[i]]]));
+		});
+	}).map((r: any) => ({ ...r, text: external.get(r.id) ?? r.text }));
+}
+
+/** Answers depend on actual authoritative goal/permission records, not cached labels or scaffolding. */
+function auditResponse(body: any, _raw: string): Response {
+	const records = outboundRecords(body.state);
+	const user = records.slice().reverse().find((r) => r.kind === "user");
+	const goal = records.slice().reverse().find((r) => r.kind === "user" && /GOAL_(XML|CSV)_ONLY/.test(r.text));
+	if (!goal) throw new Error("Missing required factual input");
+	const reportPresent = records.some((r) => r.kind === "assistant" && r.text.includes("RESULT_XML_ONLY"));
+	const choices: Record<string, string> = {
+		alignment: "aligned", current_match: "5", drift: "on_track",
+		interaction: user?.text.includes("EXECUTION_ALLOWED") ? "working" : "waiting_user", work_evidence: user?.id ?? "insufficient_evidence",
+		task_status_5: !reportPresent ? "unclear" : goal.text.includes("GOAL_CSV_ONLY") ? "still_ongoing" : "actually_completed",
+		task_evidence_5: reportPresent ? "report" : "insufficient_evidence",
+		task_board_5: "accurate", task_granularity_5: "appropriate",
+	};
+	return Response.json({ answers: Object.fromEntries(Object.entries(body.questions).map(([id, q]) => {
+		if (!Object.hasOwn(choices, id)) throw new Error(`Unscripted audit question: ${id}`);
+		return [id, answer(q, choices[id])];
+	})), usage: { input_tokens: 10 } });
+}
+
+async function auditHost(branch: any[], service: Awaited<ReturnType<typeof nativeFixture>>["service"], failPersistence: boolean | ((data: any) => boolean) = false, timeoutMs = 10000) {
+	const handlers = new Map<string, any[]>(), commands = new Map<string, any>();
+	const sent: any[] = [], notices: string[] = [], reviews: ReviewResult[] = [];
+	const original = service.review.bind(service);
+	service.review = async (...args) => { const result = await original(...args); reviews.push(structuredClone(result)); return result; };
+	globals[key] = service;
+	makeExtension({
+		on: (name: string, fn: any) => handlers.set(name, [...(handlers.get(name) ?? []), fn]),
+		registerCommand: (name: string, command: any) => commands.set(name, command),
+		appendEntry: (customType: string, data: unknown) => {
+			if (typeof failPersistence === "function" ? failPersistence(data) : failPersistence) throw new Error("consumer disk full");
+			branch.push({ id: `audit-${branch.length}`, type: "custom", customType, data });
+		},
+		sendMessage: (message: any, options: any) => { sent.push({ message, options }); branch.push({ id: `advice-${branch.length}`, type: "custom_message", ...message }); },
+		events: { on: () => () => {} },
+	} as unknown as ExtensionAPI, { ...DEFAULT_CONFIG, timeoutMs });
+	const ctx = { sessionManager: { getSessionId: () => "consumer-cache-acceptance", getBranch: () => branch, buildContextEntries: () => branch }, ui: { notify: (s: string) => notices.push(s) } };
+	const emit = async (name: string) => { for (const fn of handlers.get(name) ?? []) await fn({}, ctx); };
+	await emit("session_start");
+	return { run: (mode = "") => commands.get("jev-audit").handler(mode, ctx), close: () => emit("session_shutdown"), tree: () => emit("session_tree"), reviews, sent, notices };
+}
+
+const auditHistory = (): any[] => [
+	{ id: "user", type: "message", message: { role: "user", content: "GOAL_XML_ONLY: implement XML parsing including malformed input. Reconcile reported progress only; do not begin further execution." } },
+	{ id: "board", type: "message", message: { role: "toolResult", toolName: "todo", content: "board", details: { tasks: [{ id: 5, subject: "Parser", status: "in_progress", description: "Implement the format in the user goal." }], nextId: 6 } } },
+	{ id: "report", type: "message", message: { role: "assistant", content: "RESULT_XML_ONLY: XML parsing and malformed-input checks passed. No CSV support was tested." } },
+];
+
+test.skipIf(!enabled)("J04 public audit reload uses consumer JSONL with a new empty-ledger service and zero inference", async () => {
+	const branch = auditHistory();
+	const first = await nativeFixture(auditResponse), host = await auditHost(branch, first.service);
+	try {
+		await host.run();
+		expect(host.reviews.at(-1)?.stopReason).toBe("stop"); expect(first.wire.length).toBeGreaterThan(0);
+		expect(evaluations(branch).length).toBeGreaterThan(0);
+		expect(branch.some((row) => row.customType === "llm-as-jev-ledger")).toBe(false);
+	} finally { await host.close(); }
+	const restored = journalReplay(branch), second = await nativeFixture(auditResponse);
+	expect(second.rows).toEqual([]);
+	const reloaded = await auditHost(restored, second.service);
+	try {
+		await reloaded.run();
+		const result = reloaded.reviews.at(-1)!;
+		expect(result?.stopReason).toBe("stop"); expect(result.unresolved).toEqual([]);
+		expect(result.answers.task_status_5).toMatchObject({ choice: "actually_completed" });
+		expect(result.diagnostics.attemptCount).toBe(0); expect(result.reuse.hits).toBeGreaterThan(0);
+		expect(second.wire).toEqual([]); expect(reloaded.sent).toEqual([]);
+		expect(reloaded.notices.some((s) => /failed|requires pi-llm-as-jev/.test(s))).toBe(false);
+	} finally { await reloaded.close(); }
+
+	// Same source IDs, question meaning and XML report; only the necessary user goal changes.
+	const changed = journalReplay(branch); changed[0].message.content = changed[0].message.content.replace("GOAL_XML_ONLY", "GOAL_CSV_ONLY").replace("XML parsing", "CSV parsing");
+	const third = await nativeFixture(auditResponse), revised = await auditHost(changed, third.service);
+	try {
+		await revised.run();
+		expect(revised.reviews.at(-1)?.stopReason).toBe("stop"); expect(third.wire.length).toBeGreaterThan(0);
+		expect(revised.reviews.at(-1)?.answers.task_status_5).toMatchObject({ choice: "still_ongoing" });
+		expect(revised.sent.every((item) => item.options.triggerTurn !== true)).toBe(true);
+	} finally { await revised.close(); }
+});
+
+test.skipIf(!enabled)("J08 failed consumer persistence advances no frontier and delivers no final advice", async () => {
+	const branch = auditHistory(), h = await nativeFixture(auditResponse), host = await auditHost(branch, h.service, true);
+	try {
+		await host.run(); expect(h.wire.length).toBeGreaterThan(0);
+		expect(host.reviews.at(-1)?.progress.stages.every((stage) => stage.cache?.durable === false)).toBe(true);
+		expect(branch).toHaveLength(3); expect(host.sent).toEqual([]);
+	} finally { await host.close(); }
+});
+
+test.skipIf(!enabled)("J08 a branch change fences late native results, cache writes and final advice", async () => {
+	const branch = auditHistory();
+	let enter!: () => void, release!: () => void;
+	const entered = new Promise<void>((resolve) => { enter = resolve; });
+	const held = new Promise<void>((resolve) => { release = resolve; });
+	const h = await nativeFixture(async (body, raw) => { enter(); await held; return auditResponse(body, raw); });
+	const host = await auditHost(branch, h.service);
+	try {
+		const pending = host.run(); await entered;
+		branch.splice(0, branch.length, { id: "new-branch", type: "message", message: { role: "user", content: "Wait. Do not execute." } });
+		await host.tree(); release(); await pending;
+		expect(h.signals[0].aborted).toBe(true); expect(branch).toHaveLength(1); expect(host.sent).toEqual([]);
+		expect(host.reviews.at(-1)?.answers).toEqual({});
+	} finally { release(); await host.close(); }
+});
+
+function macroHistory(): any[] {
+	const history = auditHistory();
+	const macros = Array.from({ length: 100 }, (_, i) => [
+		{ id: `call-${i}`, type: "message", message: { role: "assistant", content: [{ type: "toolCall", id: `c-${i}`, name: "read", arguments: { private: "PRIVATE_BODY_NOT_EVIDENCE" } }] } },
+		{ id: `result-${i}`, type: "message", message: { role: "toolResult", toolCallId: `c-${i}`, toolName: "read", content: "PRIVATE_BODY_NOT_EVIDENCE", isError: i % 17 === 0 } },
+	]).flat();
+	history.splice(2, 0, { id: "cancelled-shell", type: "message", message: { role: "bashExecution", cancelled: true, command: "PRIVATE_COMMAND_NOT_EVIDENCE", output: "PRIVATE_BODY_NOT_EVIDENCE" } }, ...macros);
+	return history;
+}
+
+test.skipIf(!enabled)("J06 TODO macro-history append reuses sealed business stages and reduces the entire outbound packet", async () => {
+	const history = macroHistory();
+	const append = { id: "new-report", type: "message", message: { role: "assistant", content: "Additional XML check passed; still waiting for user permission." } };
+	const trace = async (unplanned: boolean) => {
+		const h = await nativeFixture(auditResponse, 1000000), branch = journalReplay(history);
+		if (unplanned) {
+			const review = h.service.review.bind(h.service);
+			h.service.review = (request, opts) => { const control = { ...opts, planStages: undefined }; return review(request, control); };
+		}
+		const host = await auditHost(branch, h.service);
+		try {
+			await host.run(); expect(host.reviews.at(-1)?.stopReason).toBe("stop");
+			const before = h.wire.length;
+			branch.push(append);
+			const expected = journalReplay(collectContext(branch).records);
+			await host.run();
+			expect(host.reviews.at(-1)?.stopReason).toBe("stop");
+			expect(host.reviews.at(-1)?.answers.task_status_5).toMatchObject({ choice: "actually_completed" });
+			const packets = h.wire.slice(before);
+			const final = packets.slice().reverse().find((packet) => packet.body.state.progress.final)!;
+			const decoded = outboundRecords(final.body.state).filter((r) => r.kind !== "supplement");
+			// Compare ALL values and order, not just field names or the scripted answer's markers.
+			expect(decoded).toEqual(expected);
+			expect(decoded.find((r) => r.id === "cancelled-shell")?.isError).toBe(true);
+			expect(decoded.find((r) => r.id === "result-0")?.isError).toBe(true);
+			return { packets, result: host.reviews.at(-1)! };
+		} finally { await host.close(); }
+	};
+	const baseline = await trace(true), incremental = await trace(false);
+	const prefix = new Set(history.slice(3, 63).map((row) => row.id));
+	expect(incremental.packets.flatMap(({ body }) => body.state.evidence).some((row: any) => prefix.has(row.id))).toBe(false);
+	expect(incremental.result.reuse.hits).toBeGreaterThan(0);
+	const bytes = (packets: typeof baseline.packets) => packets.reduce((n, packet) => n + packet.bytes, 0);
+	expect(bytes(incremental.packets)).toBeLessThan(bytes(baseline.packets));
+	const all = incremental.packets.map((packet) => packet.raw).join("\n");
+	expect(all).toContain("GOAL_XML_ONLY"); expect(all).toContain("RESULT_XML_ONLY");
+	expect(all).not.toContain("PRIVATE_BODY_NOT_EVIDENCE"); expect(all).not.toContain("PRIVATE_COMMAND_NOT_EVIDENCE");
+	console.log(`J06 whole outbound bytes: unplanned=${bytes(baseline.packets)}, staged=${bytes(incremental.packets)}; cache hits=${incremental.result.reuse.hits}`);
+});
+
+test.skipIf(!enabled)("J07 retained source facts distinguish CSV and later permission withdrawal after sealed-prefix caching", async () => {
+	const branch = macroHistory();
+	branch[0].message.content = "GOAL_XML_ONLY: implement XML parsing. EXECUTION_ALLOWED for this scope.";
+	const first = await nativeFixture(auditResponse, 1000000), initial = await auditHost(branch, first.service);
+	try { await initial.run(); expect(initial.reviews.at(-1)?.answers.interaction).toMatchObject({ choice: "working" }); }
+	finally { await initial.close(); }
+	const nextBranch = journalReplay(branch);
+	nextBranch.push({ id: "withdrawal", type: "message", message: { role: "user", content: "GOAL_CSV_ONLY instead. Permission withdrawn; wait for approval. The XML report does not satisfy this scope." } });
+	const next = await nativeFixture(auditResponse, 1000000), changed = await auditHost(nextBranch, next.service);
+	try {
+		await changed.run(); const result = changed.reviews.at(-1)!;
+		expect(result.stopReason).toBe("stop"); expect(result.diagnostics.attemptCount).toBeGreaterThan(0);
+		expect(result.answers.interaction).toMatchObject({ choice: "waiting_user" });
+		expect(result.answers.task_status_5).toMatchObject({ choice: "still_ongoing" });
+		expect(result.answers.work_evidence).toMatchObject({ choice: "withdrawal" });
+		expect(changed.sent).toEqual([]);
+		const final = next.wire.slice().reverse().find((p) => p.body.state.progress.final)!;
+		expect(outboundRecords(final.body.state).filter((r) => r.kind === "user").map((r) => r.id)).toEqual(["user", "withdrawal"]);
+	} finally { await changed.close(); }
+});
+
+function llmAuditChoice(body: any): string {
+	const content = body.messages.slice().reverse().find((m: any) => m.role === "user").content;
+	const text = typeof content === "string" ? content : content.filter((b: any) => b.type === "text").map((b: any) => b.text).join("");
+	const payload = JSON.parse(text);
+	// The same fact-sensitive oracle is used at both real transport boundaries.
+	const records = outboundRecords(payload.state);
+	const goal = records.slice().reverse().find((r) => r.kind === "user" && /GOAL_(XML|CSV)_ONLY/.test(r.text));
+	const user = records.slice().reverse().find((r) => r.kind === "user");
+	if (!goal) throw new Error("LLM request omitted the required goal");
+	const reported = records.some((r) => r.kind === "assistant" && r.text.includes("RESULT_XML_ONLY"));
+	const choices: Record<string, string> = { alignment: "aligned", current_match: "5", drift: "on_track",
+		interaction: user?.text.includes("EXECUTION_ALLOWED") ? "working" : "waiting_user", work_evidence: user?.id ?? "insufficient_evidence",
+		task_status_5: !reported ? "unclear" : goal.text.includes("GOAL_CSV_ONLY") ? "still_ongoing" : "actually_completed",
+		task_evidence_5: reported ? "report" : "insufficient_evidence", task_board_5: "accurate", task_granularity_5: "appropriate" };
+	const choice = choices[payload.questionId];
+	if (!Object.hasOwn(payload.question.criteria, choice)) throw new Error("Undeclared LLM choice");
+	return choice;
+}
+
+test.skipIf(!enabled || process.env.PI_LONG_STREAM_TEST !== "1")("J13 old session and native identity recover through >30s healthy SDK streaming, durable reload, stall and cancellation", async () => {
+	let branch = macroHistory();
+	const native = await nativeFixture(auditResponse, 1000000), original = await auditHost(branch, native.service);
+	try { await original.run(); expect(original.reviews.at(-1)?.stopReason).toBe("stop"); } finally { await original.close(); }
+	// Valid old-format receipt whose service checkpoint is no longer available.
+	branch.push({ id: "legacy-receipt", type: "custom", customType: LEDGER_TYPE,
+		data: { kind: "receipt", receipt: { through: "report", inputKey: "old-native", opinions: {}, answerKeys: [], serviceCheckpoint: "f".repeat(64) } } });
+	expect(restoreLedger(branch)?.serviceCheckpoint).toBe("f".repeat(64));
+	branch = journalReplay(branch);
+	let heartbeat: ReturnType<typeof setInterval> | undefined, end: ReturnType<typeof setTimeout> | undefined;
+	const healthy = await llmFixture((body, ordinal) => {
+		const selected = llmAuditChoice(body);
+		if (ordinal !== 1) return llmSse(llmEvents(selected));
+		return new Response(new ReadableStream({ start(controller) {
+			controller.enqueue(new TextEncoder().encode(encodeLlmEvents(llmEvents(selected).slice(0, 1))));
+			heartbeat = setInterval(() => controller.enqueue(new TextEncoder().encode(": raw-byte-heartbeat\n\n")), 500);
+			end = setTimeout(() => { clearInterval(heartbeat); controller.enqueue(new TextEncoder().encode(encodeLlmEvents(llmEvents(selected).slice(1)))); controller.close(); }, 31050);
+		}, cancel() { clearInterval(heartbeat); clearTimeout(end); } }), { headers: { "content-type": "text/event-stream" } });
+	});
+	const review = healthy.service.review.bind(healthy.service);
+	healthy.service.review = (req: any, opts: any) => { expect(opts.checkpoint).toBeUndefined(); return review(req, opts); };
+	const live = await auditHost(branch, healthy.service, false, 30000);
+	const start = performance.now();
+	try {
+		await live.run(); const result = live.reviews.at(-1)!;
+		expect(performance.now() - start).toBeGreaterThan(30000);
+		expect(result.stopReason).toBe("stop"); expect(result.backend).toBe("llm");
+		expect(result.progress.stages.length).toBeGreaterThan(1);
+		expect(result.progress.stages.every((stage) => stage.cache?.durable)).toBe(true);
+		expect(result.answers.task_status_5).toMatchObject({ choice: "actually_completed" });
+		expect(result.diagnostics.attemptCount).toBe(healthy.wire.length);
+		console.log(`J13 recovered old native session via LLM: ${Math.round(performance.now() - start)}ms, timeoutMs=30000, attempts=${healthy.wire.length}`);
+	} finally { clearInterval(heartbeat); clearTimeout(end); await live.close(); healthy.close(); }
+	branch = journalReplay(branch);
+	let mode: "normal" | "silent" | "cancel" = "normal";
+	let enter!: () => void, late: ReadableStreamDefaultController<Uint8Array> | undefined;
+	const next = await llmFixture((body) => {
+		const selected = llmAuditChoice(body);
+		if (mode === "normal") return llmSse(llmEvents(selected));
+		return new Response(new ReadableStream({ start(controller) {
+			late = controller; controller.enqueue(new TextEncoder().encode(encodeLlmEvents(llmEvents(selected).slice(0, 1))));
+			if (mode === "cancel") enter();
+		} }), { headers: { "content-type": "text/event-stream" } });
+	});
+	expect(next.rows).toEqual([]);
+	const reloaded = await auditHost(branch, next.service, false, 250);
+	try {
+		await reloaded.run(); expect(reloaded.reviews.at(-1)?.stopReason).toBe("stop");
+		expect(reloaded.reviews.at(-1)?.diagnostics.attemptCount).toBe(0); expect(next.wire).toEqual([]); expect(reloaded.sent).toEqual([]);
+		branch.push({ id: "stall-tail", type: "message", message: { role: "assistant", content: "An additional XML check was reported." } });
+		mode = "silent"; await reloaded.run();
+		expect(reloaded.reviews.at(-1)?.stopReason).toBe("error"); expect(reloaded.reviews.at(-1)?.answers).toEqual({});
+		expect(next.wire).toHaveLength(1); expect(next.signals.at(-1)?.aborted).toBe(true); expect(reloaded.sent).toEqual([]);
+		// Compatible sealed questions survive the failed tail; retry does not buy them again.
+		mode = "normal"; await reloaded.run();
+		expect(reloaded.reviews.at(-1)?.stopReason).toBe("stop"); expect(reloaded.reviews.at(-1)?.reuse.hits).toBeGreaterThan(0);
+		branch.push({ id: "cancel-tail", type: "message", message: { role: "assistant", content: "Further XML check pending review." } });
+		mode = "cancel"; const entered = new Promise<void>((resolve) => { enter = resolve; });
+		const pending = reloaded.run(); await entered;
+		branch.splice(0, branch.length, { id: "new-branch", type: "message", message: { role: "user", content: "Wait for approval." } });
+		await reloaded.tree(); await pending;
+		expect(next.signals.at(-1)?.aborted).toBe(true); expect(reloaded.reviews.at(-1)?.answers).toEqual({});
+		const snapshot = JSON.stringify(branch), delivered = reloaded.sent.length;
+		try { late?.enqueue(new TextEncoder().encode(encodeLlmEvents(llmEvents("aligned").slice(1)))); late?.close(); } catch { /* Reader already cancelled. */ }
+		await new Promise((resolve) => setTimeout(resolve, 20));
+		expect(JSON.stringify(branch)).toBe(snapshot); expect(reloaded.sent).toHaveLength(delivered);
+		console.log("J13 fresh service: zero-inference reload; stalled tail rejected; prefix reused on retry; branch cancellation fenced late output");
+	} finally { await reloaded.close(); next.close(); }
+}, 70000);
+
+test.skipIf(!enabled)("J05 independently validated LLM A/B survive C failure and cold retry buys only C", async () => {
+	const rows: any[] = [];
+	const questions = Object.fromEntries(["a", "b", "c"].map((id) => [id, { type: "choice" as const, instructions: `Finite obligation ${id}`, criteria: { yes: "met", no: "unmet" } }]));
+	const req: JudgeRequest = { state: { scope: "finite-obligations" }, questions };
+	const failing = await llmFixture((_body, ordinal) => ordinal < 3 ? llmSse(llmEvents("yes"))
+		: new Response(new ReadableStream({ start(controller) { controller.enqueue(new TextEncoder().encode(encodeLlmEvents(llmEvents().slice(0, 1)))); } }), { headers: { "content-type": "text/event-stream" } }));
+	try {
+		const result = await failing.service.review(req, { ...optionsFor(rows), timeoutMs: 100 });
+		expect(result.stopReason).toBe("error"); expect(result.answers).toEqual({}); expect(result.progress.stages).toEqual([]);
+		expect(result.unresolved).toEqual(["c"]);
+		expect(failing.wire).toHaveLength(3); expect(evaluations(rows)).toHaveLength(2);
+	} finally { failing.close(); }
+	const recovered = await llmFixture(() => llmSse(llmEvents("yes")));
+	try {
+		const result = await recovered.service.review(req, optionsFor(journalReplay(rows)));
+		expect(result.stopReason).toBe("stop"); expect(Object.keys(result.answers).sort()).toEqual(["a", "b", "c"]);
+		expect(result.reuse.hits).toBe(2); expect(recovered.wire).toHaveLength(1);
+		expect(JSON.stringify(recovered.wire[0].messages)).toContain('\\"questionId\\":\\"c\\"');
+	} finally { recovered.close(); }
+});
+
+test.skipIf(!enabled)("J11 caller stages share one native deadline and late transport cannot commit the final stage", async () => {
+	const rows: any[] = [];
+	const h = await nativeFixture(async (body) => {
+		await new Promise((resolve) => setTimeout(resolve, 55));
+		return Response.json({ answers: { done: answer(body.questions.done, "yes") } });
+	});
+	const req: JudgeRequest = { state: {}, questions: { done: { type: "choice", instructions: "Met?", criteria: { yes: "yes", no: "no" } } }, evidence: [{ id: "a", text: "first" }, { id: "b", text: "second" }] };
+	const start = performance.now();
+	const result = await h.service.review(req, { ...optionsFor(rows), timeoutMs: 90, planStages: () => [1] });
+	expect(result.stopReason).toBe("error"); expect(result.answers).toEqual({}); expect(h.wire).toHaveLength(2);
+	expect(performance.now() - start).toBeLessThan(160); expect(h.signals.at(-1)?.aborted).toBe(true);
+	expect(result.progress.stages.map((stage) => stage.final)).toEqual([false]);
+	expect(evaluations(rows)).toHaveLength(1);
+	const saved = JSON.stringify(rows); await new Promise((resolve) => setTimeout(resolve, 65)); expect(JSON.stringify(rows)).toBe(saved);
+});
+
+test.skipIf(!enabled)("J11 invalid or asynchronous stage plans make zero provider attempts", async () => {
+	for (const plan of [() => [0], () => [2, 1], () => [3], async () => { throw new Error("async plan"); }]) {
+		const h = await nativeFixture(() => { throw new Error("invalid plan must not dispatch"); });
+		const result = await h.service.review({ ...request, evidence: [{ id: "a", text: "a" }, { id: "b", text: "b" }] },
+			{ projectionRevision: "invalid-plan/1", planStages: plan as () => number[] });
+		expect(result.stopReason).toBe("error"); expect(result.diagnostics.attemptCount).toBe(0); expect(h.wire).toEqual([]);
+	}
+});
+
+test.skipIf(!enabled)("review fix: an all-withheld provisional prefix cannot disappear into successful tail judgment", async () => {
+	const h = await nativeFixture((body) => Response.json({ answers: { done: answer(body.questions.done, "yes") } }));
+	const req: JudgeRequest = { state: {}, evidence: [{ id: "prefix", text: "must remain" }, { id: "tail", text: "later" }], questions: { done: request.questions.done } };
+	const result = await h.service.review(req, { projectionRevision: "withheld/1", planStages: () => [1],
+		projectStage: (stage) => stage.final ? { state: {}, questions: req.questions } : { state: {}, questions: {}, unresolved: ["done"] } });
+	expect(result.stopReason).toBe("error"); expect(result.unresolved).toEqual(["done"]);
+	expect(result.answers).toEqual({}); expect(result.progress.stages).toEqual([]); expect(h.wire).toEqual([]);
+	const final = await h.service.review(req, { projectionRevision: "withheld/1", projectStage: () => ({ state: {}, questions: {}, unresolved: ["done"] }) });
+	expect(final.stopReason).toBe("stop"); expect(final.unresolved).toEqual(["done"]); expect(h.wire).toEqual([]);
+});
+
+for (const backend of ["llm", "native"] as const) test.skipIf(!enabled)(`review fix: ${backend} cache-store cancellation fences subsequent judgment publication`, async () => {
+	const ac = new AbortController();
+	const h = backend === "llm" ? await llmFixture(() => llmSse(llmEvents("yes")))
+		: await nativeFixture((body) => Response.json({ answers: { done: answer(body.questions.done, "yes") } }));
+	try {
+		const result = await h.service.review({ state: {}, questions: { done: request.questions.done } }, { timeoutMs: 1000, signal: ac.signal,
+			cache: { lookup: () => undefined, store: () => { ac.abort(); return true; } } });
+		expect(result.stopReason).toBe("aborted"); expect(result.answers).toEqual({});
+		expect(h.rows.filter((r: any) => r.data?.kind === "judgment")).toEqual([]);
+	} finally { if ("close" in h) h.close(); }
+});
+
+test.skipIf(!enabled)("review fix: a durable tail cannot bridge a nondurable prefix", async () => {
+	const branch = macroHistory(), h = await nativeFixture(auditResponse, 1000000);
+	const host = await auditHost(branch, h.service, (data) => data.kind === "judgment" && h.wire.length === 1);
+	try {
+		await host.run(); const stages = host.reviews.at(-1)!.progress.stages;
+		expect(stages.map((s) => s.cache?.durable)).toEqual([false, true]);
+		expect(evaluations(branch).length).toBeGreaterThan(0); expect(restoreLedger(branch)).toBeUndefined();
+		expect(host.sent).toEqual([]);
+	} finally { await host.close(); }
+});
+
+test.skipIf(!enabled)("review fix: id-less historical authority remains usable and replays from consumer cache", async () => {
+	const branch = auditHistory(); delete branch[0].id;
+	const h = await nativeFixture(auditResponse), host = await auditHost(branch, h.service);
+	try { await host.run(); expect(host.reviews.at(-1)?.stopReason).toBe("stop"); expect(host.sent).toHaveLength(1); }
+	finally { await host.close(); }
+	const next = await nativeFixture(auditResponse), reloaded = await auditHost(journalReplay(branch), next.service);
+	try { await reloaded.run(); expect(next.wire).toEqual([]); expect(reloaded.notices.some((s) => s.includes("failed"))).toBe(false); }
+	finally { await reloaded.close(); }
+});
+
+test.skipIf(!enabled)("review fix: completed full becomes the durable ordinary baseline, then another full is new", async () => {
+	const branch = auditHistory(); let revised = false;
+	const h = await nativeFixture(async (body, raw) => {
+		const data = await auditResponse(body, raw).json();
+		if (!revised) data.answers.task_status_5 = answer(body.questions.task_status_5, "still_ongoing");
+		return Response.json(data);
+	});
+	const host = await auditHost(branch, h.service);
+	try {
+		await host.run(); expect(host.reviews.at(-1)?.answers.task_status_5).toMatchObject({ choice: "still_ongoing" });
+		revised = true; await host.run("full"); expect(host.reviews.at(-1)?.answers.task_status_5).toMatchObject({ choice: "actually_completed" });
+		await host.run(); expect(host.reviews.at(-1)?.answers.task_status_5).toMatchObject({ choice: "actually_completed" }); expect(h.wire).toHaveLength(2);
+	} finally { await host.close(); }
+	const next = await nativeFixture(auditResponse), reloaded = await auditHost(journalReplay(branch), next.service);
+	try {
+		await reloaded.run(); expect(next.wire).toEqual([]);
+		await reloaded.run("full"); expect(next.wire).toHaveLength(1);
+	} finally { await reloaded.close(); }
+});
+
+test.skipIf(!enabled)("review fix: unfinished full resumes acknowledged questions after consumer and service reload", async () => {
+	const branch = auditHistory();
+	const h = await nativeFixture(async (body, raw) => { const data = await auditResponse(body, raw).json(); delete data.answers.task_granularity_5; return Response.json(data); });
+	const host = await auditHost(branch, h.service);
+	try { await host.run("full"); expect(host.reviews.at(-1)?.stopReason).toBe("error"); expect(evaluations(branch)).toHaveLength(8); }
+	finally { await host.close(); }
+	const next = await nativeFixture(auditResponse), reloaded = await auditHost(journalReplay(branch), next.service);
+	try {
+		await reloaded.run("full"); expect(reloaded.reviews.at(-1)?.stopReason).toBe("stop");
+		expect(next.wire.map((p) => Object.keys(p.body.questions))).toEqual([["task_granularity_5"]]);
+	} finally { await reloaded.close(); }
+});
+
+for (const phase of ["pending", "complete"] as const) test.skipIf(!enabled)(`review fix: failed full ${phase} acknowledgement cannot select a new ordinary baseline`, async () => {
+	const branch = auditHistory(), h = await nativeFixture(auditResponse);
+	const host = await auditHost(branch, h.service, (data) => data.kind === "full-review" && data.phase === phase);
+	try {
+		await host.run("full"); expect(host.sent).toEqual([]);
+		if (phase === "pending") expect(h.wire).toEqual([]);
+		else {
+			const sends = h.wire.length;
+			await host.run("full"); expect(h.wire).toHaveLength(sends);
+			const diags = branch.filter((r) => r.data?.kind === "diag").map((r) => r.data.diag);
+			expect(diags.map((d) => d.outcome)).toEqual(["failed", "failed"]);
+			expect(diags.map((d) => d.attempts.length)).toEqual([1, 0]);
+		}
+		expect(branch.some((r) => r.data?.kind === "full-review" && r.data.phase === "complete")).toBe(false);
+		await host.run(); expect(Object.keys(h.wire.at(-1)!.body.questions)).toHaveLength(9);
+	} finally { await host.close(); }
+});
+
+test.skipIf(!enabled)("review fix: input changed synchronously during receipt append cannot publish final advice", async () => {
+	const branch = auditHistory(), h = await nativeFixture(auditResponse);
+	const host = await auditHost(branch, h.service, (data) => {
+		if (data.kind === "receipt") branch[0].message.content = "GOAL_CSV_ONLY: permission withdrawn; wait.";
+		return false;
+	});
+	try { await host.run(); expect(host.sent).toEqual([]); }
+	finally { await host.close(); }
+});
+
+test.skipIf(!enabled)("review fix: unfinished full never supplies the ordinary namespace", async () => {
+	const branch = auditHistory(); let partial = true;
+	const h = await nativeFixture(async (body, raw) => {
+		const data = await auditResponse(body, raw).json(); if (partial) delete data.answers.task_granularity_5; return Response.json(data);
+	});
+	const host = await auditHost(branch, h.service);
+	try {
+		await host.run("full"); expect(host.reviews.at(-1)?.stopReason).toBe("error");
+		partial = false; await host.run();
+		expect(Object.keys(h.wire.at(-1)!.body.questions)).toHaveLength(9);
+		await host.run("full"); expect(Object.keys(h.wire.at(-1)!.body.questions)).toEqual(["task_granularity_5"]);
+	} finally { await host.close(); }
+});
+
+test.skipIf(!enabled)("dependency gate: omit unused granularity across cold reload and restore it after dependency completion", async () => {
+	const branch = auditHistory();
+	const target = { ...branch[1].message.details.tasks[0], blockedBy: [6] };
+	const dependency = { id: 6, subject: "Required upstream work", status: "pending" };
+	branch[1].message.details.tasks = [target, dependency];
+	const reply = (body: any) => Response.json({ answers: Object.fromEntries(Object.entries(body.questions).map(([id, q]: [string, any]) => {
+		const choice = ["unclear", "insufficient_evidence", "not_on_board", "waiting_user"].find((v) => v in q.criteria)!;
+		return [id, answer(q, choice)];
+	})) });
+	const h = await nativeFixture(reply), first = await auditHost(branch, h.service);
+	try {
+		await first.run(); expect(first.reviews.at(-1)?.stopReason).toBe("stop");
+		expect(first.reviews.at(-1)?.unresolved).toEqual([]);
+		expect(h.wire.at(-1)!.body.questions.task_granularity_5).toBeUndefined();
+		for (const key of ["task_status_5", "task_evidence_5", "task_board_5"])
+			expect(h.wire.at(-1)!.body.questions[key]).toBeDefined();
+	} finally { await first.close(); }
+	const fresh = await nativeFixture(reply), reloaded = await auditHost(branch, fresh.service);
+	try {
+		await reloaded.run(); expect(fresh.wire).toEqual([]);
+		branch.push({ id: "dependency-complete", type: "message", message: { role: "toolResult", toolName: "todo", content: "ok",
+			details: { tasks: [target, { ...dependency, status: "completed" }], nextId: 7 } } });
+		await reloaded.run(); expect(reloaded.reviews.at(-1)?.stopReason).toBe("stop");
+		expect(reloaded.reviews.at(-1)?.unresolved).toEqual([]);
+		expect(fresh.wire.at(-1)!.body.questions.task_granularity_5).toBeDefined();
+	} finally { await reloaded.close(); }
+});
+
+test.skipIf(!enabled)("stage omissions: private session metadata cannot repurchase unchanged judgments", async () => {
+	const branch = auditHistory(), h = await nativeFixture(auditResponse), host = await auditHost(branch, h.service);
+	try {
+		await host.run(); const before = h.wire.length;
+		branch.push({ id: "private", type: "custom", customType: "foreign-bookkeeping", data: { private: "NOT_EVIDENCE" } },
+			{ id: "ambient-model", type: "model_change", provider: "main-agent", modelId: "not-the-judge" },
+			{ id: "ambient-thinking", type: "thinking_level_change", thinkingLevel: "high" });
+		await host.run(); expect(h.wire).toHaveLength(before); expect(host.reviews.at(-1)?.reuse.hits).toBe(9);
+	} finally { await host.close(); }
+});
+
+test.skipIf(!enabled)("stage omissions: metadata before id-less history preserves cold cache identity", async () => {
+	const branch = auditHistory(); delete branch[0].id;
+	const h = await nativeFixture(auditResponse), first = await auditHost(branch, h.service);
+	try { await first.run(); expect(first.reviews.at(-1)?.stopReason).toBe("stop"); expect(h.wire.length).toBeGreaterThan(0); }
+	finally { await first.close(); }
+	branch.unshift({ id: "private", type: "custom", customType: "foreign-bookkeeping", data: { private: "NOT_EVIDENCE" } },
+		{ id: "ambient-model", type: "model_change", modelId: "not-the-judge" });
+	const fresh = await nativeFixture(auditResponse), reloaded = await auditHost(journalReplay(branch), fresh.service);
+	try { await reloaded.run(); expect(fresh.wire).toEqual([]); expect(reloaded.reviews.at(-1)?.stopReason).toBe("stop"); }
+	finally { await reloaded.close(); }
+});
+
+for (const gap of ["unsupported", "redacted"] as const) test.skipIf(!enabled)(`stage omissions: ${gap} tail cannot contaminate root or sealed prefix`, async () => {
+	const branch = macroHistory(), h = await nativeFixture(auditResponse, 1000000);
+	const roots: any[] = [], projections: { final: boolean; context: any }[] = [];
+	const review = h.service.review.bind(h.service);
+	h.service.review = (req, opts) => {
+		roots.push(outboundContext({ fixed: req.state }));
+		return review(req, { ...opts, projectStage: (stage) => {
+			const projected = opts!.projectStage!(stage);
+			projections.push({ final: stage.final, context: outboundContext({ fixed: projected.state }) });
+			return projected;
+		} });
+	};
+	const host = await auditHost(branch, h.service);
+	try {
+		await host.run(); const root = roots.at(-1), prefix = projections.find((p) => !p.final)!.context;
+		projections.length = 0;
+		branch.push({ id: "gap-tail", type: "message", message: { role: "assistant", content: gap === "unsupported"
+			? [{ type: "image", data: "PRIVATE_IMAGE" }] : "password=PRIVATE_PASSWORD" } });
+		await host.run();
+		expect(roots.at(-1)).toEqual(root);
+		expect(projections.find((p) => !p.final)!.context).toEqual(prefix);
+		expect(host.reviews.at(-1)?.reuse.hits).toBeGreaterThan(0);
+		const final = projections.at(-1)!.context;
+		expect(final.omissions.some((o: any) => o.id === "gap-tail")).toBe(true);
+		expect(final.records.find((r: any) => r.id === "gap-tail")?.complete).toBe(false);
+		expect(JSON.stringify(final)).not.toContain(gap === "unsupported" ? "PRIVATE_IMAGE" : "PRIVATE_PASSWORD");
+	} finally { await host.close(); }
+});
+
+for (const position of ["prefix", "tail", "redacted-prefix"] as const) test.skipIf(!enabled)(`stage omissions: ${position} call keeps range-local uncertainty until its result is visible`, async () => {
+	const branch = macroHistory(), inPrefix = position !== "tail";
+	const call = { id: "bridge", type: "message", message: { role: "assistant", content: [{ type: "toolCall", id: "bridge-call", name: position === "redacted-prefix" ? "sk-offlinefixturetool" : "read", arguments: {} }] } };
+	if (inPrefix) branch.splice(3, 0, call); else branch.push(call);
+	const h = await nativeFixture(auditResponse, 1000000), projections: { final: boolean; context: any }[] = [];
+	const review = h.service.review.bind(h.service);
+	h.service.review = (req, opts) => review(req, { ...opts, projectStage: (stage) => {
+		const projected = opts!.projectStage!(stage);
+		projections.push({ final: stage.final, context: outboundContext({ fixed: projected.state }) });
+		return projected;
+	} });
+	const host = await auditHost(branch, h.service);
+	const missing = (view: any) => view.omissions.some((o: any) => o.id === "bridge:call:bridge-call" && o.reason === "tool result unavailable");
+	try {
+		await host.run(); expect(host.reviews.at(-1)?.stopReason).toBe("stop");
+		const firstPrefix = projections.find((p) => !p.final)!.context;
+		expect(missing(firstPrefix)).toBe(inPrefix);
+		if (position === "redacted-prefix") expect(firstPrefix.omissions).toContainEqual({ id: "bridge:call:bridge-call", reason: "redacted evidence" });
+		expect(missing(projections.at(-1)!.context)).toBe(true);
+		projections.length = 0;
+		branch.push({ id: "bridge-result", type: "message", message: { role: "toolResult", toolCallId: "bridge-call", toolName: "read", content: "PRIVATE_BODY", isError: false } });
+		await host.run(); expect(host.reviews.at(-1)?.stopReason).toBe("stop");
+		expect(projections.find((p) => !p.final)!.context).toEqual(firstPrefix);
+		expect(missing(projections.at(-1)!.context)).toBe(false);
+		if (position === "redacted-prefix") expect(projections.at(-1)!.context.omissions).toContainEqual({ id: "bridge:call:bridge-call", reason: "redacted evidence" });
+		expect(host.reviews.at(-1)?.reuse.hits).toBeGreaterThan(0);
+	} finally { await host.close(); }
+});
+
+test.skipIf(!enabled)("J06 scale: free-text append retains originals and irreducible final input stays incomplete", async () => {
+	for (const window of [1000000, 12000]) {
+		const branch = auditHistory();
+		branch.splice(2, 0, ...Array.from({ length: 8 }, (_, i) => ({ id: `long-${i}`, type: "message", message: { role: "assistant", content: `REPORT_${i}: ` + "XML parser edge cases, unresolved test assumptions and authored detail. ".repeat(100) } })));
+		// Enforce a known transport byte ceiling; fixture token metering is not a capacity oracle.
+		const h = await nativeFixture((body, raw) => {
+			const stateBytes = Buffer.byteLength(JSON.stringify(body.state));
+			const longest = Math.max(...Object.values(body.questions).map((q) => Buffer.byteLength(JSON.stringify(q))));
+			if (window === 12000 && (stateBytes + longest > 32000 || Buffer.byteLength(raw) > 64000))
+				return Response.json({ detail: { error_type: "max_tokens_exceeded" } }, { status: 400 });
+			return auditResponse(body, raw);
+		}, 1000000), host = await auditHost(branch, h.service);
+		try {
+			await host.run(); const before = h.wire.length;
+			branch.push({ id: "append", type: "message", message: { role: "assistant", content: "Additional XML check passed; no further execution authorized." } });
+			await host.run(); const result = host.reviews.at(-1)!;
+			const packets = h.wire.slice(before), final = packets.slice().reverse().find((p) => p.body.state.progress.final);
+			if (window === 1000000) {
+				expect(result.stopReason).toBe("stop");
+				// Characterize the conservative ceiling: no free-text sealed blocks or append reuse.
+				expect(result.reuse.hits).toBe(0);
+				const decoded = outboundRecords(final!.body.state);
+				for (const row of branch.filter((r) => r.id?.startsWith("long-"))) expect(decoded.find((r) => r.id === row.id)?.text).toBe(row.message.content);
+			} else {
+				expect(result.stopReason).toBe("error"); expect(result.contextOverflow).toBe(true);
+				expect(host.sent.every((s) => s.options.triggerTurn !== true)).toBe(true);
+			}
+			console.log(`free-text scale: transportStateByteLimit=${window === 12000 ? 32000 : "none"}, appendPackets=${packets.length}, appendBytes=${packets.reduce((n,p)=>n+p.bytes,0)}, finalBytes=${final?.bytes ?? 0}, hits=${result.reuse.hits}, stop=${result.stopReason}`);
+			if (window === 1000000) { const sends = h.wire.length; await host.run(); expect(h.wire).toHaveLength(sends); expect(host.reviews.at(-1)?.reuse.hits).toBe(9); }
+		} finally { await host.close(); }
+	}
+});
+
+const request: JudgeRequest = { state: { delivered: "XML" }, evidence: [{ id: "goal", text: "FORMAT: XML", metadata: { role: "user" } }],
+	questions: { done: { type: "choice", instructions: "Has the required format been delivered?", criteria: { yes: "Delivered", no: "Not delivered" } } } };
+function finiteResponse(body: any) {
+	const format = body.state.evidence.find((row: any) => row.id === "goal")?.text;
+	if (!format) throw new Error("Required source is absent");
+	const met = format === `FORMAT: ${body.state.fixed.delivered}`;
+	return Response.json({ answers: Object.fromEntries(Object.entries(body.questions).map(([id, q]: [string, any]) =>
+		[id, answer(q, (q.instructions.includes("NOT") ? !met : met) ? "yes" : "no", 0.7)])), usage: { input_tokens: 10 } });
+}
+const optionsFor = (rows: any[], threshold = 0.5) => ({ projectionRevision: "finite-format/1", minConfidence: threshold, timeoutMs: 3000,
+	cache: createSessionJudgmentCache(rows, (customType, data) => rows.push({ type: "custom", customType, data }), () => true) });
+
+test.skipIf(!enabled)("J04/J11 raw results survive service loss and current native thresholds are reapplied", async () => {
+	const rows: any[] = [], first = await nativeFixture(finiteResponse);
+	expect((await first.service.review(request, optionsFor(rows))).answers.done).toMatchObject({ choice: "yes" });
+	expect(evaluations(rows)).toHaveLength(1);
+	const next = await nativeFixture(finiteResponse);
+	const result = await next.service.review(request, optionsFor(journalReplay(rows), 0.9));
+	expect(result.stopReason).toBe("stop"); expect(result.answers).toEqual({}); expect(result.dropped).toEqual(["done"]);
+	expect(result.diagnostics.attemptCount).toBe(0); expect(next.wire).toEqual([]);
+});
+
+for (const change of ["model", "transport", "question", "fact", "source-role"] as const)
+test.skipIf(!enabled)(`J01 exact consumer-cache identity changes with actual ${change}`, async () => {
+	const rows: any[] = [], first = await nativeFixture(finiteResponse);
+	expect((await first.service.review(request, optionsFor(rows))).stopReason).toBe("stop");
+	expect(evaluations(rows)).toHaveLength(1);
+	const changed = structuredClone(request);
+	if (change === "question") changed.questions.done.instructions = "Has the required format NOT been delivered?";
+	if (change === "fact") changed.evidence![0].text = "FORMAT: CSV";
+	if (change === "source-role") changed.evidence![0].metadata!.role = "assistant";
+	const next = await nativeFixture(finiteResponse, 100000, [], { model: change === "model" ? { id: "jev-next" } : change === "transport" ? { baseUrl: "https://different.fixture.invalid/v1" } : {} });
+	const result = await next.service.review(changed, optionsFor(journalReplay(rows)));
+	expect(result.stopReason).toBe("stop"); expect(result.diagnostics.attemptCount).toBe(1); expect(next.wire).toHaveLength(1);
+	expect(result.answers.done).toMatchObject({ choice: change === "question" || change === "fact" ? "no" : "yes" });
+});

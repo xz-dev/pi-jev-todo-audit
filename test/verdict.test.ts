@@ -94,6 +94,26 @@ describe("evidence-grounded verdict", () => {
 		const b: BoardSnapshot = { ...board, tasks: [{ ...board.tasks[0], blockedBy: [99] }] };
 		expect(run({ lifecycle: { task_status_5: a("actionable_now") } }, { terminalStop: true }, b).kind).not.toBe("inject");
 	});
+	test("dependency guard makes granularity unobservable for every lifecycle branch", () => {
+		const blocked: BoardSnapshot = { ...board, tasks: [{ ...board.tasks[0], blockedBy: [7] }, board.tasks[1]] };
+		for (const life of ["still_ongoing", "actionable_now", "actually_completed", "cancelled", "deliberately_deferred", "blocked", "future", "unclear"])
+		for (const terminalStop of [false, true]) for (const serviceAccepted of [false, true])
+		for (const representation of ["accurate", "needs_reconciliation", "unclear"]) {
+			const supplied = answers({ lifecycle: { task_status_5: a(life), task_status_7: a("unclear") },
+				evidence: { task_evidence_5: a(life === "cancelled" ? "user" : "check5") },
+				reconciliation: { task_board_5: a(representation) } });
+			const opts = { context, terminalStop, serviceAccepted };
+			const without = decide(supplied, blocked, 0.5, 80, [5], opts);
+			Object.defineProperty(supplied, "granularity", { get: () => { throw new Error("unused granularity was read"); } });
+			expect(decide(supplied, blocked, 0.5, 80, [5], opts)).toEqual(without);
+		}
+		// This is a real dependency guard, not a vacuous assertion that granularity is never read.
+		const unblocked: BoardSnapshot = { ...blocked, tasks: [blocked.tasks[0], { ...blocked.tasks[1], status: "completed" }] };
+		const supplied = answers();
+		Object.defineProperty(supplied, "granularity", { get: () => { throw new Error("granularity is required again"); } });
+		expect(() => decide(supplied, unblocked, 0.5, 80, [], { context })).toThrow("granularity is required again");
+	});
+
 	test("per-active-task granularity affects only its own task", () => {
 		const b = { ...board, tasks: board.tasks.map((t) => ({ ...t, status: "in_progress" as const })) };
 		const out = text(run({ granularity: { task_granularity_5: a("split_independent_outcomes"), task_granularity_7: a("appropriate") }, evidence: { task_evidence_5: a("user") } }, {}, b));

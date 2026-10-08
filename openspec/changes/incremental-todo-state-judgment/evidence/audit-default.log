@@ -1,0 +1,383 @@
+bun test v1.4.2 (744846f84)
+
+test/context.test.ts:
+(pass) ignored metadata cannot renumber id-less history or its call/source associations [21.58ms]
+(pass) pending redacted calls retain both independent gaps [0.86ms]
+(pass) tools are projected to name, call identity/order and status; arguments and bodies never leave [9.65ms]
+(pass) a result without status flags or content is unknown, never success [0.09ms]
+(pass) all supported text-only analysis turns are kept in order, and a short reply keeps its question [1.46ms]
+(pass) supplements retain prose, arbitrary metadata, owner and dependencies without private result details [0.25ms]
+(pass) credentials, thinking, images and private custom state stay out; gaps are explicit [0.73ms]
+(pass) safe JSON stays parseable after redaction, handles circular data and preserves repeated references [0.06ms]
+(pass) binary and conventional credential fields never become supplemental text evidence [0.56ms]
+(pass) quoted credential values in visible JSON/log text are redacted completely [0.27ms]
+(pass) latest visible custom result does not need an artifact reference [0.18ms]
+(pass) public summaries are labelled; missing effective API and missing results are not success [0.09ms]
+(pass) visible audit advice retains producer identity but is not a selectable source [0.68ms]
+
+test/loops.test.ts:
+(pass) groups assistant message + its tool results into one loop; user opens a new loop [0.23ms]
+(pass) a loop with a pending tool call is incomplete and excluded from loopsAfter [0.15ms]
+(pass) compaction summary and aborted turn are ordinary records, never loop boundaries that split a call from its result [0.07ms]
+(pass) packLoops fits whole loops within the declared limit and reports the remainder [0.60ms]
+(pass) packLoops reports oversize when the first loop alone cannot fit [0.04ms]
+(pass) packLoops without a declared limit falls back to a bounded loop count and no limit [0.07ms]
+(pass) envelope overhead and output reserve count against the limit [0.02ms]
+(pass) nonempty abort, summary and steering between call and result stay inside the same loop [0.82ms]
+(pass) packing measures actual request and per-question dimensions independently [0.04ms]
+
+test/questions.test.ts:
+(pass) request carries board, stored state and ONLY the segment's loops; old loops are not re-sent [1.47ms]
+(pass) board_warranted is asked only without in_progress tasks; dependency-blocked tasks skip granularity [0.26ms]
+(pass) no_change advances cursors and keeps state verbatim [0.95ms]
+(pass) partial progress is recorded with its anchor and advances; completion stays reported-not-verified [0.23ms]
+(pass) uncertainty holds the segment open without moving the cursor; other scopes still advance [0.04ms]
+(pass) missing answer for a scope writes nothing for that scope [0.05ms]
+(pass) scope_changed resets the task to its first-active loop and opens the current segment [0.06ms]
+(pass) session transitions: scope update and permission withdrawal write anchors; blocker binds to its conclusion [0.26ms]
+(pass) assistant cannot establish authority for cancelled_by_user [0.04ms]
+(pass) assistant cannot establish authority for scope_changed [0.09ms]
+(pass) assistant is not a permission source: {"interaction":"permission_granted"} [0.14ms]
+(pass) assistant is not a permission source: {"interaction":"user_responded"} [0.16ms]
+(pass) assistant is not a permission source: {"scope_update":"scope_updated"} [0.05ms]
+(pass) uncertainty fences the whole task scope: {"task_evidence_5":"insufficient_evidence"} [0.04ms]
+(pass) uncertainty fences the whole task scope: {"task_board_5":"unclear"} [0.01ms]
+(pass) a user reply does not imply readiness; withdrawal wins over simultaneous scope update [0.07ms]
+(pass) lifecycle, granularity, permission, work and scope retain independent sources [0.08ms]
+(pass) reported actionability is not permission: it needs the independent user-authority gate before execution advice [0.84ms]
+(pass) a reported deferral supports board-only reconciliation, never execution authority [0.21ms]
+
+test/config.test.ts:
+(pass) config > missing file → defaults [0.20ms]
+jev-todo-audit: invalid JSON at /tmp/.ctx-mode-LFCk81/jev-cfg-PHvxGU/config.json, skipping
+(pass) config > malformed JSON → defaults [2.23ms]
+(pass) config > partial config merges over defaults [0.62ms]
+(pass) config > bad values fall back per-field [0.48ms]
+(pass) config > blank apiKey in file counts as absent [0.36ms]
+(pass) config > project layer ignored when untrusted [0.32ms]
+(pass) config > project layer merges when trusted [0.50ms]
+(pass) config > project layer cannot set apiKey/apiKeyEnvVar [0.38ms]
+(pass) config > agent path honors PI_CODING_AGENT_DIR [0.14ms]
+(pass) config > projectConfigPath sits under .pi [0.02ms]
+(pass) config > staleAuditSpans default + project override [0.33ms]
+
+test/judgment-service-entry.test.ts:
+(pass) suppressed child touches neither host nor package settings [2.33ms]
+(pass) loaded service commands preserve selection before publication: llm-as-jev [0.97ms]
+(pass) loaded service commands preserve selection before publication: llm-as-jev:1 [0.48ms]
+(pass) pre-published service is preserved with reviewVersion 1 [0.38ms]
+(pass) pre-published service is preserved with reviewVersion undefined [0.34ms]
+(pass) provisioning command is callable and read-only before startup [1.58ms]
+(pass) own resource provenance provisions with audit disabled and no audit command in user scope [31.27ms]
+(pass) own resource provenance provisions with audit disabled and no audit command in project scope [2.18ms]
+(pass) first startup persists once and replays once, without duplicate commands/providers [1.70ms]
+(pass) trusted project registers only in project scope [1.57ms]
+(pass) no guessed registration for temporary with untrusted project [0.33ms]
+(pass) no guessed registration for unknown with untrusted project [0.22ms]
+(pass) no guessed registration for project with untrusted project [0.22ms]
+(pass) wrong installation provenance does not default to user scope [0.29ms]
+(pass) offline first startup reports unavailability and performs no installation [0.29ms]
+(pass) missing or filtered configured service is preserved: git:github.com/xz-dev/pi-llm-as-jev [0.65ms]
+(pass) missing or filtered configured service is preserved: git:github.com/xz-dev/pi-llm-as-jev@v1 [0.53ms]
+(pass) missing or filtered configured service is preserved: git:https://github.com/xz-dev/pi-llm-as-jev.git@v1 [0.51ms]
+(pass) missing or filtered configured service is preserved: git:git@github.com:xz-dev/pi-llm-as-jev.git@v1 [0.48ms]
+(pass) missing or filtered configured service is preserved: git:ssh://git@github.com/xz-dev/pi-llm-as-jev.git@v1 [0.44ms]
+(pass) missing or filtered configured service is preserved: npm:pi-llm-as-jev@1.0.0 [59.41ms]
+(pass) installed local service identity preserves its disabled resource selection [1.26ms]
+(pass) trusted project service selection takes precedence over a global audit [0.92ms]
+(pass) untrusted project settings are not read while a global audit provisions [1.71ms]
+(pass) selection changed during download is preserved without activation [0.94ms]
+(pass) only matching enabled service resources activate, without installing unrelated packages [1.87ms]
+(pass) retired activation shutdown cannot delete a replacement handle [1.45ms]
+(pass) delegated shutdown unsubscribe works for handlers added after startup adoption [1.41ms]
+(pass) cancelled first-start callbacks are not replayed and ordinary events unsubscribe [1.41ms]
+(pass) partial publication is cleaned immediately and its retired handlers never run [1.43ms]
+(pass) failed startup cleanup preserves a concurrently published replacement [1.26ms]
+(pass) factory failure leaves no handle and does not retry from audit events [1.28ms]
+(pass) incompatible newly installed service is diagnosed without downgrade [1.41ms]
+(pass) installation failure is bounded and does not switch transport: download [0.68ms]
+(pass) installation failure is bounded and does not switch transport: Authentication [0.45ms]
+(pass) native persistence errors after clone prevent activation and update-success claims [0.98ms]
+(pass) settings changed to unreadable after clone are not overwritten [0.91ms]
+(pass) a later normal activation retries an unregistered failure without changing the audit switch [1.71ms]
+
+test/service-delivery.test.ts:
+(pass) audit does not constrain the independently managed service in its dependencies or lockfile [0.51ms]
+(pass) pi manifest exposes a separately filterable provisioning entry [0.02ms]
+(pass) first managed startup registers one unqualified service package without changing other settings [55.76ms]
+(skip) native real service: first-start status diagnostic and native reload ownership
+(skip) native bun: first-start dispatch, independent update, and real reload
+(skip) native npm: first-start dispatch, independent update, and real reload
+(skip) native safety: scope, selections, failures and recovery
+
+test/counter.test.ts:
+(pass) counter > counts finalized assistant messages as loops [0.07ms]
+(pass) counter > lastUserMsgAt = loops completed before the user msg [0.02ms]
+(pass) counter > turn_end increments; user message_end resets cooldown ref [0.03ms]
+(pass) counter > audit fires at multiples of 10 when past cooldown [0.02ms]
+(pass) counter > cooldown 10 boundary: exactly 10 skips, 11 fires [0.04ms]
+(pass) counter > cooldown skips trigger inside 10 loops of user msg; next multiple still fires [0.02ms]
+(pass) counter > edge: exactly 10 loops after user msg still skipped [0.03ms]
+(pass) counter > aborted turn never reaches branch → not counted
+
+test/incremental-lifecycle.integration.test.ts:
+(skip) nonempty progress/authority survives JSONL cold reload and real Pi compaction without resending old loops
+
+test/index.test.ts:
+(pass) manual audit persists before delivering reported completion; reload does not rejudge or repeat [6.88ms]
+(pass) a second audit sends only the suffix and old protocol ledger entries are not evidence [2.83ms]
+(pass) late result is fenced by board even without a lifecycle callback [0.91ms]
+(pass) late result is fenced by same-id-text even without a lifecycle callback [0.69ms]
+(pass) late result is fenced by branch even without a lifecycle callback [0.56ms]
+(pass) late result is fenced by effective-context even without a lifecycle callback [0.63ms]
+(pass) user abort releases the single-active slot; late first result cannot publish [3.17ms]
+(pass) missing persistence cannot produce completion advice [1.07ms]
+(pass) missing dependency stays visible on each manual request; disabled mode does no work [0.17ms]
+(pass) terminal completion remains board-only and ordinary cadence keeps user cooldown [4.22ms]
+(pass) a changed task contract invalidates its old completion even without a new history record [2.51ms]
+
+test/state.test.ts:
+(pass) round-trips through the ledger entry; later entries replace earlier ones [0.26ms]
+(pass) branch switch discards unsupported derived state and falls back to the latest valid scope checkpoint [0.07ms]
+(pass) old ledger entry types and malformed state are ignored [0.04ms]
+(pass) writeState reports durability honestly [0.13ms]
+(pass) cursor rules: advance, hold open, start position [0.03ms]
+(pass) task reset returns to first-active; permission withdrawal voids anchors but keeps cursors [0.03ms]
+
+test/shared-service-llm.integration.test.ts:
+(skip) LLM review observes real SSE attempts and ignores native numeric gates
+(skip) malformed discrete answer retries count actual sends; zero, missing and catalog estimates differ
+(skip) deadline keeps unfinished SSE usage and cannot accept late answers or charges
+(skip) HTTP 400/invalid_payload is not context recovery or an unobserved SDK retry
+(skip) HTTP 401/context_length_exceeded is not context recovery or an unobserved SDK retry
+(skip) HTTP 429/context_length_exceeded is not context recovery or an unobserved SDK retry
+(skip) HTTP 413/context_length_exceeded is not context recovery or an unobserved SDK retry
+(skip) HTTP 500/internal_error is not context recovery or an unobserved SDK retry
+(skip) overlapping hidden fetches remain visible but never invent a preceding completion
+(skip) an adapter dropping provider events fails accounting without inventing known zeros
+
+test/shared-service-accounting.integration.test.ts:
+(skip) exact rejection survives corrected size hints and protects a single-question superset
+(skip) provider accounting: invalid native members keep reported model/charge and presence (17)
+(skip) provider accounting: invalid native members keep reported model/charge and presence (-1)
+(skip) provider accounting: invalid native members keep reported model/charge and presence (invalid)
+(skip) provider accounting: invalid native members keep reported model/charge and presence (undefined)
+(skip) attempt identities cannot collide across service reloads at the same clock value
+(skip) OpenRouter typed overflow recovers; response charges remain distinct from estimates
+
+test/shared-service-ownership.integration.test.ts:
+(skip) capacity ownership: direct selects its own two-dimensional limits
+(skip) capacity ownership: router selects its own two-dimensional limits
+(skip) capacity ownership: custom selects its own two-dimensional limits
+(skip) capacity ownership: override selects its own two-dimensional limits
+(skip) F1: predicted-request pressure chooses one recovery dimension, not evidence-by-question traversal
+(skip) F1: reported-request pressure chooses one recovery dimension, not evidence-by-question traversal
+(skip) F1: predicted-state pressure chooses one recovery dimension, not evidence-by-question traversal
+(skip) F1: reported-state pressure chooses one recovery dimension, not evidence-by-question traversal
+(skip) capacity ownership: lower density survives reload; unrelated transport cannot borrow it
+(skip) cache ownership: new C sends only C; threshold changes never strengthen cached values
+(skip) cache ownership: legal own keys, exact metadata/order and different question ids stay distinct
+(skip) batch ownership: failed independent question batches resume missing work with frozen priors
+(skip) error ownership: HTTP 401 does not authorize context subdivision
+(skip) error ownership: HTTP 402 does not authorize context subdivision
+(skip) error ownership: HTTP 413 does not authorize context subdivision
+(skip) error ownership: HTTP 422 does not authorize context subdivision
+(skip) error ownership: HTTP 429 does not authorize context subdivision
+(skip) error ownership: HTTP 500 does not authorize context subdivision
+
+test/partial-progress.test.ts:
+(pass) A+B survives cold reload without deriving acceptance from formatting: "Complete A: reject malformed input and B: preserve valid input." [1.38ms]
+(pass) A+B survives cold reload without deriving acceptance from formatting: "- A: reject malformed input\n- B: preserve valid input" [0.63ms]
+(pass) A+B survives cold reload without deriving acceptance from formatting: "Complete A: reject malformed input\nand B: preserve valid input." [0.58ms]
+(pass) A+B survives cold reload without deriving acceptance from formatting: "Complete A: reject malformed input and B: preserve valid input.\nDo not deploy." [0.49ms]
+(pass) uncertain B keeps A, fences the task; a user withdrawal cannot revive prior permission [0.94ms]
+(skip) A+B through the actual sibling service and installed Pi native adapter (offline wire)
+
+test/shared-service-corpus.integration.test.ts:
+(skip) R14 real corpus: tool-heavy
+(skip) R14 real corpus: text-only+reply
+(skip) R14 real corpus: short
+(skip) R14 real corpus: todo-revisions
+(skip) R14 real corpus: mixed-cached
+(skip) R14 real corpus: failed-later-chunk
+
+test/board.test.ts:
+(pass) board > empty branch → empty board [0.02ms]
+(pass) board > last todo snapshot wins [0.12ms]
+(pass) board > corrupt/non-todo entries skipped [0.03ms]
+(pass) board > isTaskDetails shape check [0.01ms]
+(pass) board > visibleTasks hides deleted [0.02ms]
+(pass) board > renderBoardLines mirrors /todos rows [0.03ms]
+(pass) board > inProgressTasks [0.02ms]
+(pass) board > in_progress entry stamped at transition loop [0.03ms]
+(pass) board > re-entry into in_progress restamps [0.03ms]
+(pass) board > completed task drops stamp [0.02ms]
+(pass) board > staleTaskIds flags only over-span tasks [0.03ms]
+(pass) board > revisions record only actual snapshot changes; reads, no-ops and failed updates add none [0.09ms]
+(pass) board > first-active origin survives updates, pending/resume; a new task never inherits it [0.12ms]
+(pass) task trajectory serializes at most the latest few segments while keeping the first-active origin [0.21ms]
+
+test/ownership.test.ts:
+(pass) native Node independent parents and inherited descendants preserve ownership without a shell [260.25ms]
+(pass) main claims/reuses ownership with marker undefined [2.54ms]
+(pass) main claims/reuses ownership with marker  [1.09ms]
+(pass) main claims/reuses ownership with marker 607516 [0.94ms]
+(pass) inherited or invalid owner 607517 suppresses every JEV path before config [0.22ms]
+(pass) inherited or invalid owner not-a-pid suppresses every JEV path before config [0.04ms]
+(pass) inherited or invalid owner 0 suppresses every JEV path before config [0.02ms]
+(pass) inherited or invalid owner  607516 suppresses every JEV path before config [0.02ms]
+(pass) inherited or invalid owner 607516.0 suppresses every JEV path before config [0.04ms]
+
+test/shared-service.integration.test.ts:
+(skip) classifier/http/ordinary: shared audit retains completed stages after failure/reload without charging reuse
+(skip) llm/http/ordinary: shared audit retains completed stages after failure/reload without charging reuse
+(skip) classifier/missing/ordinary: shared audit retains completed stages after failure/reload without charging reuse
+(skip) classifier/none/ordinary: shared audit retains completed stages after failure/reload without charging reuse
+(skip) classifier/http/full: shared audit retains completed stages after failure/reload without charging reuse
+
+test/corpus.test.ts:
+(pass) corpus retains all six workloads and their public text without tool bodies [1.45ms]
+
+test/incremental.test.ts:
+(pass) two consecutive audits: the second sends only post-cursor loops; state and cursors persist through the ledger [1.85ms]
+(pass) an incomplete trailing loop is excluded and becomes the next segment once its result arrives [0.87ms]
+(pass) uncertain answer holds the task open; session advances; next run re-asks only the open task from its open loop [1.32ms]
+(pass) persistence failure leaves the previous state and cursors in force [0.50ms]
+(pass) overflow recovery drops trailing whole loops; a single loop that still overflows is reported oversize, cursor kept [2.09ms]
+(pass) missing capacity metadata is surfaced and bounded by the fallback loop count [1.49ms]
+(pass) full mode re-judges from the first loop while keeping prior state only as reset targets [2.54ms]
+
+test/state-verdict.test.ts:
+(pass) stored completion report yields the existing 'reported, not independently verified' correction [1.40ms]
+(pass) an open (uncertain) task yields no answer and the verdict fails closed for it [0.18ms]
+(pass) a scope whose cursor is behind the branch tip is not current [0.05ms]
+(pass) voided authorization anchor blocks execution advice; in_progress task without granularity never wakes [0.12ms]
+(pass) off-board current work with drift yields a return/create advisory through the unchanged gates [0.09ms]
+
+test/verdict.test.ts:
+(pass) evidence-grounded verdict > aligned parallel work is silent, age is not a split verdict [0.14ms]
+(pass) evidence-grounded verdict > no aggregate answer does not suppress a supported sibling correction [0.11ms]
+(pass) evidence-grounded verdict > low-confidence aggregate does not suppress valid per-task completion [0.05ms]
+(pass) evidence-grounded verdict > blocked current match cannot also be claimed or split [0.06ms]
+(pass) evidence-grounded verdict > actually_completed excludes claim/continue/split for the same task [0.07ms]
+(pass) evidence-grounded verdict > cancelled excludes claim/continue/split for the same task [0.02ms]
+(pass) evidence-grounded verdict > deliberately_deferred excludes claim/continue/split for the same task [0.04ms]
+(pass) evidence-grounded verdict > blocked excludes claim/continue/split for the same task [0.32ms]
+(pass) evidence-grounded verdict > future excludes claim/continue/split for the same task [0.08ms]
+(pass) evidence-grounded verdict > unclear excludes claim/continue/split for the same task [0.07ms]
+(pass) evidence-grounded verdict > cancelled task is individually deleted [0.24ms]
+(pass) evidence-grounded verdict > recorded blocking/deferred/future states do not wake waiting agent [0.18ms]
+(pass) evidence-grounded verdict > one missing blocker annotation permits only a board-only turn [0.07ms]
+(pass) evidence-grounded verdict > ongoing is not actionable even when matched and warranted [0.04ms]
+(pass) evidence-grounded verdict > explicit authorized actionable task can wake, pending task can be claimed [0.14ms]
+(pass) evidence-grounded verdict > an incomplete final piece cannot wake the agent: CONTINUE requires the granularity verdict [0.17ms]
+(pass) evidence-grounded verdict > actionable_now cannot override waiting_user [0.04ms]
+(pass) evidence-grounded verdict > actionable_now cannot override waiting_external [0.02ms]
+(pass) evidence-grounded verdict > actionable_now cannot override idle
+(pass) evidence-grounded verdict > actionable_now cannot override unclear
+(pass) evidence-grounded verdict > unresolved or missing dependency prevents execution [0.08ms]
+(pass) evidence-grounded verdict > dependency guard makes granularity unobservable for every lifecycle branch [2.65ms]
+(pass) evidence-grounded verdict > per-active-task granularity affects only its own task [0.10ms]
+(pass) evidence-grounded verdict > one overall goal can have supported checkpoints [0.04ms]
+(pass) evidence-grounded verdict > appropriate does not split even an old task [0.02ms]
+(pass) evidence-grounded verdict > not_applicable does not split even an old task
+(pass) evidence-grounded verdict > blocked does not split even an old task
+(pass) evidence-grounded verdict > insufficient_evidence does not split even an old task
+(pass) evidence-grounded verdict > clarify_done_criteria asks clarification, not subdivision or terminal restart [0.07ms]
+(pass) evidence-grounded verdict > clarify_next_action asks clarification, not subdivision or terminal restart [0.05ms]
+(pass) evidence-grounded verdict > partial global context prevents splitting, not independent completion [0.06ms]
+(pass) evidence-grounded verdict > omitted optional history does not veto explicitly authorized current work [0.25ms]
+(pass) evidence-grounded verdict > missing required authorization still prevents continuation in a partial packet [0.14ms]
+(pass) evidence-grounded verdict > legacy aggregate granularity is ignored [0.03ms]
+(pass) evidence-grounded verdict > invalid/low confidence NaN has no corrective authority [0.05ms]
+(pass) evidence-grounded verdict > invalid/low confidence Infinity has no corrective authority [0.02ms]
+(pass) evidence-grounded verdict > invalid/low confidence -1 has no corrective authority [0.01ms]
+(pass) evidence-grounded verdict > invalid/low confidence 1.01 has no corrective authority [0.01ms]
+(pass) evidence-grounded verdict > invalid/low confidence 0.2 has no corrective authority [0.02ms]
+(pass) evidence-grounded verdict > missing anchor is not evidence [0.02ms]
+(pass) evidence-grounded verdict > insufficient_evidence anchor is not evidence [0.02ms]
+(pass) evidence-grounded verdict > latest unavailable user evidence cannot be replaced with older authority [0.09ms]
+(pass) evidence-grounded verdict > unavailable task requirements withhold only that task's correction [0.09ms]
+(pass) evidence-grounded verdict > missing context fails closed [0.02ms]
+(pass) evidence-grounded verdict > unusable completion source {"advice":true} [0.10ms]
+(pass) evidence-grounded verdict > unusable completion source {"complete":false} [0.02ms]
+(pass) evidence-grounded verdict > unusable completion source {"isError":true} [0.03ms]
+(pass) evidence-grounded verdict > unusable completion source {"kind":"tool_result"} [0.02ms]
+(pass) evidence-grounded verdict > unusable completion source {"kind":"shell"}
+(pass) evidence-grounded verdict > unusable completion source {"kind":"summary"}
+(pass) evidence-grounded verdict > unusable completion source {"kind":"supplement"}
+(pass) evidence-grounded verdict > unknown/missing lifecycle cannot be overridden by current_match [0.07ms]
+(pass) evidence-grounded verdict > warrant gates pending/empty/all-done boards [0.15ms]
+(pass) evidence-grounded verdict > claim requires supported actionable matching task; drift needs its own confidence [0.17ms]
+(pass) evidence-grounded verdict > unchanged issue suppressed; blocker bookkeeping does not re-arm it [0.20ms]
+(pass) leader evidence contract > a main-agent report can support completion but is phrased as reported, never as verified execution [0.31ms]
+(pass) leader evidence contract > a main-agent report cannot cancel scope or create execution permission [0.06ms]
+(pass) leader evidence contract > a returned tool event alone never establishes completion [0.14ms]
+
+test/incremental-safety.test.ts:
+(pass) in-flight invalidation without a lifecycle event discards every answer and cursor [0.81ms]
+(pass) abort settles an uncooperative service and its late success never writes [0.40ms]
+(pass) caller threshold is passed and low-confidence native answers cannot become confidence one [0.43ms]
+(pass) full invalidation is durable before a failed judge call [0.48ms]
+(pass) single-loop predicted overflow gets one actual admission attempt [0.64ms]
+(pass) scope update precedes drift: discard the simultaneous opinion and ask only drift against the selected user source [0.65ms]
+
+52 tests skipped:
+(skip) native real service: first-start status diagnostic and native reload ownership
+(skip) native bun: first-start dispatch, independent update, and real reload
+(skip) native npm: first-start dispatch, independent update, and real reload
+(skip) native safety: scope, selections, failures and recovery
+(skip) nonempty progress/authority survives JSONL cold reload and real Pi compaction without resending old loops
+(skip) LLM review observes real SSE attempts and ignores native numeric gates
+(skip) malformed discrete answer retries count actual sends; zero, missing and catalog estimates differ
+(skip) deadline keeps unfinished SSE usage and cannot accept late answers or charges
+(skip) HTTP 400/invalid_payload is not context recovery or an unobserved SDK retry
+(skip) HTTP 401/context_length_exceeded is not context recovery or an unobserved SDK retry
+(skip) HTTP 429/context_length_exceeded is not context recovery or an unobserved SDK retry
+(skip) HTTP 413/context_length_exceeded is not context recovery or an unobserved SDK retry
+(skip) HTTP 500/internal_error is not context recovery or an unobserved SDK retry
+(skip) overlapping hidden fetches remain visible but never invent a preceding completion
+(skip) an adapter dropping provider events fails accounting without inventing known zeros
+(skip) exact rejection survives corrected size hints and protects a single-question superset
+(skip) provider accounting: invalid native members keep reported model/charge and presence (17)
+(skip) provider accounting: invalid native members keep reported model/charge and presence (-1)
+(skip) provider accounting: invalid native members keep reported model/charge and presence (invalid)
+(skip) provider accounting: invalid native members keep reported model/charge and presence (undefined)
+(skip) attempt identities cannot collide across service reloads at the same clock value
+(skip) OpenRouter typed overflow recovers; response charges remain distinct from estimates
+(skip) capacity ownership: direct selects its own two-dimensional limits
+(skip) capacity ownership: router selects its own two-dimensional limits
+(skip) capacity ownership: custom selects its own two-dimensional limits
+(skip) capacity ownership: override selects its own two-dimensional limits
+(skip) F1: predicted-request pressure chooses one recovery dimension, not evidence-by-question traversal
+(skip) F1: reported-request pressure chooses one recovery dimension, not evidence-by-question traversal
+(skip) F1: predicted-state pressure chooses one recovery dimension, not evidence-by-question traversal
+(skip) F1: reported-state pressure chooses one recovery dimension, not evidence-by-question traversal
+(skip) capacity ownership: lower density survives reload; unrelated transport cannot borrow it
+(skip) cache ownership: new C sends only C; threshold changes never strengthen cached values
+(skip) cache ownership: legal own keys, exact metadata/order and different question ids stay distinct
+(skip) batch ownership: failed independent question batches resume missing work with frozen priors
+(skip) error ownership: HTTP 401 does not authorize context subdivision
+(skip) error ownership: HTTP 402 does not authorize context subdivision
+(skip) error ownership: HTTP 413 does not authorize context subdivision
+(skip) error ownership: HTTP 422 does not authorize context subdivision
+(skip) error ownership: HTTP 429 does not authorize context subdivision
+(skip) error ownership: HTTP 500 does not authorize context subdivision
+(skip) A+B through the actual sibling service and installed Pi native adapter (offline wire)
+(skip) R14 real corpus: tool-heavy
+(skip) R14 real corpus: text-only+reply
+(skip) R14 real corpus: short
+(skip) R14 real corpus: todo-revisions
+(skip) R14 real corpus: mixed-cached
+(skip) R14 real corpus: failed-later-chunk
+(skip) classifier/http/ordinary: shared audit retains completed stages after failure/reload without charging reuse
+(skip) llm/http/ordinary: shared audit retains completed stages after failure/reload without charging reuse
+(skip) classifier/missing/ordinary: shared audit retains completed stages after failure/reload without charging reuse
+(skip) classifier/none/ordinary: shared audit retains completed stages after failure/reload without charging reuse
+(skip) classifier/http/full: shared audit retains completed stages after failure/reload without charging reuse
+
+ 223 pass
+ 52 skip
+ 0 fail
+ 1105 expect() calls
+Ran 275 tests across 23 files. [1087.00ms]

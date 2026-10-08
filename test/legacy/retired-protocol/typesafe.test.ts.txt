@@ -20,6 +20,23 @@ describe("typesafe request", () => {
 		for (const q of Object.values(req.questions)) expect(q.type).toBe("choice");
 	});
 
+	test("dependency-blocked active task omits only unread granularity and restores it when unblocked", () => {
+		const target = { ...board.tasks[0], blockedBy: [5], metadata: { trajectory: { firstActive: { entryId: "original-start", turn: 1 } } } };
+		const other = { id: 6, subject: "Independent work", status: "in_progress" as const };
+		for (const status of ["pending", "in_progress", "deleted", "missing", "completed"] as const) {
+			const b: BoardSnapshot = { nextId: 10, tasks: [target, other,
+				...(status === "missing" ? [] : [{ ...board.tasks[1], status }])] };
+			const req = buildAuditRequest(b, "All original history remains supplied", "jev-latest");
+			expect(!!req.questions.task_granularity_3).toBe(status === "completed");
+			for (const key of ["task_status_3", "task_evidence_3", "task_board_3", "task_granularity_6"])
+				expect(req.questions[key]).toBeDefined();
+			expect(req.state).toContain("original-start");
+			expect(req.state).toContain("All original history remains supplied");
+		}
+		const removed = buildAuditRequest({ ...board, tasks: [{ ...target, blockedBy: [] }] }, "history", "jev-latest");
+		expect(removed.questions.task_granularity_3).toBeDefined();
+	});
+
 	test("all-done board → board_warranted included", () => {
 		const doneBoard: BoardSnapshot = {
 			tasks: [{ id: 1, subject: "done", status: "completed" }, { id: 2, subject: "also done", status: "completed" }],

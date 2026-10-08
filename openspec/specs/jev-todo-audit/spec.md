@@ -125,15 +125,15 @@ Answers SHALL be validated against the actual requested definitions and supplied
 
 ### Requirement: Verdict handling and corrective injection
 
-When work is aligned, the extension SHALL take no conversational action unless a separate supported, sufficiently confident task-specific finding requires correction. When work is misaligned, it SHALL inject only the supported corrective steps: reconcile affected tasks, claim authorized current work, or request return from evidenced drift. Corrections SHALL remain custom messages delivered through the existing steer path and SHALL identify affected task IDs and sanitized source evidence.
+When work is aligned, the extension SHALL take no conversational action unless a separate supported, accepted task-specific finding requires correction. When work is misaligned, it SHALL inject only the supported corrective steps: reconcile affected tasks, claim authorized current work, or request return from evidenced drift. Corrections SHALL remain custom messages delivered through the existing steer path and SHALL identify affected task IDs and sanitized source evidence.
 
-Confidence SHALL gate each used decision independently, with the configured threshold (default 0.5). Confidence SHALL NOT substitute for required evidence. Missing, unclear, contradictory, or below-threshold evidence SHALL withhold that action and yield at most an uncertainty notification under the repeat-suppression rule; it SHALL NOT suppress supported actions for unrelated tasks.
+For native classifiers, the shared judgment service SHALL gate each used decision independently using the configured threshold (default 0.5). Audit SHALL supply this policy and consume the service's accepted final view rather than repeating numerical gates. For LLM judgments the service SHALL ignore numerical thresholds and audit SHALL consume the discrete business choice, never using compatibility confidence/probability encodings as numerical evidence. Accepted choices SHALL NOT substitute for required evidence. Missing, unclear, contradictory, or native-policy-dropped evidence SHALL withhold that action and yield at most an uncertainty notification under the repeat-suppression rule; it SHALL NOT suppress supported actions for unrelated tasks.
 
 Parallel `in_progress` tasks SHALL remain valid unless specific evidence identifies a mismatch. Completed tasks SHALL be individually marked completed, cancelled tasks individually deleted, and deliberately deferred tasks returned to a pending/deferred representation with the reason recorded. Blocked tasks SHALL be reconciled only when the board lacks the relevant blocker representation. Tasks already accurately represented as blocked, deferred, or future work SHALL not be blindly resumed or repeatedly reconciled.
 
-An ongoing verdict SHALL leave the task ongoing and SHALL NOT itself authorize a terminal restart. Terminal continuation SHALL require an explicit, supported, sufficiently confident actionable-now verdict establishing work that can proceed within authorization and without unresolved input or dependencies. A current-match result SHALL NOT override lifecycle, blockers, uncertainty, or a newer user decision. The same task SHALL NOT receive contradictory complete/delete/park and claim/continue/split instructions in one correction.
+An ongoing verdict SHALL leave the task ongoing and SHALL NOT itself authorize a terminal restart. Terminal continuation SHALL require an explicit, supported, service-accepted actionable-now verdict establishing work that can proceed within authorization and without unresolved input or dependencies. A current-match result SHALL NOT override lifecycle, blockers, uncertainty, or a newer user decision. The same task SHALL NOT receive contradictory complete/delete/park and claim/continue/split instructions in one correction.
 
-For `no_in_progress_task`, board warrant SHALL gate claim/create steps: trivial or idle activity produces no claim; warranted authorized activity can produce a claim; insufficient confidence/evidence produces notification. Independently supported lifecycle reconciliation remains possible without inventing aggregate alignment or active work. Missing alignment SHALL not prevent an independently supported task-specific correction.
+For `no_in_progress_task`, board warrant SHALL gate claim/create steps: trivial or idle activity produces no claim; warranted authorized activity can produce a claim; insufficient acceptance/evidence produces notification. Independently supported lifecycle reconciliation remains possible without inventing aggregate alignment or active work. Missing alignment SHALL not prevent an independently supported task-specific correction.
 
 The extension SHALL assess granularity under the engineering-grounded requirement. Age beyond `staleAuditSpans × interval` (default more than 3 × interval loops) SHALL be a review signal only. Splitting SHALL require a supported per-task need for separable outcomes or verifiable checkpoints, sufficient relevant global evidence, and no conflicting lifecycle or wait condition. Unclear completion criteria or next actions SHALL produce scoped clarification rather than forced splitting. Splitting or clarification advice alone SHALL NOT wake an agent waiting for a user decision.
 
@@ -166,7 +166,7 @@ Audit failures SHALL remain isolated. Network errors, timeouts, malformed answer
 - **THEN** an eligible periodic or manual correction requests creating and claiming that work
 
 #### Scenario: Warrant answer low confidence
-- **WHEN** board warrant is below the confidence threshold
+- **WHEN** the native board-warrant answer is dropped by the service's confidence policy
 - **THEN** no claim/create step depends on it and any uncertainty notice follows repeat suppression
 
 #### Scenario: Drift verdict orders return to board
@@ -174,11 +174,11 @@ Audit failures SHALL remain isolated. Network errors, timeouts, malformed answer
 - **THEN** a correction requests stopping the off-plan activity and returning to that work, without treating an older board plan as superior to newer user instructions
 
 #### Scenario: Low confidence defers to the user
-- **WHEN** an aggregate alignment decision is uncertain
+- **WHEN** an aggregate alignment decision is uncertain or dropped by native policy
 - **THEN** it contributes no corrective step, while independent supported task corrections remain possible
 
 #### Scenario: Stale in_progress task gets split nudge
-- **WHEN** #4 exceeds the age-review threshold and independent, sufficiently confident task-specific evidence supports splitting its authorized outcomes or checkpoints
+- **WHEN** #4 exceeds the age-review threshold and independent, service-accepted task-specific evidence supports splitting its authorized outcomes or checkpoints
 - **THEN** the correction requests splitting #4 and cites that evidence, not age alone
 
 #### Scenario: Stale in_progress task does not automatically split
@@ -210,8 +210,8 @@ Audit failures SHALL remain isolated. Network errors, timeouts, malformed answer
 - **THEN** the audit withholds state-changing or continuation instructions for that task
 
 #### Scenario: Terminal stop with actionable unfinished task
-- **WHEN** an unfinished task has an explicit supported actionable-now verdict and no unresolved permission or dependency
-- **THEN** the correction can request continuation of that task and wake the agent through the existing terminal delivery path
+- **WHEN** an unfinished task has an explicit supported service-accepted actionable-now verdict and no unresolved permission or dependency
+- **THEN** a correction can request continuation of that task and wake the agent through the existing terminal delivery path
 
 #### Scenario: Terminal stop with only ongoing evidence
 - **WHEN** a task is known to be unfinished but authorization and readiness to resume are not established
@@ -249,21 +249,25 @@ Audit failures SHALL remain isolated. Network errors, timeouts, malformed answer
 - **WHEN** the audit reads task state or sends a correction
 - **THEN** it uses persisted snapshots and an agent-mediated message without importing or calling the todo plugin's internal store
 
+#### Scenario: LLM confidence encoding cannot re-gate choices
+- **WHEN** the service returns a discrete LLM choice under a native threshold of 0.99
+- **THEN** audit applies its evidence and action-safety rules without comparing that answer's compatibility numerical fields
+
 ### Requirement: Configuration
 
-The extension SHALL retain configurable audit interval (default 10), user-message cooldown (default 10), confidence threshold (default 0.5), model (default `jev-latest`), API key source, enable/disable switch, and `staleAuditSpans` (default 3). The age threshold SHALL control diagnostic review, not an unconditional splitting rule.
+The extension SHALL retain configurable audit interval (default 10), user-message cooldown (default 10), native confidence threshold (default 0.5), enable/disable switch, notifications, timeout and `staleAuditSpans` (default 3). The age threshold SHALL control diagnostic review, not an unconditional splitting rule. Backend/model selection and capacity configuration SHALL belong to the shared judgment service; provider endpoints and credentials SHALL belong to Pi.
 
 The deprecated `activityBudgetChars` field SHALL remain load-compatible but SHALL NOT constrain evidence below verified provider hard limits. An explicitly configured legacy value SHALL produce a one-time deprecation notice instead of silently restoring a character budget. No replacement cost-saving character cap, fixed record count, or context-allocation ratio SHALL be imposed.
 
 Configuration SHALL retain its layered precedence: built-in defaults, global user configuration at `<PI_CODING_AGENT_DIR>/jev-todo-audit.json` (default `~/.pi/agent/jev-todo-audit.json`), then trusted-project configuration at `<cwd>/.pi/jev-todo-audit.json`. Project configuration SHALL be read only when the project is trusted.
 
-The API key SHALL be resolved Pi-first. The configured `apiUrl` SHALL map to a Pi provider: `https://api.typesafe.ai/v1/systemone` to `typesafe` and `https://openrouter.ai/api/v1/systemone` to `openrouter`; any other URL has no Pi provider. When the endpoint maps to a provider registered in the running Pi, the key Pi resolves for that provider (its stored credentials, `models.json`, or provider environment variables, in Pi's own order) SHALL be used. When Pi resolves no nonblank key, the provider is not registered, the lookup is unavailable or fails, or the endpoint has no Pi provider, the extension SHALL fall back to its own sources: a nonblank value from the environment variable named by `apiKeyEnvVar`, then the global-layer `apiKey`.
+Legacy `model`, `apiUrl`, `apiKey`, `apiKeyEnvVar` and `contextLimits` fields SHALL remain load-compatible but SHALL NOT select a backend, endpoint, credential or capacity limit. Explicit presence in a read configuration layer SHALL produce a bounded migration notice naming deprecated fields, without their values. The extension SHALL NOT resolve, copy, transmit or automatically migrate those secrets, alter shared configuration, or retain a direct-HTTP fallback. Defaults that formerly supplied these fields SHALL NOT themselves produce a notice. Known legacy secret values SHALL remain excluded from outgoing evidence and diagnostics even though they are no longer used for authentication.
 
-`apiKey` and `apiKeyEnvVar` SHALL be honored only from the global layer. Blank values SHALL count as absent. When a mapped, registered provider's key comes from the extension fallback, session start SHALL warn once that the key should move into Pi auth, naming the provider-specific way (for `openrouter`: `/login` or `OPENROUTER_API_KEY`; for `typesafe`: `TYPESAFE_API_KEY` or a `typesafe` entry in Pi's `auth.json`); the audit SHALL still run with the fallback key. Endpoints without a registered Pi provider SHALL NOT produce this warning. Session start SHALL warn once when no key resolves from any source, naming Pi auth first and the extension fallback second. The resolved key SHALL remain excluded from evidence and diagnostics whichever source supplied it. Missing or malformed configuration SHALL fall back safely without failing extension load. The default cooldown SHALL remain one normal default audit cycle and explicit overrides SHALL remain independent of interval.
+The service SHALL use Pi's own authentication and credential behavior. When the service is missing, incompatible or has no usable configured backend, the audit SHALL fail in isolation with an actionable dependency/configuration diagnostic, not consult legacy credential fallbacks. Suppressed children SHALL remain inert before configuration notices and credential work. Missing or malformed configuration SHALL fall back safely without failing extension load. The default cooldown SHALL remain one normal default audit cycle and explicit overrides SHALL remain independent of interval.
 
 #### Scenario: Defaults apply when unconfigured
 - **WHEN** the extension loads without configuration
-- **THEN** interval 10, cooldown 10, threshold 0.5, model `jev-latest`, and age-review threshold 3 apply, without an application character cap
+- **THEN** interval 10, cooldown 10, native threshold 0.5 and age-review threshold 3 apply, without an application character cap, and the service selects the model
 
 #### Scenario: Legacy budget configuration remains loadable
 - **WHEN** an existing configuration contains `activityBudgetChars: 4000`
@@ -278,36 +282,36 @@ The API key SHALL be resolved Pi-first. The configured `apiUrl` SHALL map to a P
 - **THEN** that file is not read and global/default configuration applies
 
 #### Scenario: Project cannot inject apiKey
-- **WHEN** project configuration contains an API key and neither Pi nor the global layer has one
-- **THEN** the project value is not used as a credential
+- **WHEN** project configuration contains an API key and Pi has none
+- **THEN** the project value is not used as a credential or copied into Pi
 
 #### Scenario: Pi key wins for TypeSafe direct
-- **WHEN** `apiUrl` is the TypeSafe direct endpoint, Pi resolves a `typesafe` key, and the global config also has `apiKey`
-- **THEN** the audit authenticates with Pi's key and no migration warning is shown
+- **WHEN** the shared service selects TypeSafe direct, Pi resolves its key, and the global audit config also has `apiKey`
+- **THEN** Pi's credential is used and a bounded notice explains that the legacy audit field is ignored
 
 #### Scenario: Pi key used for OpenRouter
-- **WHEN** `apiUrl` is the OpenRouter System One endpoint and the user signed in to `openrouter` through Pi
-- **THEN** the audit authenticates with the key Pi resolves for `openrouter`
+- **WHEN** the shared service selects an OpenRouter classifier and the user signed in to `openrouter` through Pi
+- **THEN** classification authenticates through Pi rather than audit's old endpoint mapping
 
 #### Scenario: Fallback key with migration warning
-- **WHEN** `apiUrl` maps to a registered Pi provider, Pi resolves no key, and the global config has `apiKey`
-- **THEN** the audit runs with the config key and session start warns once to move the key into Pi auth for that provider
+- **WHEN** Pi has no usable credential and the global audit config has `apiKey`
+- **THEN** audit does not use that fallback, reports the required Pi configuration and reveals no key value
 
 #### Scenario: Provider not registered in this Pi
-- **WHEN** `apiUrl` is the TypeSafe direct endpoint but the running Pi has no `typesafe` provider, and the global config has `apiKey`
-- **THEN** the audit runs with the config key without a migration warning
+- **WHEN** legacy audit configuration names TypeSafe but Pi has no usable matching provider
+- **THEN** those old settings do not create a provider or direct request, and only shared-service selection determines availability
 
 #### Scenario: Custom endpoint uses extension config only
-- **WHEN** `apiUrl` is a URL with no Pi provider mapping and the global config has `apiKey`
-- **THEN** the audit runs with the config key, Pi is not consulted, and no migration warning is shown
+- **WHEN** an old config contains a custom `apiUrl` and `apiKey`
+- **THEN** neither controls dispatch, a migration notice directs endpoint/auth configuration to Pi, and no files are rewritten automatically
 
 #### Scenario: Pi lookup failure degrades to fallback
-- **WHEN** Pi's key lookup throws or is unavailable
-- **THEN** the extension uses its fallback sources without failing the audit or extension load
+- **WHEN** Pi's key lookup fails during shared-service evaluation
+- **THEN** audit receives an isolated service failure without reviving its former fallback path or changing backend after dispatch
 
 #### Scenario: No key anywhere
-- **WHEN** no source yields a nonblank key
-- **THEN** session start warns once, naming Pi auth first and the extension config second, and audits are skipped
+- **WHEN** the shared service cannot resolve credentials for a required backend
+- **THEN** audit reports the service/Pi configuration failure and does not inject a correction or create an uncontrolled retry loop
 
 #### Scenario: Cooldown can be overridden
 - **WHEN** trusted configuration explicitly changes cooldown
@@ -397,9 +401,13 @@ Selection and processing receipts SHALL distinguish already-reviewed ranges, exe
 
 Every necessary provider attempt SHALL obey the configured model's verified state-plus-longest-question and state-plus-all-questions limits. The extension SHALL prefer an authoritative preflight counting contract when available and otherwise use server admission without claiming an exact local fit guarantee. A nominal 30k content chunk SHALL NOT be assumed safe independently of cumulative state, task information, questions, options and serialization overhead. Character/byte counts SHALL NOT be asserted as token counts.
 
-Overflow-driven subdivision SHALL be authorized only by an explicit context/token-overflow rejection or by a per-channel predicted overflow. A predicted overflow SHALL be derived before sending from the actual unanswered envelope, using a bytes-to-tokens ratio calibrated from provider-reported usage on the same endpoint and requested model (a conservative prior until usage exists), checked separately against that channel's published or configured request-wide and state-plus-longest-question limits, or from a recorded actual rejection on the same channel that the envelope equals or exceeds in both dimensions. Predictions SHALL NOT waste admitted capacity by applying a stricter combined limit than the channel publishes. A predicted overflow SHALL NOT count as a provider attempt or be recorded as a rejected envelope, and SHALL NOT alone declare a unit irreducible: a single record/fragment with a single question SHALL still be submitted so server admission decides. Rather than merely discard optional historical records once and abandon an otherwise processable review, the extension SHALL divide unresolved projected context into smaller ordered parts and/or divide independent unresolved questions into smaller batches. Completed context/question evaluations SHALL be reused. New substantive text SHALL NOT be silently omitted to make a request fit. Provider-limit recovery SHALL not restore excluded raw execution detail.
+Overflow-driven subdivision SHALL be authorized only by an explicit context/token-overflow rejection or by a per-channel predicted overflow. A predicted overflow SHALL be derived before sending from the actual unanswered envelope, using a bytes-to-tokens estimate calibrated from provider-reported usage on the same endpoint and requested model (a conservative prior until usage exists), checked separately against that channel's published or configured request-wide and state-plus-longest-question limits, or from recorded actual rejections on that channel. Calibration SHALL incorporate later successful observations, including lower-density observations, instead of indefinitely imposing the densest historical observation on all subsequent inputs. Size comparisons with different-content rejected envelopes SHALL remain estimates rather than proof of rejection. A later successful admission SHALL be able to correct contradictory size-based predictions; an identical actually rejected envelope SHALL remain protected against unchanged retransmission.
 
-Subdivision SHALL make measurable structural progress toward smaller request contents, SHALL operate over finite input pieces, and SHALL not repeatedly submit an unchanged known-rejected envelope. When a text record must cross request boundaries, fragment identity/order and incomplete-record coverage SHALL remain explicit. When fixed required state or a single question cannot fit even without additional context, processing for the affected scope SHALL stop with an actionable diagnostic or request for a concise main-agent report; it SHALL not loop or claim complete coverage. Independent completed scopes SHALL remain available.
+Predictions SHALL NOT waste admitted capacity by applying a stricter combined limit than the channel publishes. A predicted overflow SHALL NOT count as a provider attempt or be recorded as a rejected envelope. When required retained state causes the predicted overflow even before divisible new evidence is included, the extension SHALL resolve the disputed prediction by admitting the current unanswered batch before subdividing it solely on that prediction, unless that exact envelope is already known to have been rejected. This admission check SHALL count as an ordinary provider attempt; its valid answers SHALL be reusable and SHALL NOT require a separate validation-only request. An accepted batch SHALL finish that stage without requesting its questions again individually.
+
+A predicted overflow SHALL NOT alone declare a unit irreducible: an irreducible projected unit SHALL still be submitted so server admission decides. Rather than merely discard optional historical records once and abandon an otherwise processable review, the extension SHALL divide unresolved projected context into smaller ordered parts and/or divide independent unresolved questions into smaller batches. Completed context/question evaluations SHALL be reused. New substantive text SHALL NOT be silently omitted to make a request fit. Provider-limit recovery SHALL not restore excluded raw execution detail.
+
+Subdivision SHALL make measurable progress in the constrained request dimension, not merely reduce a record count while retaining the same limiting state. The extension SHALL distinguish required retained state from divisible new evidence and state-related limits from question-batch limits. A prediction contradicted by successful admission SHALL NOT cause each pending record to be evaluated once per individual question when the complete unanswered batch can be admitted. Subdivision SHALL operate over finite input pieces and SHALL not repeatedly submit an unchanged known-rejected envelope. When a text record must cross request boundaries, fragment identity/order and incomplete-record coverage SHALL remain explicit. When fixed required state or a single question cannot fit even without additional context, processing for the affected scope SHALL stop with an actionable diagnostic or request for a concise main-agent report; it SHALL not traverse all remaining record/question combinations, loop, silently discard user constraints, or claim complete coverage. Independent completed scopes SHALL remain available.
 
 Existing bounded transient-network retries SHALL remain separate. Authentication, quota/rate, generic validation, payload-size and unrecognized errors SHALL NOT be treated as context overflow. A typed provider overflow code (including OpenRouter's `error.metadata.error_type: "context_length_exceeded"`) SHALL count as an explicit overflow; typed credit-cap, per-field length, payload-size, payment, rate and validation codes SHALL NOT. The OpenRouter System One endpoint SHALL be a built-in channel whose single published context window bounds both the request-wide and state-plus-longest-question dimensions. A capacity-complete final result SHALL require all required parts, even if every individual part was valid. Known credentials and unsupported content SHALL be excluded before sending or displaying observations.
 
@@ -409,7 +417,7 @@ Existing bounded transient-network retries SHALL remain separate. Authentication
 
 #### Scenario: OpenRouter's published window is applied to both dimensions
 - **WHEN** an envelope fits TypeSafe direct's 64k request-wide limit but exceeds OpenRouter's single 32K context
-- **THEN** it is pre-split on the OpenRouter channel and sent whole on TypeSafe direct
+- **THEN** it is pre-split on the OpenRouter channel and sent whole on TypeSafe direct, subject to admission correction when a prediction is contradicted
 
 #### Scenario: Relevant context exceeds the old application budget
 - **WHEN** permitted macro evidence exceeds 4,000 characters or twenty fragments
@@ -432,8 +440,8 @@ Existing bounded transient-network retries SHALL remain separate. Authentication
 - **THEN** admission and strictly progressing subdivision are used without claiming that a character estimate or fixed 30k body proves fit
 
 #### Scenario: A predictably oversized envelope is split before sending
-- **WHEN** the calibrated estimate of the unanswered envelope exceeds a published limit of its channel, or the envelope is at least as large as a recorded rejection on that channel in both dimensions
-- **THEN** it is subdivided through the same structural path without a provider request, and no rejection is recorded for it
+- **WHEN** the calibrated estimate of the unanswered envelope exceeds a published limit of its channel and subdivision can reduce the constrained dimension without being defeated by the required retained state
+- **THEN** it is subdivided through the structural recovery path without a provider request, and no rejection is recorded for it
 
 #### Scenario: Channel capacity is used rather than a stricter guess
 - **WHEN** state plus the longest question fits its channel limit and state plus all questions fits the request-wide limit
@@ -445,7 +453,7 @@ Existing bounded transient-network retries SHALL remain separate. Authentication
 
 #### Scenario: Learning survives reload
 - **WHEN** the extension reloads on the same branch after admitted and rejected attempts were recorded
-- **THEN** the channel's calibrated ratio and recorded rejections are restored from the existing non-context diagnostics without re-sending anything
+- **THEN** corrected channel calibration and applicable rejection observations are restored from existing non-context diagnostics without re-sending anything or reinstating a contradicted historical high-water estimate
 
 #### Scenario: A validation error is not an overflow
 - **WHEN** a request fails for invalid question syntax or an unfamiliar error
@@ -453,7 +461,7 @@ Existing bounded transient-network retries SHALL remain separate. Authentication
 
 #### Scenario: Recovery still exceeds the provider limit
 - **WHEN** a smaller projected part still receives `max_tokens_exceeded`
-- **THEN** it is subdivided further only if structural progress is possible, without resending completed parts or looping on the same rejected request
+- **THEN** it is subdivided further only if progress in the constrained dimension is possible, without resending completed parts or looping on the same rejected request
 
 #### Scenario: Sensitive or unsupported material is present
 - **WHEN** input contains known credentials, hidden thinking or raw binary/image data
@@ -466,6 +474,35 @@ Existing bounded transient-network retries SHALL remain separate. Authentication
 #### Scenario: A question is irreducibly too large
 - **WHEN** required fixed state or a single question cannot fit independently of the next context piece
 - **THEN** the affected scope reports what must be shortened or clarified, retains completed results and does not continue an unbounded rejection loop
+
+#### Scenario: Later low-density input corrects an earlier high estimate
+- **GIVEN** the channel has previously observed approximately 0.478 input tokens per request byte
+- **WHEN** later successful responses report approximately 0.347 input tokens per request byte for current work
+- **THEN** subsequent prediction and same-branch reload use the corrected observations rather than treating the older maximum as a permanent lower bound
+- **AND** observations from a different endpoint or requested model do not alter this channel
+
+#### Scenario: Fixed-state prediction would multiply an admissible batch
+- **GIVEN** retained state is predicted to exceed the state-related limit, 69 new records remain, 12 questions are unresolved, and the provider can admit their complete batch
+- **WHEN** an eligible audit runs without transport failure
+- **THEN** one provider attempt evaluates the complete unanswered batch, every new record remains represented, and all required valid answers permit the range to advance
+- **AND** the extension does not make 69 groups of single-question requests or introduce an extra validation-only call
+
+#### Scenario: The admission check actually rejects the full batch
+- **WHEN** an overestimated fixed-state prediction is checked by sending the current batch and the provider rejects it with an explicit context overflow
+- **THEN** the actual rejection is recorded and existing complete-coverage recovery applies to reducible evidence or questions
+- **AND** no success is inferred from the prediction check, no unchanged rejected envelope is resent, and only completed stages advance progress
+
+#### Scenario: Confirmed fixed-state failure stops the affected scope
+- **GIVEN** required retained state remains too large even with an irreducible evidence fragment and the smallest applicable unanswered question
+- **WHEN** provider admission confirms the context overflow
+- **THEN** the audit stops that scope with a concise shortening/clarification diagnostic rather than repeating the fixed state for every remaining record and question
+- **AND** it retains user constraints, cached valid answers, and prior durable progress without injecting definitive completion or continuation advice
+
+#### Scenario: A successful smaller-density envelope contradicts a size heuristic
+- **GIVEN** a different-content envelope on the channel previously failed for context size
+- **WHEN** a later envelope of equal or larger measured dimensions is admitted successfully
+- **THEN** that historical size comparison alone no longer forces subsequent comparable work through the contradicted prediction
+- **AND** the exact historical rejected envelope remains protected against unchanged retransmission
 
 ### Requirement: Engineering-grounded granularity assessment
 
@@ -595,9 +632,9 @@ Local status review SHALL consider the latest task state and unprocessed segment
 
 The audit SHALL carry forward the latest structured conclusions and relevant task state rather than repeatedly submit previously processed raw context. A rolling result SHALL replace the previous cumulative result for its scope; the request SHALL NOT grow by concatenating every earlier summary or result. Stored conclusions are revisable findings, not independent user authority or a guarantee of lossless prose summarization.
 
-Reported work, JEV opinions and processing progress SHALL remain distinguishable. Required macro facts—task goal, reported stage outcomes, blockers and open questions—SHALL come from permitted task state or main-agent reports, not be invented from a classification or completed-range marker. A newer opinion or cursor SHALL NOT silently erase a still-applicable supplied report. When a necessary compact account is unavailable, the leader SHALL request clarification through the normal main-agent feedback path or retain uncertainty, not pretend that a previous answer contains the missing facts.
+Reported work, JEV opinions and processing progress SHALL remain distinguishable. Required macro facts—task goal, reported stage outcomes, blockers and open questions—SHALL come from permitted task state or main-agent reports, not be invented from a classification or completed-range marker. A newer opinion or cursor SHALL NOT silently erase a still-applicable supplied report. Source-backed current factual material SHALL carry needed facts independently of optional recent-report retention; uncovered necessary report material SHALL not be removed merely because a compact report budget is full. When a necessary compact account is unavailable, the leader SHALL request clarification through the normal main-agent feedback path or retain uncertainty, not pretend that a previous answer contains the missing facts.
 
-A processing range SHALL be marked complete only after its required questions have valid answers and its cumulative result is durably recorded for the captured inputs. An unchanged result SHALL still advance that range. Missing answers or a failed chunk SHALL NOT advance its range, but SHALL NOT discard valid question answers or completed earlier ranges. Compatible reload/compaction SHALL restore recorded progress rather than replay already processed raw history solely because volatile memory was lost. Unverifiable or abandoned-branch records SHALL not be promoted into current findings.
+A processing range SHALL be marked complete only after its required questions have valid answers and its cumulative result is durably recorded for the captured inputs. An unchanged result SHALL still advance that range. Missing answers, a locally withheld over-limit Choice or a failed chunk SHALL NOT advance its range, but SHALL NOT discard valid question answers or completed earlier ranges. Compatible reload/compaction SHALL restore recorded progress and applicable factual material rather than replay already processed raw history solely because volatile memory was lost. Unverifiable or abandoned-branch records SHALL not be promoted into current findings.
 
 Intermediate chunk results SHALL remain internal review state. They SHALL NOT become final completion/split/continuation advice while required later parts of that review remain unprocessed. A result invalidated by new user/board/branch state SHALL NOT be delivered as current advice; storing an answer under its immutable historical input identity is separate from authorizing current delivery.
 
@@ -620,10 +657,15 @@ Intermediate chunk results SHALL remain internal review state. They SHALL NOT be
 #### Scenario: Compaction preserves a valid review receipt
 - **WHEN** raw context is compacted but the persisted same-history result and its covered range remain verifiable
 - **THEN** the extension retains that progress without requiring the raw bodies to be resent to JEV
+- **AND** any missing original factual source is disclosed rather than reconstructed from a classification
 
 #### Scenario: Later evidence contradicts an intermediate result
 - **WHEN** an early chunk suggests completion but a later required chunk contains a contrary user decision or report
 - **THEN** no completion instruction is issued from the intermediate result, and the final review accounts for the later information
+
+#### Scenario: Routine reports do not crowd out a needed fact
+- **WHEN** many newer routine reports exhaust the recent-report allowance but an older reported decision is still required
+- **THEN** the current factual account or necessary uncovered report preserves that decision, or the affected finding remains explicitly uncertain rather than pretending its historical Choice label preserved it
 
 ### Requirement: Manual review modes
 
@@ -775,3 +817,122 @@ Redraw, session reopening and later wording or configuration changes SHALL use t
 #### Scenario: Redraw a new advisory
 - **WHEN** the terminal width or theme changes after publication
 - **THEN** styling or line wrapping can change while the stored and delivered body remains unchanged
+
+### Requirement: Main-agent-only auditing
+
+JEV SHALL run only in main-agent sessions. It SHALL establish process ownership through its own `PI_JEV_TODO_AUDIT_OWNER_PID` environment variable, without depending on a particular subagent framework's identity variables. An unset or empty marker SHALL be claimed by the current process using Node.js `process.pid`. A marker equal to the current PID SHALL preserve eligibility, including extension reload and session replacement. A nonempty marker identifying another PID SHALL suppress JEV without overwriting the inherited owner; a malformed nonempty marker SHALL also suppress rather than silently claim ownership. Descendants SHALL inherit the original owner marker unchanged.
+
+Suppressed child processes SHALL perform no periodic, terminal-stop, ordinary manual, or forced-full audit. This restriction SHALL take precedence over enabled global/project configuration and SHALL have no child opt-in override. They SHALL produce zero JEV provider requests, audit-specific credential lookups, injected corrections, and new audit ledger entries. A suppressed extension SHALL not expose the manual audit command; an unavailable command SHALL not trigger a fallback paid evaluation.
+
+Ownership and inheritance SHALL use Node.js APIs supported on Windows and POSIX systems, without platform process commands, `/proc`, shell parsing, or parent-PID discovery. Independently launched unmarked Pi processes SHALL each remain eligible. Identity SHALL NOT be inferred from the session name, prompt text, working directory, UI availability, a parent/fork-session reference, or the agent's self-description. Main-agent print/RPC sessions and user-created in-process forks SHALL remain eligible. The marker SHALL remain process-local, SHALL NOT be written into shell profiles or persistent global/project configuration, and SHALL NOT be removed on a single session's shutdown. Environment inheritance is an execution convention, not a security boundary: a caller that explicitly strips the marker creates an unmarked process, and a same-process child cannot be distinguished by PID alone.
+
+#### Scenario: Independently started Pi claims its own process
+- **WHEN** a Pi process loads JEV with no nonempty owner marker
+- **THEN** JEV stores that process's PID in its own environment marker and preserves the main-agent audit behavior
+- **AND** no third-party subagent environment variable is required
+
+#### Scenario: A manually spawned child Pi inherits the owner
+- **WHEN** the main Pi launches another Pi with inherited environment, directly or through an intermediate process
+- **THEN** the descendant sees a different owner PID and JEV initialization performs no credential lookup, audit hook registration, manual-command registration, correction, or new audit ledger write
+- **AND** the original marker remains unchanged for further descendants
+
+#### Scenario: A child reaches every audit trigger
+- **WHEN** a suppressed child crosses an audit interval, emits a terminal-stop event, or attempts ordinary or full manual review
+- **THEN** none of those paths issues a JEV request or re-enables the extension
+
+#### Scenario: Main agent is non-interactive
+- **WHEN** an owning main-agent process runs without a TUI and has otherwise eligible work
+- **THEN** absence of a UI does not disable its existing audit behavior
+
+#### Scenario: A user forks a main-agent session
+- **WHEN** a user-created main-agent fork stays in the owning process and has a parent-session reference
+- **THEN** it remains eligible for JEV auditing
+
+#### Scenario: Foreground child shares a host with the parent
+- **WHEN** a launcher creates a child session in the owning process
+- **THEN** that child launch excludes JEV and the main agent retains its audit capability
+- **AND** explicitly loading JEV into such a child without a separate session-scoped exclusion contract is outside the PID marker's supported detection boundary and SHALL NOT be claimed as covered
+
+#### Scenario: Reload and nested processes preserve ownership
+- **WHEN** the owning process reloads JEV and an inherited child starts a grandchild process
+- **THEN** the owner remains enabled while both descendant processes remain suppressed under the same original owner marker
+
+#### Scenario: Separate main processes do not suppress each other
+- **WHEN** two Pi processes are independently launched from environments without an owner marker
+- **THEN** each claims its own PID without changing the other process or their launching shell's environment
+
+#### Scenario: Ownership works on Windows without a shell
+- **WHEN** the main and child processes are launched on Windows using Node.js child-process APIs with inherited environment and argument arrays
+- **THEN** the same ownership and suppression rules apply without requiring POSIX commands, shell-style environment assignment, or Unix path assumptions
+
+#### Scenario: A nonempty marker is malformed
+- **WHEN** an inherited owner marker is not a canonical positive PID string
+- **THEN** the extension suppresses itself rather than enabling paid auditing or replacing the marker with the current PID
+
+### Requirement: Source-backed current factual material
+
+An audit SHALL distinguish current reported facts, applicable user decisions, JEV opinions and processing progress. Necessary facts such as task goals, acceptance conditions, design decisions, reported outcomes and blockers SHALL remain available with their object scope, source identities and original authority level after their input range is processed. An unchanged classification or completed receipt SHALL NOT substitute for those facts or establish that they survived compression.
+
+Current factual material SHALL come from permitted public task state or main-agent-authored reports/briefs, not model-generated reconstruction of missing history. A supplied current brief SHALL be optional; existing task descriptions and public reports SHALL remain usable without a mandatory new metadata field. Explicit replacement or coverage declarations SHALL be checked against the allowed active history. Uncertain relevance, missing lineage and contradictory material SHALL be disclosed for the affected finding rather than silently treated as absence or success.
+
+A main-agent brief SHALL remain reported data, not new user permission or independently verified execution. It SHALL NOT authorize removal of user constraints, restore excluded execution payloads, promote JEV advice into evidence, or change another object's facts. Later user decisions SHALL retain precedence. Needed uncovered report material SHALL NOT be dropped solely by age, a compact-report character budget, or a changed JEV opinion; if it cannot be admitted safely, the affected scope SHALL request a concise current account or remain uncertain.
+
+#### Scenario: Different old facts remain distinguishable
+- **WHEN** two task histories differ in a needed earlier format decision, later routine reports fill the compact report budget, and their previous JEV classifications are identical
+- **THEN** each next decision receives the still-applicable fact through its source-labelled report or current brief, so the factual inputs remain distinguishable
+- **AND** processing completeness alone is not presented as factual preservation
+
+#### Scenario: A current brief replaces declared reports
+- **WHEN** a main agent supplies a current account with valid scope and coverage references to earlier public reports
+- **THEN** that account can carry the reported facts with explicit lineage and reported-versus-verified status, but covered reports remain supplied and selectable when their primary eligibility is needed or uncertain
+- **AND** unrelated reports and user-authority records are not removed by that declaration; supporting references are not an exclusive evidence allowlist
+
+#### Scenario: Legacy task has no brief
+- **WHEN** a task has no new current-brief field but its necessary facts are available in permitted descriptions or public reports
+- **THEN** those materials remain usable instead of requiring a schema migration or withholding every audit
+
+#### Scenario: Required report cannot be retained
+- **WHEN** necessary uncovered factual material cannot fit even after the existing progressing capacity recovery
+- **THEN** the affected scope requests a concise account or reports uncertainty, retains completed work, and does not silently discard the fact or traverse repeated sibling combinations
+
+#### Scenario: A later decision supersedes a report
+- **WHEN** a later user decision or explicit applicable report update withdraws an earlier plan or changes a needed fact
+- **THEN** the current account exposes that change and an older classification, report or coverage declaration cannot restore the superseded authority
+
+#### Scenario: Claimed provenance is unavailable
+- **WHEN** a brief names a missing, redacted, abandoned-branch or unsupported source
+- **THEN** the gap remains explicit and the claimed reference grants neither execution permission nor independent completion evidence
+
+### Requirement: Provider-compatible Choice candidate sets
+
+Every actual outbound Choice SHALL contain no more than Jev's documented 255 options, counting uncertainty, not-on-board and other fallback options. This structural contract SHALL be checked before provider work and SHALL remain separate from token-window prediction, context rejection and transport retry policy. An invalid local candidate set SHALL NOT be submitted as an admission probe or recorded as an actual rejected envelope.
+
+Evidence candidates SHALL represent applicable supplied facts or public sources for the specific finding, using explicit object/source associations and coverage. The extension SHALL NOT indiscriminately equate every historical source with relevance, guess relevance from keyword/title similarity, truncate to the first or newest 254 sources, silently omit required tasks, or treat excluded evidence as nonexistent. When a necessary set cannot be bounded without unverified loss, the affected finding SHALL remain incomplete with a bounded request for scoped factual material. Independent valid findings and previously completed evaluations SHALL remain reusable under the existing safety rules; no receipt SHALL claim that a locally withheld required question was answered.
+
+Candidate definitions, factual material and provenance changes SHALL participate in evaluation identity and current-input freshness. Unchanged canonical material SHALL remain reusable; modified options or a changed fact/reference SHALL NOT borrow an answer to a different definition. Local withholding SHALL count as zero provider attempts and SHALL NOT manufacture usage, confidence or a model judgment.
+
+#### Scenario: Boundary includes fallback options
+- **WHEN** a question has 254 applicable candidates plus one uncertainty option
+- **THEN** its 255-option definition is eligible for normal batching and token admission
+
+#### Scenario: Required candidates exceed the limit
+- **WHEN** a finding still needs 255 candidates plus an uncertainty option and no verified scoping can reduce that set
+- **THEN** that question makes no provider request, remains incomplete and requests scoped material without deleting a candidate or recording a context rejection
+
+#### Scenario: Cold or full review has many historical records
+- **WHEN** a cold or full review encounters more than 255 historical source candidates
+- **THEN** it uses established applicability to form complete bounded candidate sets or reports the unresolved scope without submitting an oversized Choice; a structurally valid brief and coverage list alone do not bound potentially needed primary reports
+- **AND** full mode neither bypasses the option guard nor restores raw execution payloads
+- **AND** repeating the same brief is not promised to resolve the limitation and does not repeat an unchanged clarification
+
+#### Scenario: Another Choice is oversized
+- **WHEN** a board-matching or other non-evidence Choice exceeds the documented option limit
+- **THEN** the same outbound guard withholds its affected finding without silently removing task identities
+
+#### Scenario: One scope is unresolved
+- **WHEN** one task's required evidence set cannot be bounded but another task has valid independent findings
+- **THEN** the unresolved task gets no unsupported correction, compatible completed work is retained, and the other findings remain eligible under existing authority and freshness rules
+
+#### Scenario: A fact or source definition changes
+- **WHEN** an applicable brief, coverage reference or option definition changes while older Choice labels happen to remain the same
+- **THEN** the changed material invalidates the old evaluated-pair identity and stale delivery is suppressed

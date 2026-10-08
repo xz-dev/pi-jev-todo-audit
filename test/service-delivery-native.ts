@@ -130,7 +130,7 @@ export async function nativeDelivery(repo: string, binary: string, route: "bun" 
 				import fs from 'node:fs';
 				const KEY=Symbol.for('pi-llm-as-jev:service');
 				export default function(pi) {
-					const service={version:1,reviewVersion:1,marker:${JSON.stringify(revision)},review:async()=>{globalThis.__deliveryInference=(globalThis.__deliveryInference??0)+1;throw Error('Unexpected inference');}};
+					const service={version:1,reviewVersion: 1, reviewCacheVersion: 1, reviewStagesVersion: 1,marker:${JSON.stringify(revision)},review:async()=>{globalThis.__deliveryInference=(globalThis.__deliveryInference??0)+1;throw Error('Unexpected inference');}};
 					pi.registerCommand('llm-as-jev',{description:'Judge backend ${revision}',handler:async(_a,ctx)=>ctx.ui.notify('Fixture ${revision} status','info')});
 					pi.registerCommand('llm-as-jev-classifier',{description:'Classifier ${revision}',handler:async()=>{}});
 					pi.on('session_start',()=>{globalThis[KEY]=service;fs.appendFileSync(process.env.DELIVERY_OBSERVER,JSON.stringify({kind:'service-start',marker:${JSON.stringify(revision)},pid:process.pid})+'\\n');});
@@ -405,7 +405,7 @@ esac
 			}
 			const serviceFile = join(serviceRepo, "service.ts"), compatible = readFileSync(serviceFile, "utf8");
 			for (const kind of ["incompatible", "partial-publication"]) {
-				writeFileSync(serviceFile, kind === "incompatible" ? compatible.replace("reviewVersion:1", "reviewVersion:99") : compatible.replace("pi.on('session_shutdown',", "pi.on('session_start',()=>{throw Error('fixture partial startup');});pi.on('session_shutdown',"));
+				writeFileSync(serviceFile, kind === "incompatible" ? compatible.replace("reviewVersion: 1, reviewCacheVersion: 1, reviewStagesVersion: 1", "reviewVersion:99") : compatible.replace("pi.on('session_shutdown',", "pi.on('session_start',()=>{throw Error('fixture partial startup');});pi.on('session_shutdown',"));
 				git(["-C", serviceRepo, "add", "service.ts"]); git(["-C", serviceRepo, "commit", "-qm", kind]);
 				const badRevision = git(["-C", serviceRepo, "rev-parse", "HEAD"]), c = prepare(kind), r = startRpc(c.caseDir, c.env, kind);
 				const failed = await observe(c, r, kind); assert.ok(failed.servicePath);

@@ -4,6 +4,14 @@ import type { AuditResult, ChoiceAnswer, Reuse } from "./typesafe.js";
 
 /** Latest completed business frontier; opinions are advisory, never factual coverage. */
 export interface Rolling {
+	/** Version 1 consumer receipt references acknowledged raw evaluations, not service checkpoints. */
+	cacheVersion?: 1;
+	/** Active-branch source entries covered by the consumer receipt (never just a cursor). */
+	sourceIds?: string[];
+	/** Exact permitted snapshot binding when a projected source has no native entry id. */
+	sourceContext?: string;
+	/** Service freshness namespace selected by the business intent, never an answer key. */
+	fresh?: string;
 	serviceCheckpoint?: string;
 	/** Stable starting checkpoint/frontier of this exact review across partial retries. */
 	reviewOrigin?: { inputKey: string; checkpoint?: string; through?: string };
