@@ -51,17 +51,21 @@ The extension SHALL skip the periodic audit for a trigger point when 10 or fewer
 
 ### Requirement: Audit request content
 
-Each eligible periodic, manual or terminal audit SHALL use the uniform evaluation cache before provider work. Missing answers sharing the same effective context SHALL be batched when capacity permits. Context subdivision SHALL process dependent pieces sequentially with the prior piece's cumulative result; independent question batches SHALL not implicitly depend on other answers in the same request. Results from different captured contexts SHALL not be combined as if they evaluated one snapshot.
+Each eligible periodic, manual or terminal audit SHALL send, per request, the relevant current board, the stored judgment state for the scopes being asked, and only the new complete loops after each scope's cursor. Previously judged loops SHALL NOT be re-sent as history. Questions SHALL be change questions over the stored state with finite transition options; each question SHALL keep its own scope and complete option set, and changed question definitions SHALL NOT reuse stored answers to earlier definitions.
 
-The request SHALL carry the relevant current board, original task goals as needed, latest applicable structured conclusions and unprocessed macro-level input. Full mode SHALL rebuild the relevant projected history through the same capacity path, not restore execution payloads. No separate summarizer model or paid relevance preflight SHALL be introduced. Reuse/processing status SHALL distinguish a new input from material already assessed. Complete task records and source bodies SHALL be serialized once per envelope and referenced rather than duplicated. Rules shared by every per-task question SHALL be stated once per request in the shared state rather than repeated in each task question; each question SHALL keep its own task scope and complete option set, and changed question definitions SHALL not reuse answers to earlier definitions.
+No separate summarizer model, free-text memory or paid relevance preflight SHALL be introduced. Shared per-task rules SHALL be stated once per request. Complete task records and source bodies SHALL be serialized once per request and referenced by id.
 
-Every visible task SHALL remain represented by identity/status, and unfinished tasks SHALL retain independent lifecycle findings distinguishing ongoing, actionable now, actually completed, cancelled, deliberately deferred, blocked, future and unclear. A required finding can be satisfied by a compatible cached answer or an updated evaluation; it need not be sent again merely because another finding is missing. The label `actually_completed` remains a macro-level assessment of the supplied reports/state, not a claim that JEV independently reran or verified execution. Being unfinished or matched SHALL not itself grant permission to resume.
+Every visible task SHALL remain represented by identity/status, and unfinished tasks SHALL retain independent lifecycle state distinguishing ongoing, actionable now, completion reported, cancelled, deliberately deferred, blocked, future and unclear. `completion_reported` remains a macro-level assessment of the supplied reports, not a claim that execution was independently verified. Being unfinished or matched SHALL not itself grant permission to resume.
 
-Board-work matching, drift and interaction findings SHALL remain available with a not-on-board outcome. With no active task, `board_warranted` SHALL distinguish warranted/trivial/idle; with active tasks it SHALL be omitted. Each active task SHALL retain an independent engineering granularity finding under its task-long scope. No aggregate answer SHALL justify mutating unrelated tasks.
+Current work and matched task SHALL be one session-scoped state from which alignment is derived; drift SHALL be judged against the stored authorized scope after the segment's scope updates are applied. With no active task, `board_warranted` SHALL distinguish warranted/trivial/idle and SHALL be re-asked only when current work changes; with active tasks it SHALL be omitted. Each active task without an unfinished dependency SHALL retain an independent granularity state. No aggregate answer SHALL justify mutating unrelated tasks.
 
-Necessary terminal requests SHALL include the observed `STOP_KIND` and supplied reason fields without turning them into authority. A first terminal check SHALL account for its mode even after ordinary review; rewording an already assessed stop on unchanged inputs SHALL not cause another paid evaluation. Empty/all-finished terminal boards SHALL retain their no-request shortcut.
+#### Scenario: Second audit after a judged segment
+- **WHEN** an audit runs after a previous audit advanced all cursors past loop 40
+- **THEN** the request contains stored state and loops 41 onward only
 
-Answers SHALL be validated against the actual requested definitions and supplied record/processed-result references. Derived findings SHALL remain distinguishable from raw user decisions, assistant reports and compact tool events. Cached references SHALL retain a verifiable local lineage without requiring their raw historical bodies to be sent again. Missing or contradictory support SHALL yield an uncertain/no-correction outcome, not invented authority. Current-input freshness, independent-task confidence, compatible-action selection and suppression of unchanged demands SHALL remain in effect; an assistant report SHALL not be rejected solely because it contains no tool call, nor treated as a new user permission.
+#### Scenario: Completion report in the new segment
+- **WHEN** the new loops contain the main agent's report that a task is finished
+- **THEN** the lifecycle transition is `completion_reported` and the correction reads "reported, not independently verified"
 
 #### Scenario: Shared task rules are sent once
 - **WHEN** a request asks lifecycle, evidence, board and granularity questions for several unfinished tasks
@@ -399,81 +403,79 @@ Selection and processing receipts SHALL distinguish already-reviewed ranges, exe
 
 ### Requirement: Provider context limits without artificial quotas
 
-Every necessary provider attempt SHALL obey the configured model's verified state-plus-longest-question and state-plus-all-questions limits. The extension SHALL prefer an authoritative preflight counting contract when available and otherwise use server admission without claiming an exact local fit guarantee. A nominal 30k content chunk SHALL NOT be assumed safe independently of cumulative state, task information, questions, options and serialization overhead. Character/byte counts SHALL NOT be asserted as token counts.
+Segment packing SHALL use the selected judgment model's declared capacity as reported by the judgment service, counting stored state, question definitions, loops, backend envelope and output reserve. Character/byte counts SHALL NOT be asserted as token counts; the bytes-to-tokens prior and provider-reported usage remain the calibration source. A predicted or reported overflow SHALL be recovered by dropping trailing whole loops; a single loop with required state that cannot be admitted SHALL stop that scope with an actionable diagnostic and SHALL NOT be sliced or silently truncated. Authentication, quota, payload-size and validation errors SHALL NOT be treated as overflow. Capacity for the audit SHALL never be derived from the main chat model.
 
-Overflow-driven subdivision SHALL be authorized only by an explicit context/token-overflow rejection or by a per-channel predicted overflow. A predicted overflow SHALL be derived before sending from the actual unanswered envelope, using a bytes-to-tokens estimate calibrated from provider-reported usage on the same endpoint and requested model (a conservative prior until usage exists), checked separately against that channel's published or configured request-wide and state-plus-longest-question limits, or from recorded actual rejections on that channel. Calibration SHALL incorporate later successful observations, including lower-density observations, instead of indefinitely imposing the densest historical observation on all subsequent inputs. Size comparisons with different-content rejected envelopes SHALL remain estimates rather than proof of rejection. A later successful admission SHALL be able to correct contradictory size-based predictions; an identical actually rejected envelope SHALL remain protected against unchanged retransmission.
+#### Scenario: Overflow with several loops
+- **WHEN** a segment of five loops is rejected for input size
+- **THEN** the audit retries with fewer trailing loops and the remaining loops stay unjudged
 
-Predictions SHALL NOT waste admitted capacity by applying a stricter combined limit than the channel publishes. A predicted overflow SHALL NOT count as a provider attempt or be recorded as a rejected envelope. When required retained state causes the predicted overflow even before divisible new evidence is included, the extension SHALL resolve the disputed prediction by admitting the current unanswered batch before subdividing it solely on that prediction, unless that exact envelope is already known to have been rejected. This admission check SHALL count as an ordinary provider attempt; its valid answers SHALL be reusable and SHALL NOT require a separate validation-only request. An accepted batch SHALL finish that stage without requesting its questions again individually.
-
-A predicted overflow SHALL NOT alone declare a unit irreducible: an irreducible projected unit SHALL still be submitted so server admission decides. Rather than merely discard optional historical records once and abandon an otherwise processable review, the extension SHALL divide unresolved projected context into smaller ordered parts and/or divide independent unresolved questions into smaller batches. Completed context/question evaluations SHALL be reused. New substantive text SHALL NOT be silently omitted to make a request fit. Provider-limit recovery SHALL not restore excluded raw execution detail.
-
-Subdivision SHALL make measurable progress in the constrained request dimension, not merely reduce a record count while retaining the same limiting state. The extension SHALL distinguish required retained state from divisible new evidence and state-related limits from question-batch limits. A prediction contradicted by successful admission SHALL NOT cause each pending record to be evaluated once per individual question when the complete unanswered batch can be admitted. Subdivision SHALL operate over finite input pieces and SHALL not repeatedly submit an unchanged known-rejected envelope. When a text record must cross request boundaries, fragment identity/order and incomplete-record coverage SHALL remain explicit. When fixed required state or a single question cannot fit even without additional context, processing for the affected scope SHALL stop with an actionable diagnostic or request for a concise main-agent report; it SHALL not traverse all remaining record/question combinations, loop, silently discard user constraints, or claim complete coverage. Independent completed scopes SHALL remain available.
-
-Existing bounded transient-network retries SHALL remain separate. Authentication, quota/rate, generic validation, payload-size and unrecognized errors SHALL NOT be treated as context overflow. A typed provider overflow code (including OpenRouter's `error.metadata.error_type: "context_length_exceeded"`) SHALL count as an explicit overflow; typed credit-cap, per-field length, payload-size, payment, rate and validation codes SHALL NOT. The OpenRouter System One endpoint SHALL be a built-in channel whose single published context window bounds both the request-wide and state-plus-longest-question dimensions. A capacity-complete final result SHALL require all required parts, even if every individual part was valid. Known credentials and unsupported content SHALL be excluded before sending or displaying observations.
+#### Scenario: Oversize single loop
+- **WHEN** one loop plus required state exceeds the declared capacity
+- **THEN** the scope reports an oversize loop, keeps its cursor, and does not claim coverage
 
 #### Scenario: OpenRouter reports a context overflow
 - **WHEN** the OpenRouter endpoint rejects a request with `error.metadata.error_type` `context_length_exceeded`
-- **THEN** it is treated as an explicit overflow and subdivided like a TypeSafe `max_tokens_exceeded` rejection, while its other typed errors fail through the ordinary isolated error path
+- **THEN** it is treated as an explicit overflow and the segment is retried with fewer trailing loops, while its other typed errors fail through the ordinary isolated error path
 
 #### Scenario: OpenRouter's published window is applied to both dimensions
-- **WHEN** an envelope fits TypeSafe direct's 64k request-wide limit but exceeds OpenRouter's single 32K context
-- **THEN** it is pre-split on the OpenRouter channel and sent whole on TypeSafe direct, subject to admission correction when a prediction is contradicted
+- **WHEN** the selected channel publishes a single context window
+- **THEN** segment packing bounds both the request-wide and state-plus-longest-question dimensions by that window as disclosed by the service
 
 #### Scenario: Relevant context exceeds the old application budget
-- **WHEN** permitted macro evidence exceeds 4,000 characters or twenty fragments
-- **THEN** those old cutoffs do not silently remove it; processed results and capacity-aware pieces provide the reduction
+- **WHEN** the new complete loops exceed any old character or fragment cutoff
+- **THEN** no cutoff silently removes them; capacity packing decides how many whole loops are sent now and the rest stay unjudged
 
 #### Scenario: State exceeds its own limit while total request fits
-- **WHEN** state plus the longest question exceeds its limit
-- **THEN** recovery reduces the unresolved state rather than only splitting other questions that leave the offending state unchanged
+- **WHEN** stored state plus the longest question exceeds its limit before any loop is added
+- **THEN** the scope stops with a diagnostic naming the oversized state; no loop is dropped to hide it
 
 #### Scenario: Questions cause a request overflow
-- **WHEN** shared state fits but all unresolved questions together exceed the request-wide limit
-- **THEN** independent question batches use the same frozen state, retain answered questions in the cache, and combine only valid results from that state
+- **WHEN** state and loops fit but all questions together exceed the request-wide limit
+- **THEN** the service splits independent question batches over the same frozen state and answered questions are retained
 
 #### Scenario: Reduction removes evidence needed to split a task
-- **WHEN** a task's required macro span is still partly unprocessed or unavailable
-- **THEN** no definitive split instruction is issued from the incomplete intermediate result
+- **WHEN** a task's segment is still partly unjudged or oversize
+- **THEN** no definitive split instruction is issued from that task's incomplete state
 
 #### Scenario: Token accounting is unverified
 - **WHEN** no authoritative tokenizer/counting contract is available
-- **THEN** admission and strictly progressing subdivision are used without claiming that a character estimate or fixed 30k body proves fit
+- **THEN** packing uses the disclosed bytes-to-tokens ratio with server admission as the authority and does not claim that a byte estimate proves fit
 
 #### Scenario: A predictably oversized envelope is split before sending
-- **WHEN** the calibrated estimate of the unanswered envelope exceeds a published limit of its channel and subdivision can reduce the constrained dimension without being defeated by the required retained state
-- **THEN** it is subdivided through the structural recovery path without a provider request, and no rejection is recorded for it
+- **WHEN** the calibrated estimate of state plus loops exceeds the disclosed limit
+- **THEN** trailing whole loops are removed before any provider request and no rejection is recorded for it
 
 #### Scenario: Channel capacity is used rather than a stricter guess
-- **WHEN** state plus the longest question fits its channel limit and state plus all questions fits the request-wide limit
-- **THEN** the envelope is sent whole even if its total exceeds the smaller per-question limit
+- **WHEN** state plus the longest question and state plus all questions both fit the disclosed limits
+- **THEN** the segment is sent whole even if its total exceeds a smaller per-question limit
 
 #### Scenario: A prediction does not declare a unit irreducible
-- **WHEN** one record or fragment with one question is still predicted too large
-- **THEN** it is sent once and only an actual rejection can end processing for that scope
+- **WHEN** one loop with required state is still predicted too large
+- **THEN** it is sent once and only an actual rejection marks it oversize
 
 #### Scenario: Learning survives reload
-- **WHEN** the extension reloads on the same branch after admitted and rejected attempts were recorded
-- **THEN** corrected channel calibration and applicable rejection observations are restored from existing non-context diagnostics without re-sending anything or reinstating a contradicted historical high-water estimate
+- **WHEN** the extension reloads on the same branch after admitted and rejected attempts
+- **THEN** the calibrated ratio and recorded rejections disclosed by the service are reused without re-sending anything
 
 #### Scenario: A validation error is not an overflow
 - **WHEN** a request fails for invalid question syntax or an unfamiliar error
-- **THEN** it fails through the ordinary isolated error path without treating the error as permission to crop or subdivide evidence
+- **THEN** it fails through the ordinary isolated error path and no loop is dropped because of it
 
 #### Scenario: Recovery still exceeds the provider limit
-- **WHEN** a smaller projected part still receives `max_tokens_exceeded`
-- **THEN** it is subdivided further only if progress in the constrained dimension is possible, without resending completed parts or looping on the same rejected request
+- **WHEN** a segment reduced to fewer loops is rejected again
+- **THEN** it is reduced further only while whole loops remain; a single rejected loop ends recovery for that scope without resending
 
 #### Scenario: Sensitive or unsupported material is present
-- **WHEN** input contains known credentials, hidden thinking or raw binary/image data
-- **THEN** that content is not exported and consequential gaps remain explicit
+- **WHEN** a loop contains known credentials, hidden thinking or raw binary/image data
+- **THEN** that content is not exported and the resulting gaps remain explicit in the loop record
 
 #### Scenario: Protected new text spans several requests
-- **WHEN** the macro-projected unprocessed history is too large for one request but fits as ordered pieces
-- **THEN** all pieces are processed through rolling conclusions without dropping the oldest or newest text merely because it was protected in the old collector
+- **WHEN** the new complete loops do not fit one request but fit as consecutive segments
+- **THEN** all segments are judged in order, each updating state and cursor, without dropping the oldest or newest loop
 
 #### Scenario: A question is irreducibly too large
-- **WHEN** required fixed state or a single question cannot fit independently of the next context piece
-- **THEN** the affected scope reports what must be shortened or clarified, retains completed results and does not continue an unbounded rejection loop
+- **WHEN** required state or a single question cannot fit independently of any loop
+- **THEN** the affected scope reports what must be shortened or clarified, retains stored state and does not loop on the same rejection
 
 #### Scenario: Later low-density input corrects an earlier high estimate
 - **GIVEN** the channel has previously observed approximately 0.478 input tokens per request byte
@@ -576,53 +578,59 @@ New user instructions, relevant non-audit work evidence, or meaningful task chan
 
 ### Requirement: Uniform reuse of identical JEV evaluations
 
-Every JEV question handled by the extension SHALL use the same result-reuse rule, regardless of whether it concerns alignment, lifecycle, task granularity, a processing chunk, or another audit decision. Within the approved same-object/session scope, an identical effective projected context, complete question definition and model/rule identity SHALL reuse its stored valid answer without a provider call. Similar wording on different objects SHALL NOT establish identity.
+Reuse SHALL operate through stored judgment state and cursors: a loop judged for a scope SHALL NOT be judged again for that scope, regardless of question category. Exact-repeat request caching is not a goal of the extension and SHALL NOT be required for correctness. Valid `no_change`, uncertain and low-confidence answers SHALL be stored without becoming stronger findings. Explicit forced full review is the documented exception.
 
-Reuse SHALL operate per question, not only per whole audit or previously emitted correction. A batch SHALL request only its unresolved questions, combining independent misses that share a context when capacity permits. Identical in-flight evaluations within the runtime SHALL share work. Valid low-confidence, uncertain, aligned and no-correction answers SHALL also be stored without becoming stronger findings. Invalid or missing answers SHALL NOT be substituted with an older confident answer.
+#### Scenario: Every decision category uses stored state
+- **WHEN** lifecycle, granularity, interaction and drift questions are asked on the same new segment
+- **THEN** each reads its own stored state and none re-receives loops before its cursor
 
-Completed evaluations SHALL be persisted through existing session storage and restored when their identity and active-history scope remain applicable. A TODO update, reload, later chunk failure or ordinary retry SHALL NOT by itself cause an identical completed evaluation to be sent again. New judgment-relevant content or a changed question is a different evaluation. Explicit forced review is the documented exception, not an automatic periodic refresh.
-
-#### Scenario: Every decision category uses the cache
-- **WHEN** identical context and question definitions are submitted again for alignment, lifecycle, granularity or chunk processing
-- **THEN** each stored valid answer is returned without another provider evaluation of that pair
+#### Scenario: Forced full review
+- **WHEN** the user requests a full re-judgment
+- **THEN** cursors reset to each task's first-active loop and the session start, and state is rebuilt from complete loops in order
 
 #### Scenario: Only one question is new
-- **WHEN** questions A and B have valid cached answers for a context and C does not
-- **THEN** the provider receives C only and the caller receives the combined A, B and C answers
+- **WHEN** questions A and B already have state covering the new segment and C does not
+- **THEN** only C is asked on that segment and the combined state is used by the verdict
 
 #### Scenario: Concurrent identical work
-- **WHEN** two callers within the runtime request the same unresolved context/question pair concurrently
-- **THEN** they share the evaluation instead of issuing duplicate provider work for that pair
+- **WHEN** two audits for the same session would judge the same segment concurrently
+- **THEN** single-active scheduling prevents the duplicate; the second observes the stored result
 
 #### Scenario: No correction was emitted
-- **WHEN** a previous valid result was aligned, uncertain or otherwise produced no correction
-- **THEN** that result remains reusable rather than requiring a sent reminder as the cache record
+- **WHEN** a previous segment produced `no_change` or an uncertain answer
+- **THEN** that result is stored and reused as state rather than requiring a sent reminder as the record
 
 #### Scenario: Question meaning changes
-- **WHEN** instructions, criteria, options, model/rules or material context change
-- **THEN** the changed evaluation does not receive an answer cached for the different definition
+- **WHEN** a question's instructions, options or the judgment model change
+- **THEN** stored answers to the earlier definition are kept as reference only and segments after the cursor are re-judged under the new definition
 
 #### Scenario: A partial response has useful answers
-- **WHEN** a batch returns valid A and B answers but no valid C answer
-- **THEN** A and B remain stored, and a subsequent ordinary attempt does not ask them again merely to obtain C
+- **WHEN** a segment returns valid answers for tasks A and B but none for C
+- **THEN** A and B advance their cursors and only C is asked again on that segment
 
 #### Scenario: Transport failure is not a judgment
-- **WHEN** an evaluation fails or its answer is invalid
-- **THEN** no successful judgment is invented or cached for the unresolved pair
+- **WHEN** a service call fails or returns an invalid answer
+- **THEN** no transition is written and no cursor advances for that segment
+
+#### Scenario: Every decision category uses the cache
+- **WHEN** lifecycle, granularity, interaction or drift is asked again on a segment already judged for that scope
+- **THEN** the stored transition is used and no provider request repeats that segment
 
 ### Requirement: TODO-defined state segments
 
-A successful actual change to the persisted TODO snapshot SHALL establish a new state segment. Reads, failed updates and updates with no state change SHALL NOT establish a new segment. Segmentation SHALL NOT add an immediate paid audit for each update; existing cadence, cooldown, manual and terminal eligibility rules SHALL remain the trigger policy.
+A segment SHALL be a run of complete Pi loops after a scope cursor. A loop (assistant message with all its tool results) SHALL never be split across segments. TODO snapshot changes, byte thresholds and compaction summaries SHALL NOT define segment boundaries; a successful TODO update is evidence within its loop. Segmentation SHALL NOT add a paid audit per update; cadence, cooldown, manual and terminal eligibility remain the trigger policy.
 
-Local status review SHALL consider the latest task state and unprocessed segment information together with applicable prior conclusions. A new segment SHALL NOT erase completed evaluations or restart a task's macro history. Current TODO requirements, dependencies, ownership and available state SHALL remain explicit, without requiring a designated blocker metadata field.
+#### Scenario: Tool-heavy loop
+- **WHEN** one assistant message issues six tool calls
+- **THEN** that message and all six results are in the same segment or none of them are
+
+#### Scenario: Read-only TODO operation
+- **WHEN** the agent lists the board without changing it
+- **THEN** no new judgment is triggered by that operation alone
 
 #### Scenario: Update followed by another update
 - **WHEN** a task description changes and its status changes later
 - **THEN** both state transitions remain ordered review events without requiring two immediate JEV calls
-
-#### Scenario: Read-only TODO operation
-- **WHEN** the agent lists the board or repeats an update that leaves it unchanged
-- **THEN** that operation alone does not create a new TODO state segment
 
 #### Scenario: A segment is not a new task
 - **WHEN** the same task receives a blocker note or active-form update
@@ -630,38 +638,49 @@ Local status review SHALL consider the latest task state and unprocessed segment
 
 ### Requirement: Resumable rolling conclusions
 
-The audit SHALL carry forward the latest structured conclusions and relevant task state rather than repeatedly submit previously processed raw context. A rolling result SHALL replace the previous cumulative result for its scope; the request SHALL NOT grow by concatenating every earlier summary or result. Stored conclusions are revisable findings, not independent user authority or a guarantee of lossless prose summarization.
+The audit SHALL carry forward stored judgment state rather than previously processed raw context or chains of summaries. A `no_change` or partial-progress answer SHALL advance the scope cursor once durably recorded; an `unclear_in_segment` answer SHALL NOT. Stored state is a revisable finding, not user authority or lossless summarization.
 
-Reported work, JEV opinions and processing progress SHALL remain distinguishable. Required macro facts—task goal, reported stage outcomes, blockers and open questions—SHALL come from permitted task state or main-agent reports, not be invented from a classification or completed-range marker. A newer opinion or cursor SHALL NOT silently erase a still-applicable supplied report. Source-backed current factual material SHALL carry needed facts independently of optional recent-report retention; uncovered necessary report material SHALL not be removed merely because a compact report budget is full. When a necessary compact account is unavailable, the leader SHALL request clarification through the normal main-agent feedback path or retain uncertainty, not pretend that a previous answer contains the missing facts.
+Reported work, model judgments and processing progress SHALL remain distinguishable. Required macro facts SHALL come from task state or main-agent reports referenced by source id, never invented from a transition label or cursor. A newer transition SHALL NOT silently erase a still-applicable earlier anchor. Compatible reload/compaction SHALL restore cursors and state rather than replay processed loops. Unverifiable or abandoned-branch records SHALL not be promoted into current findings.
 
-A processing range SHALL be marked complete only after its required questions have valid answers and its cumulative result is durably recorded for the captured inputs. An unchanged result SHALL still advance that range. Missing answers, a locally withheld over-limit Choice or a failed chunk SHALL NOT advance its range, but SHALL NOT discard valid question answers or completed earlier ranges. Compatible reload/compaction SHALL restore recorded progress and applicable factual material rather than replay already processed raw history solely because volatile memory was lost. Unverifiable or abandoned-branch records SHALL not be promoted into current findings.
+#### Scenario: An unchanged segment advances progress
+- **WHEN** every question for a task answers `no_change` on a segment and the state append is acknowledged
+- **THEN** the task cursor advances past that segment
 
-Intermediate chunk results SHALL remain internal review state. They SHALL NOT become final completion/split/continuation advice while required later parts of that review remain unprocessed. A result invalidated by new user/board/branch state SHALL NOT be delivered as current advice; storing an answer under its immutable historical input identity is separate from authorizing current delivery.
+#### Scenario: Reload after compaction
+- **WHEN** the session is reloaded with a compacted context
+- **THEN** stored state and cursors are restored from the session JSONL and loops before the cursors are not re-judged
+
+#### Scenario: Later evidence contradicts stored state
+- **WHEN** a new segment evidences that a task recorded as `completion_reported` was reopened by the user
+- **THEN** the task transition is `scope_changed`, its cursor resets to the reopening loop, and the earlier completion anchor is retained as history only
+
+#### Scenario: Model identity changes
+- **WHEN** the selected judgment backend or model changes
+- **THEN** stored state remains as reference, segments after each cursor are judged by the new model, and no earlier loop is replayed unless full mode is requested
 
 #### Scenario: An unchanged chunk advances progress
-- **WHEN** events 101 through 120 are processed successfully and the conclusions remain unchanged
-- **THEN** later review continues after event 120 rather than asking JEV to process that interval again
+- **WHEN** a segment yields `no_change` for every question of a scope and the state write is acknowledged
+- **THEN** that scope's cursor advances past the segment
 
 #### Scenario: Reported progress survives an opinion update
-- **WHEN** a main-agent report states that investigation is complete and rollout awaits approval, and a later JEV answer updates only the task's granularity
-- **THEN** the reported outcome and blocker remain available in the macro account; neither the new granularity label nor an advanced cursor substitutes for them
+- **WHEN** a later segment changes a task's lifecycle transition
+- **THEN** the earlier confirmed progress items and their anchors remain in state
 
 #### Scenario: A later chunk fails
-- **WHEN** chunks 1 and 2 have persisted completed results and chunk 3 fails
-- **THEN** an ordinary resumption reuses the first two results and processes only the unresolved work, not chunks 1 and 2 again
+- **WHEN** the service call for a later segment fails
+- **THEN** cursors advanced by earlier segments remain and no transition from the failed segment is written
 
 #### Scenario: No chain of duplicate summaries
-- **WHEN** chunk 3 follows two completed chunks
-- **THEN** its input carries the cumulative result after chunk 2 rather than both earlier results and their raw context
+- **WHEN** many segments have been judged
+- **THEN** the request carries the current state only, never a concatenation of earlier results
 
 #### Scenario: Compaction preserves a valid review receipt
-- **WHEN** raw context is compacted but the persisted same-history result and its covered range remain verifiable
-- **THEN** the extension retains that progress without requiring the raw bodies to be resent to JEV
-- **AND** any missing original factual source is disclosed rather than reconstructed from a classification
+- **WHEN** the session is compacted after state and cursors were written
+- **THEN** the next audit restores them from the session JSONL and judges only loops after the cursors
 
 #### Scenario: Later evidence contradicts an intermediate result
-- **WHEN** an early chunk suggests completion but a later required chunk contains a contrary user decision or report
-- **THEN** no completion instruction is issued from the intermediate result, and the final review accounts for the later information
+- **WHEN** a new segment contradicts a stored transition
+- **THEN** the new transition is written, the old one stays as history, and only the affected scope's cursor is reset if its scope changed
 
 #### Scenario: Routine reports do not crowd out a needed fact
 - **WHEN** many newer routine reports exhaust the recent-report allowance but an older reported decision is still required

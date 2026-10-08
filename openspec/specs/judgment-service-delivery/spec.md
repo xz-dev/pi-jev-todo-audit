@@ -86,18 +86,18 @@ Automatic registration SHALL follow the persistent audit installation's user or 
 
 ### Requirement: A newly registered service is usable without duplicate activation
 
-After successful first-load installation and registration of a compatible service, audit delivery SHALL make its ordinary service commands and review capability available by the end of that startup, without a second reload or an inference-based readiness probe. On later loads, Pi's normal resource discovery SHALL own the independent service. An already loaded service SHALL take precedence regardless of package order; delivery SHALL NOT add duplicate commands, providers, or service handles. Compatibility remains `version: 1`, `reviewVersion: 1`, and `review()`; an incompatible latest service SHALL produce an explicit diagnostic, not an automatic downgrade.
+After successful first-load installation and registration of a compatible service, audit delivery SHALL make its ordinary service commands and judgment capability available by the end of that startup, without a second reload or an inference-based readiness probe. On later loads, Pi's normal resource discovery SHALL own the independent service. An already loaded service SHALL take precedence regardless of package order; delivery SHALL NOT add duplicate commands, providers, or service handles. Compatibility is `version: 1` with `judge()` (the retired review-cache/stages protocol is no longer required); an incompatible latest service SHALL produce an explicit diagnostic, not an automatic downgrade.
 
 #### Scenario: First provisioning reaches readiness
 - **WHEN** the independent compatible service is installed and registered during audit's first eligible startup
-- **THEN** its configuration commands are visible in the interactive command interface and dispatch correctly after that startup, and the first eligible audit can discover its review capability
+- **THEN** its configuration commands are visible in the interactive command interface and dispatch correctly after that startup, and the first eligible audit can discover its judgment capability
 
 #### Scenario: Existing standalone service in either order
 - **WHEN** the independently installed service and audit load together with either package first
 - **THEN** audit reuses that service and adds no duplicate service commands, provider registration, or service instance
 
 #### Scenario: Newest available service is incompatible
-- **WHEN** native installation or update supplies a service that lacks the required review capability
+- **WHEN** native installation or update supplies a service that lacks the required judgment capability
 - **THEN** audit reports incompatibility, skips inference and advice, and neither pins nor downloads an older replacement
 
 #### Scenario: Service installed but backend unavailable
