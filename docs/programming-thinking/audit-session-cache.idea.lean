@@ -171,7 +171,24 @@ theorem process_is_correct (s : Scope) (first last : Nat) (d : Delta) (a : Admis
     uncertain_never_advances s first last a, completion_is_not_permission s first last src a,
     withdrawal_disables_execution s first last src⟩
 
+-- After multi-loop overflow, retain a nonempty, strictly smaller prefix without splitting or reordering loops.
+-- This proves the reduction shape, not provider admission, a fixed retry bound, or live audit liveness.
+def overflowPrefix (loops : List Loop) : List Loop := loops.take (loops.length / 2)
+
+theorem overflow_recovery_is_correct (loops : List Loop) (h : 1 < loops.length) :
+    0 < (overflowPrefix loops).length ∧
+    (overflowPrefix loops).length < loops.length ∧
+    overflowPrefix loops ++ loops.drop (loops.length / 2) = loops := by
+  constructor
+  · simp only [overflowPrefix, List.length_take]
+    omega
+  constructor
+  · simp only [overflowPrefix, List.length_take]
+    omega
+  · exact List.take_append_drop _ _
+
 -- Inspect every trusted foundation of the protocol and loop-boundary claims.
+#print axioms overflow_recovery_is_correct
 #print axioms process_is_correct
 #print axioms suffix_contains_no_old_loop
 #print axioms complete_loop_has_every_result
@@ -183,4 +200,5 @@ def main : IO Unit := do
   IO.println "Incremental scopes: only current, acknowledged, complete-loop judgments commit."
   IO.println "Partial reports retain concrete source identities; uncertainty cannot advance a cursor."
   IO.println "Completion is not permission; user withdrawal disables execution."
+  IO.println "Overflow recovery keeps a nonempty, strictly smaller prefix of whole loops."
   IO.println "Proof scope: protocol guards and source references, not classifier truth, tokenizer accuracy, or TypeScript equivalence."

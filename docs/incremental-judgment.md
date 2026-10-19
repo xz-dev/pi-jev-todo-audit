@@ -45,7 +45,7 @@ Choice questions admit at most 255 options. Source-evidence options grow with th
 
 The audit queries `describeSelection({path: "judge"})`. Review-path channel constants are not silently substituted for judge-path model metadata. Limits are declared tokens, not measured provider acceptance.
 
-Packing measures serialized state and question/source-choice growth. Request-wide and state-plus-longest-question dimensions are checked separately with the disclosed bytes-to-tokens ratio, envelope overhead and output reserve. Prediction chooses whole-loop boundaries; a single loop predicted oversized still gets one admission attempt. Only a reported overflow ends a single-loop scope as oversize. Recovery drops trailing whole loops, never tool-result pieces.
+Packing measures serialized state and question/source-choice growth. Request-wide and state-plus-longest-question dimensions are checked separately with the disclosed bytes-to-tokens ratio, envelope overhead and output reserve. Prediction chooses whole-loop boundaries; a single loop predicted oversized still gets one admission attempt. Only a reported overflow ends a single-loop scope as oversize. Each reported multi-loop overflow halves the retained complete-loop prefix, so linear trimming cannot spend the whole run budget before reaching an admissible prefix. Recovery never splits a loop or advances its cursor without an accepted, persisted judgment.
 
 An incomplete tool group fences the suffix. Interleaved summaries, user steering and nonempty error messages do not separate a call from its results. Missing model limits use a bounded loop count and an explicit warning; this is **not** a discovered Pi token fallback. No provider window is inferred from examples or web-page guesses.
 
