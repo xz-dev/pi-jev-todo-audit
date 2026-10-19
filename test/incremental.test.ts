@@ -139,6 +139,50 @@ test("overflow recovery drops trailing whole loops; a single loop that still ove
 	expect(over.state.tasks["5"]).toBeUndefined();
 });
 
+test("overflow recovery makes durable progress before the per-run budget is exhausted", async () => {
+	const { service } = stub({ capacity: { limits: { request: 1_000_000, stateAndLongestQuestion: 1_000_000 } } });
+	const acceptedJudge = service.judge;
+	const attempts: number[] = [];
+	service.judge = async (req, opts) => {
+		const count = Number(String(req.state.audit).match(/New segment \((\d+) complete loops\)/)?.[1]);
+		expect(count).toBeGreaterThan(0);
+		attempts.push(count);
+		if (count > 2) return { answers: {}, dropped: [], backend: "classifier", model: "typesafe/jev-1.13", stopReason: "error",
+			contextOverflow: true, errorMessage: "context overflow", reuse: { hits: 0, joined: 0, sent: 0 } };
+		return acceptedJudge(req, opts);
+	};
+	const long = [user("u0", "Implement the parser."), ...Array.from({ length: 40 }, (_, i) => assistant(`a${i + 1}`, `Step ${i + 1}.`))];
+	const { entries, persist } = ledger();
+	const signal = new AbortController().signal;
+	const first = await runIncremental({ service, board, context: ctx(long), state: emptyState(), signal, persist });
+	expect(attempts.length).toBeLessThanOrEqual(32);
+	expect(first.state.tasks["5"]?.cursor).toBeDefined();
+	expect(first.state.session.cursor).toBeDefined();
+	const restored = restoreState(entries, loopIds(long));
+	expect(restored.tasks["5"]?.cursor).toBe(first.state.tasks["5"]?.cursor);
+	const covered = first.reports.filter((r) => r.outcome === "advanced").flatMap((r) => r.loops);
+	let state = restored;
+	for (let run = 0; run < 10 && state.session.cursor !== "a40"; run++) {
+		const before = attempts.length;
+		const next = await runIncremental({ service, board, context: ctx(long), state, signal, persist });
+		expect(attempts.length - before).toBeLessThanOrEqual(32);
+		covered.push(...next.reports.filter((r) => r.outcome === "advanced").flatMap((r) => r.loops));
+		state = next.state;
+	}
+	expect(state.tasks["5"].cursor).toBe("a40");
+	expect(state.session.cursor).toBe("a40");
+	expect(covered).toEqual(long.map((entry) => entry.id));
+});
+
+test("ordinary service errors stop without subdividing or advancing cursors", async () => {
+	const { service, seen } = stub({ fail: () => ({ errorMessage: "provider unavailable" }) });
+	const out = await runIncremental({ service, board, context: ctx(history1), state: emptyState(), signal: new AbortController().signal, persist: () => true });
+	expect(seen).toHaveLength(1);
+	expect(out.reports[0].outcome).toBe("failed");
+	expect(out.state.tasks["5"]?.cursor).toBeUndefined();
+	expect(out.state.session.cursor).toBeUndefined();
+});
+
 test("missing capacity metadata is surfaced and bounded by the fallback loop count", async () => {
 	const { service, seen } = stub({ capacity: { limits: {}, limitSource: "none" } });
 	const { persist } = ledger();

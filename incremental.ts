@@ -199,7 +199,8 @@ export async function runIncremental(a: {
 			if (result.stopReason !== "stop") {
 				if (result.contextOverflow && packed.loops.length > 1) {
 					reports.push({ scopes: scopeKeys, loops: loopIds, outcome: "partial", contextOverflow: true, reuse: result.reuse, model: result.model });
-					packed = { ...packed, loops: packed.loops.slice(0, -1) }; continue;
+					// Halve the complete-loop prefix so rejected segments cannot exhaust every run before any progress.
+					packed = { ...packed, loops: packed.loops.slice(0, Math.floor(packed.loops.length / 2)) }; continue;
 				}
 				reports.push({ scopes: scopeKeys, loops: loopIds, outcome: result.contextOverflow && packed.loops.length === 1 ? "oversize" : "failed", error: result.errorMessage, contextOverflow: result.contextOverflow, reuse: result.reuse, model: result.model });
 				return { state, reports, complete: false, tip, capacity, persistenceFailed, missingCapacityMetadata };
