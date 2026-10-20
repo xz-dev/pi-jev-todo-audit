@@ -113,6 +113,49 @@ describe("config", () => {
 	});
 });
 
+describe("timing options", () => {
+	test("explicit idle/model timeouts load and forward independently", () => {
+		const dir = mkdtempSync(join(tmpdir(), "jev-cfg-"));
+		const p = join(dir, "config.json");
+		writeFileSync(p, JSON.stringify({ idleTimeoutMs: 5000, modelTimeoutMs: 20000 }));
+		const cfg = loadConfig(p);
+		expect(cfg.idleTimeoutMs).toBe(5000);
+		expect(cfg.modelTimeoutMs).toBe(20000);
+		expect(cfg.legacyTimeoutConfigured).toBeUndefined();
+		rmSync(dir, { recursive: true });
+	});
+
+	test("legacy timeoutMs marks migration without adopting a value", () => {
+		const dir = mkdtempSync(join(tmpdir(), "jev-cfg-"));
+		const p = join(dir, "config.json");
+		writeFileSync(p, JSON.stringify({ timeoutMs: 5000 }));
+		const cfg = loadConfig(p);
+		expect(cfg.legacyTimeoutConfigured).toBe(true);
+		expect(cfg.idleTimeoutMs).toBeUndefined();
+		expect(cfg.modelTimeoutMs).toBeUndefined();
+		rmSync(dir, { recursive: true });
+	});
+
+	test("project-layer legacy timeoutMs also marks migration", () => {
+		const dir = mkdtempSync(join(tmpdir(), "jev-cfg-"));
+		const proj = join(dir, "project.json");
+		writeFileSync(proj, JSON.stringify({ timeoutMs: 3000 }));
+		const cfg = loadConfig({ globalPath: join(dir, "nope.json"), projectPath: proj, projectTrusted: true });
+		expect(cfg.legacyTimeoutConfigured).toBe(true);
+		rmSync(dir, { recursive: true });
+	});
+
+	test("explicit fields survive a project layer that does not set them", () => {
+		const dir = mkdtempSync(join(tmpdir(), "jev-cfg-"));
+		const p = join(dir, "config.json"), proj = join(dir, "project.json");
+		writeFileSync(p, JSON.stringify({ idleTimeoutMs: 7000 }));
+		writeFileSync(proj, JSON.stringify({ interval: 3 }));
+		const cfg = loadConfig({ globalPath: p, projectPath: proj, projectTrusted: true });
+		expect(cfg.idleTimeoutMs).toBe(7000);
+		rmSync(dir, { recursive: true });
+	});
+});
+
 // Former credential fallback assertions were superseded by the approved migration.
 // shared-contract.test.ts asserts zero auth reads/HTTP and ignored legacy keys;
 // actual entry tests verify service/Pi credentials on the real native/LLM wire.

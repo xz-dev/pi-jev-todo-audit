@@ -53,10 +53,10 @@ export default function (pi: ExtensionAPI): void {
 		description: "Show judgment-service availability (read-only; no installation or inference).",
 		handler: async (_args, ctx) => {
 			const service = getJudgmentService();
-			const ready = service?.version === 1 && typeof service.judge === "function";
+			const ready = service?.version === 2 && typeof service.judge === "function";
 			ctx.ui.notify(ready
-				? "Judgment service is available (judge version 1)."
-				: "Judgment service is unavailable or incompatible; judge version 1 is required. Check startup diagnostics and package resource settings.", ready ? "info" : "warning");
+				? "Judgment service is available (judge version 2)."
+				: "Judgment service is unavailable or incompatible; judge version 2 is required. Check startup diagnostics and package resource settings.", ready ? "info" : "warning");
 		},
 	});
 	let started = false;
@@ -174,8 +174,8 @@ export default function (pi: ExtensionAPI): void {
 			// The host took its startup-handler snapshot before installing us.
 			for (const handler of pendingStart.splice(0)) await handler(event as never, ctx as never);
 			const service = getJudgmentService();
-			if (service?.version !== 1 || typeof service.judge !== "function") {
-				warn("Installed judgment service is incompatible with judge version 1; no older version will be installed.");
+			if (service?.version !== 2 || typeof service.judge !== "function") {
+				warn("Installed judgment service is incompatible with judge version 2; no older version will be installed.");
 			}
 		} catch {
 			await cleanup(event as never, ctx as never);

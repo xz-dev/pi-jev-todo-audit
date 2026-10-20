@@ -38,6 +38,10 @@ export function groupLoops(records: readonly EvidenceRecord[]): Loop[] {
 		loops.push(current);
 		pending = new Set();
 	};
+	// Prior audit advice is interpretable only through the reply that follows it,
+	// so it travels inside that reply's loop rather than merging into an older,
+	// already-judged loop.
+	let carriedAdvice: EvidenceRecord[] = [];
 	for (const record of records) {
 		if (record.kind === "supplement") continue;
 		const entryId = entryIdOf(record);
@@ -46,8 +50,13 @@ export function groupLoops(records: readonly EvidenceRecord[]): Loop[] {
 			((record.kind === "assistant" || record.kind === "tool_call") && (!current || current.id !== entryId));
 		// Interleaved summaries, steering and error messages cannot separate a
 		// call from its results. An unresolved call fences everything after it.
-		if (!current || (opensLoop && pending.size === 0)) open(entryId);
+		if (!current || (opensLoop && pending.size === 0)) {
+			open(entryId);
+			for (const advice of carriedAdvice) { current!.records.push(advice); current!.bytes += utf8(JSON.stringify(advice)); }
+			carriedAdvice = [];
+		}
 		const loop = current!;
+		if (record.advice) { carriedAdvice.push(record); continue; }
 		loop.records.push(record);
 		loop.bytes += utf8(JSON.stringify(record));
 		if (record.kind === "tool_call" && record.callId) pending.add(record.callId);

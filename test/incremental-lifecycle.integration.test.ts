@@ -41,7 +41,7 @@ test.skipIf(!process.env.PI_JUDGMENT_SOURCE)("nonempty progress/authority surviv
 			return { answers: Object.fromEntries(Object.entries(req.questions).map(([id, q]) => {
 				if (q.type !== "choice" || !Object.hasOwn(q.criteria, choices[id])) throw new Error(`Unscripted ${id}: ${choices[id]}`);
 				return [id, { type: "choice", choice: choices[id], confidence: 1, probabilities: Object.fromEntries(Object.keys(q.criteria).map((k) => [k, k === choices[id] ? 1 : 0])) }];
-			})), dropped: [], backend: "classifier", model: "typesafe/jev-latest", stopReason: "stop", reuse: { hits: 0, joined: 0, sent: 1 } };
+			})), dropped: [], backend: "classifier", model: "typesafe/jev-latest", stopReason: "stop" };
 		}, () => String(phase));
 		services[key] = fixture.service;
 		const h = host([]);

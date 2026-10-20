@@ -21,20 +21,6 @@ export interface AuditAnswers {
 }
 /** Local structural withholding: no model judgment, usage or rejection envelope. */
 export interface WithheldChoice { question: string; count: number; limit: 255 }
-/** One actual provider request. Usage is provider-reported; undefined means unknown, never zero. */
-export interface Attempt {
-	id?: string;
-	phase?: "start" | "end";
-	outcome: "answered" | "malformed" | "overflow" | "http_error" | "network_error" | "unfinished" | "aborted";
-	status?: number;
-	model?: string;
-	inputTokens?: number;
-	outputTokens?: number;
-	costUsd?: number;
-	stateBytes?: number;
-	questionBytes?: number;
-	longestQuestionBytes?: number;
-}
 export interface TerminalStopInfo { stopKind: string; reasonType?: string; reason?: string }
 export const NOT_ON_BOARD = "not_on_board";
 export const lifecycleKey = (id: number) => `task_status_${id}`;

@@ -19,7 +19,7 @@ function scripted(req: JudgeRequest, choices: Record<string, string>): JudgeResu
 		const choice = choices[k];
 		if (q.type !== "choice" || !choice || !Object.hasOwn(q.criteria, choice)) throw new Error(`Unscripted ${k}: ${choice}`);
 		return [k, { type: "choice", choice, confidence: 1, probabilities: Object.fromEntries(Object.keys(q.criteria).map((label) => [label, label === choice ? 1 : 0])) }];
-	})), dropped: [], backend: "classifier", model: "fixture/jev", stopReason: "stop", reuse: { hits: 0, joined: 0, sent: 1 } };
+	})), dropped: [], backend: "classifier", model: "fixture/jev", stopReason: "stop" };
 }
 function choices(phase: "A" | "B" | "uncertain" | "withdraw"): Record<string, string> {
 	return { task_status_5: phase === "A" ? "progress_evidenced" : phase === "B" ? "completion_reported" : phase === "uncertain" ? "unclear_in_segment" : "no_change",
@@ -33,9 +33,9 @@ for (const description of descriptions) test(`A+B survives cold reload without d
 	const board = { tasks: [{ id: 5, subject: "Parser", status: "in_progress" as const, description }], nextId: 6 };
 	let phase: "A" | "B" = "A";
 	const seen: JudgeRequest[] = [], rows: unknown[] = [];
-	const service: JudgmentService = { version: 1, availability: async () => ({}), judge: async (req) => { seen.push(req); return scripted(req, choices(phase)); } };
+	const service: JudgmentService = { version: 2, availability: async () => ({}), judge: async (req) => { seen.push(req); return scripted(req, choices(phase)); } };
 	const persist = (s: Parameters<typeof writeState>[1]) => writeState((customType, data) => rows.push(JSON.parse(JSON.stringify({ type: "custom", customType, data }))), s);
-	const common = { board, service, signal: new AbortController().signal, timeoutMs: 1000, persist };
+	const common = { board, service, signal: new AbortController().signal, idleTimeoutMs: 1000, persist };
 	const first = await runIncremental({ ...common, state: emptyState(), context: collectContext(initial) });
 	expect(first.complete).toBe(true); expect(first.state.tasks["5"].progressReports).toEqual([{ sourceId: "a" }]);
 	expect(first.state.tasks["5"].status).toBe("still_ongoing");
@@ -57,8 +57,8 @@ for (const description of descriptions) test(`A+B survives cold reload without d
 
 test("uncertain B keeps A, fences the task; a user withdrawal cannot revive prior permission", async () => {
 	let phase: "A" | "uncertain" | "withdraw" = "A";
-	const service: JudgmentService = { version: 1, availability: async () => ({}), judge: async (req) => scripted(req, choices(phase)) };
-	const common = { board, service, signal: new AbortController().signal, timeoutMs: 1000, persist: () => true };
+	const service: JudgmentService = { version: 2, availability: async () => ({}), judge: async (req) => scripted(req, choices(phase)) };
+	const common = { board, service, signal: new AbortController().signal, idleTimeoutMs: 1000, persist: () => true };
 	const first = await runIncremental({ ...common, state: emptyState(), context: collectContext(initial) });
 	phase = "uncertain"; const h = [...initial, message("maybe", "assistant", "B check was inconclusive.")];
 	const second = await runIncremental({ ...common, state: first.state, context: collectContext(h) });
@@ -77,26 +77,25 @@ test.skipIf(!process.env.PI_JUDGMENT_SOURCE)("A+B through the actual sibling ser
 	const { validateConfig } = await import(pathToFileURL(join(root, "src/config.ts")).href);
 	const { classify } = await import(new URL("./api/typesafe-system-one.js", import.meta.resolve("@earendil-works/pi-ai")).href);
 	let phase: "A" | "B" = "A";
-	const wire: { bytes: number; state: string }[] = [], serviceRows: unknown[] = [], rows: unknown[] = [];
+	const wire: { bytes: number; state: string }[] = [], rows: unknown[] = [];
 	const model = { type: "classifier", id: "jev-latest", name: "Offline", provider: "typesafe", api: "typesafe-system-one", baseUrl: "https://fixture.invalid/v1", input: ["text"], contextWindow: 32000, cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 } };
 	const fetchFixture = async (url: unknown, init?: RequestInit) => {
 		if (String(url) !== "https://fixture.invalid/v1/systemone") throw new Error("Live transport forbidden");
 		const raw = String(init?.body), req = JSON.parse(raw) as JudgeRequest;
-		const fixed = req.state.fixed as { audit: string };
+		const fixed = req.state as { audit: string };
 		expect(typeof fixed.audit).toBe("string");
 		wire.push({ bytes: Buffer.byteLength(raw), state: fixed.audit });
 		return Response.json({ answers: scripted(req, choices(phase)).answers });
 	};
 	const service: JudgmentService = createJudgmentService({
-		config: () => validateConfig({ mode: "classifier", classifierModel: "typesafe/jev-latest", timeoutMs: 1000 }).config,
+		config: () => validateConfig({ mode: "classifier", classifierModel: "typesafe/jev-latest", timeouts: { classifier: { idleTimeoutMs: 1000 } } }).config,
 		nativeFetch: fetchFixture,
-		ledger: { branch: () => serviceRows, append: (customType: string, data: unknown) => serviceRows.push({ type: "custom", customType, data }) },
-		registry: { getAvailableOfType: async () => [model], getModel: () => undefined, getProviders: () => [], getAuth: async () => undefined,
+		registry: { getAvailableOfType: async () => [model], getModel: () => undefined, getProviders: () => [], getAuth: async () => ({ auth: { apiKey: "offline-fixture-only" } }),
 			streamSimple: () => { throw new Error("Unexpected LLM fallback"); },
 			classify: (_model: unknown, context: unknown, opts: any) => classify(model, context, { ...opts, apiKey: "offline-fixture-only", fetch: opts.fetch ?? fetchFixture }) },
 	});
 	const persist = (s: Parameters<typeof writeState>[1]) => writeState((customType, data) => rows.push(JSON.parse(JSON.stringify({ type: "custom", customType, data }))), s);
-	const common = { service, board, timeoutMs: 1000, minConfidence: 0.8, signal: new AbortController().signal, persist };
+	const common = { service, board, idleTimeoutMs: 1000, minConfidence: 0.8, signal: new AbortController().signal, persist };
 	const first = await runIncremental({ ...common, state: emptyState(), context: collectContext(initial) });
 	expect(first.complete, JSON.stringify(first.reports)).toBe(true); expect(first.capacity?.limitSource).toBe("model");
 	expect(first.state.tasks["5"].progressReports).toEqual([{ sourceId: "a" }]);

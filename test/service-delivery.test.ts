@@ -55,7 +55,7 @@ test("first managed startup registers one unqualified service package without ch
 		writeFileSync(join(serviceDir, "service.ts"), `
 			const key = Symbol.for("pi-llm-as-jev:service");
 			export default function(pi) {
-				const service = { version: 1, reviewVersion: 1, reviewCacheVersion: 1, reviewStagesVersion: 1, review: async () => ({}) };
+				const service = { version: 2, judge: async () => ({}) };
 				pi.registerCommand("llm-as-jev", { description: "Fixture configuration", handler: async () => {} });
 				pi.on("session_start", () => { globalThis[key] = service; });
 				pi.on("session_shutdown", () => { if (globalThis[key] === service) delete globalThis[key]; });
@@ -103,7 +103,8 @@ test("first managed startup registers one unqualified service package without ch
 		expect(JSON.parse(readFileSync(settingsFile, "utf8"))).toEqual({ ...original, packages: [root, source] });
 		expect(install).toHaveBeenCalledTimes(1);
 		expect(commands.has("llm-as-jev")).toBe(true);
-		expect(typeof (globals[key] as { review?: unknown } | undefined)?.review).toBe("function");
+		expect(typeof (globals[key] as { judge?: unknown } | undefined)?.judge).toBe("function");
+		expect((globals[key] as { version?: unknown } | undefined)?.version).toBe(2);
 		await emit("session_start");
 		expect(install).toHaveBeenCalledTimes(1);
 	} finally {

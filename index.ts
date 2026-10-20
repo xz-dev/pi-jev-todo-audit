@@ -15,8 +15,8 @@ import { agentConfigPath, legacyConfigPath, loadConfig, projectConfigPath, type 
 import { replayBoardWithAges, isTaskDetails, staleTaskIds, unfinishedTasks, visibleTasks, inProgressTasks as inProgressBoardTasks } from "./board.js";
 import { collectContext, contextVersion, digest, object, redact } from "./context.js";
 import { freshCounter, onTurnEnd, onUserMessage, replayCounter, shouldAudit, type LoopCounter } from "./counter.js";
-import type { Attempt, TerminalStopInfo } from "./typesafe.js";
-import { diagnose, isOwnBookkeeping, writeLedger } from "./ledger.js";
+import type { TerminalStopInfo } from "./typesafe.js";
+import { diagnose, isOwnBookkeeping, writeLedger, type SegmentDiag } from "./ledger.js";
 import { getJudgmentService } from "./judgment-client.js";
 import { runIncremental } from "./incremental.js";
 import { groupLoops } from "./loops.js";
@@ -192,11 +192,20 @@ export default function (pi: ExtensionAPI, cfgOverride?: AuditConfig) {
 				(inputVersion === undefined || contextVersion(contextFor(c, "")) === inputVersion);
 			const evidenceVersion = evidenceVersionFor(ctx);
 			const service = getJudgmentService();
-			if (service?.version !== 1 || typeof service.judge !== "function") {
+			if (service?.version !== 2 || typeof service.judge !== "function") {
 				const key = `dependency:${mySid}:${service ? "incompatible" : "missing"}`;
 				const manual = label === "manual" || label === "manual full";
 				if (manual || !noticeKeys.has(key)) {
-					ctx.ui?.notify?.("[jev audit] requires pi-llm-as-jev (judgment service version 1); load/update the shared service. Audit skipped; TODO remains available.", manual ? "error" : "warning");
+					ctx.ui?.notify?.("[jev audit] requires pi-llm-as-jev (judgment service version 2); load/update the shared service. Audit skipped; TODO remains available.", manual ? "error" : "warning");
+					noticeKeys.add(key);
+				}
+				return;
+			}
+			if (cfg.legacyTimeoutConfigured) {
+				const key = `migration:${mySid}:timeoutMs`;
+				const manual = label === "manual" || label === "manual full";
+				if (manual || !noticeKeys.has(key)) {
+					ctx.ui?.notify?.("[jev audit] legacy \"timeoutMs\" requires migration: remove it for the service defaults (native 10 s / LLM 15 s progress-idle, no hard cap), or set idleTimeoutMs and/or modelTimeoutMs. Audit inference is skipped until then; TODO and main-agent work are unaffected.", manual ? "error" : "warning");
 					noticeKeys.add(key);
 				}
 				return;
@@ -222,7 +231,7 @@ export default function (pi: ExtensionAPI, cfgOverride?: AuditConfig) {
 				if (origin && (!prev || !prev.firstActive)) stamped.tasks[String(task.id)] = { ...(prev ?? emptyTask()), firstActive: origin };
 			}
 			const outcome = await runIncremental({
-				service, board, context, branchHistory, state: stamped, timeoutMs: cfg.timeoutMs, signal: ac.signal, secrets: legacySecrets, stop: opts.terminalStop, full: opts.full,
+				service, board, context, branchHistory, state: stamped, idleTimeoutMs: cfg.idleTimeoutMs, modelTimeoutMs: cfg.modelTimeoutMs, signal: ac.signal, secrets: legacySecrets, stop: opts.terminalStop, full: opts.full,
 				minConfidence: cfg.confidenceThreshold, isCurrent: () => current(lastCtx ?? ctx),
 				persist: (next) => {
 					if (!current(lastCtx ?? ctx)) return false;
@@ -231,11 +240,11 @@ export default function (pi: ExtensionAPI, cfgOverride?: AuditConfig) {
 					return true;
 				},
 			});
-			const sent = outcome.reports.reduce((n, r) => n + (r.reuse?.sent ?? 0), 0);
-			if (current(lastCtx)) writeLedger(append, { kind: "diag", diag: diagnose(`${mySid}:${LOAD_ID}:${++auditSeq}`, label, { hits: 0, joined: 0, sent },
+			if (current(lastCtx)) writeLedger(append, { kind: "diag", diag: diagnose(`${mySid}:${LOAD_ID}:${++auditSeq}`, label,
 				{ from: before.session.cursor ?? null, to: outcome.state.session.cursor ?? null },
 				outcome.persistenceFailed || outcome.reports.some((r) => r.outcome === "failed") ? "failed" : !outcome.complete ? "incomplete" : outcome.reports.length === 0 ? "unchanged" : "completed",
-				outcome.reports.flatMap((r): Attempt[] => r.outcome === "failed" ? [{ outcome: r.contextOverflow ? "overflow" : "http_error", model: r.model }] : r.usage ? [{ outcome: "answered", model: r.model, inputTokens: r.usage.input, outputTokens: r.usage.output }] : []),
+				outcome.reports.map((r): SegmentDiag => ({ scopes: r.scopes, loops: r.loops, outcome: r.outcome, error: r.error, contextOverflow: r.contextOverflow, model: r.model,
+					...(r.usage ? { usage: r.usage } : {}) })),
 				{ ...(outcome.capacity ? { channel: `${outcome.capacity.backend}:${outcome.capacity.model}` } : {}) }) });
 			if (!current(lastCtx ?? ctx)) return;
 

@@ -12,7 +12,7 @@ const flags = ["--no-session", "--no-skills", "--no-prompt-templates", "--no-con
 const hash = (path: string) => createHash("sha256").update(readFileSync(path)).digest("hex");
 interface Command { name: string; description?: string; sourceInfo: { source: string; path: string; scope: string } }
 interface Packet { type: string; id?: string; success?: boolean; data?: { commands?: Command[]; disposition?: string; output?: string; exitCode?: number }; method?: string; message?: string; event?: string; error?: string }
-interface Observation { snapshots?: Array<{ action: string; error?: string; tasks: Array<{ id: number; status: string; subject: string }> }>; kind: string; token?: string; generation: number; reason?: string; marker?: string; version?: number; reviewVersion?: number; review?: string; sameAsOld?: boolean; ledgerEntries?: number; calls?: number; commands?: Command[]; auditPath?: string; servicePath?: string; scope?: string; trusted?: boolean; tools?: string[]; pid?: number }
+interface Observation { snapshots?: Array<{ action: string; error?: string; tasks: Array<{ id: number; status: string; subject: string }> }>; kind: string; token?: string; generation: number; reason?: string; marker?: string; version?: number; judge?: string; sameAsOld?: boolean; ledgerEntries?: number; calls?: number; commands?: Command[]; auditPath?: string; servicePath?: string; scope?: string; trusted?: boolean; tools?: string[]; pid?: number }
 
 async function until<T>(read: () => T | undefined | false, label: string): Promise<T> {
 	const deadline = Date.now() + 60_000;
@@ -130,7 +130,7 @@ export async function nativeDelivery(repo: string, binary: string, route: "bun" 
 				import fs from 'node:fs';
 				const KEY=Symbol.for('pi-llm-as-jev:service');
 				export default function(pi) {
-					const service={version:1,reviewVersion: 1, reviewCacheVersion: 1, reviewStagesVersion: 1,marker:${JSON.stringify(revision)},review:async()=>{globalThis.__deliveryInference=(globalThis.__deliveryInference??0)+1;throw Error('Unexpected inference');}};
+					const service={version:2,marker:${JSON.stringify(revision)},judge:async()=>{globalThis.__deliveryInference=(globalThis.__deliveryInference??0)+1;throw Error('Unexpected inference');}};
 					pi.registerCommand('llm-as-jev',{description:'Judge backend ${revision}',handler:async(_a,ctx)=>ctx.ui.notify('Fixture ${revision} status','info')});
 					pi.registerCommand('llm-as-jev-classifier',{description:'Classifier ${revision}',handler:async()=>{}});
 					pi.on('session_start',()=>{globalThis[KEY]=service;fs.appendFileSync(process.env.DELIVERY_OBSERVER,JSON.stringify({kind:'service-start',marker:${JSON.stringify(revision)},pid:process.pid})+'\\n');});
@@ -193,7 +193,7 @@ export async function nativeDelivery(repo: string, binary: string, route: "bun" 
 						const {DefaultPackageManager,SettingsManager,getAgentDir}=await import('@earendil-works/pi-coding-agent');
 						const pm=new DefaultPackageManager({cwd:ctx.cwd,agentDir:getAgentDir(),settingsManager:SettingsManager.create(ctx.cwd,getAgentDir(),{projectTrusted:ctx.isProjectTrusted()})});
 						const installed=(source)=>${local ? "ctx.isProjectTrusted()" : "true"}?pm.getInstalledPath(source,${JSON.stringify(local ? "project" : "user")}):undefined;
-						const s=globalThis[KEY];mark({kind:'state',token,generation,scope:pi.getCommands().find(c=>c.name==='jev-audit-service')?.sourceInfo?.scope,trusted:ctx.isProjectTrusted(),tools:pi.getAllTools().map(t=>t.name),marker:s?.marker,version:s?.version,reviewVersion:s?.reviewVersion,review:typeof s?.review,sameAsOld:globalThis[OLD]===s,ledgerEntries:ctx.sessionManager.getBranch().filter(e=>e.type==='custom'&&/jev.*(?:ledger|audit)/.test(e.customType)).length,calls:globalThis.__deliveryInference??0,
+						const s=globalThis[KEY];mark({kind:'state',token,generation,scope:pi.getCommands().find(c=>c.name==='jev-audit-service')?.sourceInfo?.scope,trusted:ctx.isProjectTrusted(),tools:pi.getAllTools().map(t=>t.name),marker:s?.marker,version:s?.version,judge:typeof s?.judge,sameAsOld:globalThis[OLD]===s,ledgerEntries:ctx.sessionManager.getBranch().filter(e=>e.type==='custom'&&/jev.*(?:ledger|audit)/.test(e.customType)).length,calls:globalThis.__deliveryInference??0,
 						commands:pi.getCommands().filter(c=>c.name.startsWith('llm-as-jev')),auditPath:installed(${JSON.stringify(AUDIT)}),servicePath:installed(${JSON.stringify(SERVICE)})});if(!globalThis[OLD])globalThis[OLD]=s;
 					}});
 					pi.registerCommand('delivery-reload',{handler:async(_a,ctx)=>{mark({kind:'reload-invoked',generation});await ctx.reload();mark({kind:'reload-returned',generation});}});
@@ -274,7 +274,7 @@ esac
 				if (provisioningExpected) {
 					const start = r.events.length;
 					await r.request("prompt", "/jev-audit-service");
-					const status = value.version === 1 && value.reviewVersion === 1 ? "Judgment service is available" : "Judgment service is unavailable";
+					const status = value.version === 2 && value.judge === "function" ? "Judgment service is available" : "Judgment service is unavailable";
 					check(`${token}: read-only service command dispatch reports actual readiness`, r.events.slice(start).some((event) => event.message?.includes(status)));
 				}
 				await r.request("prompt", `/delivery-state ${token}-after-commands`);
@@ -329,7 +329,7 @@ esac
 				assert.equal(readFileSync(c.settingsFile, "utf8"), before);
 				check(`${kind}: no audit-owned replacement`, !r.events.some((e) => e.message?.includes("Installing the independent judgment-service")));
 				if (kind === "pinned-filtered") check("pinned disabled service stays disabled", !value.version && value.commands?.length === 0);
-				else check(`${kind}: native selected service owns its commands`, value.version === 1 && value.commands?.length === 2 && value.commands.every((c) => c.sourceInfo.source === SERVICE));
+				else check(`${kind}: native selected service owns its commands`, value.version === 2 && value.commands?.length === 2 && value.commands.every((c) => c.sourceInfo.source === SERVICE));
 				await stop(r.child);
 			}
 			for (const failure of ["download", "auth", "persistence", "invalid-settings"]){
@@ -362,7 +362,7 @@ esac
 				writeFileSync(c.settingsFile, before);
 				const repaired = startRpc(c.caseDir, c.env, failure + "-repaired");
 				const ready = await observe(c, repaired, failure + "-repaired");
-				check(`${failure}: later normal load recovers`, ready.version === 1 && ready.commands?.length === 2);
+				check(`${failure}: later normal load recovers`, ready.version === 2 && ready.commands?.length === 2);
 				assert.deepEqual(JSON.parse(readFileSync(c.settingsFile, "utf8")), { ...c.initial, packages: [AUDIT, SERVICE] });
 				await stop(repaired.child);
 			}
@@ -374,7 +374,7 @@ esac
 				const before = [readFileSync(c.settingsFile, "utf8"), readFileSync(projectSettings, "utf8")];
 				const r = startRpc(c.caseDir, c.env, "project-selection", ["--approve"]);
 				const selected = await observe(c, r, "project-selection");
-				check("existing project service wins over user audit", selected.version === 1 && selected.commands?.length === 2 && selected.commands.every((c) => c.sourceInfo.source === SERVICE && c.sourceInfo.scope === "project"));
+				check("existing project service wins over user audit", selected.version === 2 && selected.commands?.length === 2 && selected.commands.every((c) => c.sourceInfo.source === SERVICE && c.sourceInfo.scope === "project"));
 				assert.deepEqual([readFileSync(c.settingsFile, "utf8"), readFileSync(projectSettings, "utf8")], before);
 				assert.equal(selected.servicePath, undefined, "no global competing checkout");
 				await stop(r.child);
@@ -395,7 +395,7 @@ esac
 				const poison = join(nested, "src", "index.ts"); writeFileSync(poison, "throw Error('Obsolete nested service must not load');"); const poisonHash = hash(poison);
 				const next = startRpc(c.caseDir, c.env, "upgraded-audit");
 				const ready = await observe(c, next, "upgraded-audit");
-				check("normal load after older audit upgrade provisions independent service", ready.version === 1 && ready.reviewVersion === 1);
+				check("normal load after older audit upgrade provisions independent service", ready.version === 2 && ready.judge === "function");
 				assert.equal(hash(poison), poisonHash); assert.equal(hash(join(old.auditPath, "judgment-service.ts")), candidate["judgment-service.ts"]);
 				assert.deepEqual(JSON.parse(readFileSync(c.settingsFile, "utf8")), { ...c.initial, packages: [AUDIT, SERVICE] });
 				await next.request("prompt", "/delivery-reload");
@@ -405,14 +405,14 @@ esac
 			}
 			const serviceFile = join(serviceRepo, "service.ts"), compatible = readFileSync(serviceFile, "utf8");
 			for (const kind of ["incompatible", "partial-publication"]) {
-				writeFileSync(serviceFile, kind === "incompatible" ? compatible.replace("reviewVersion: 1, reviewCacheVersion: 1, reviewStagesVersion: 1", "reviewVersion:99") : compatible.replace("pi.on('session_shutdown',", "pi.on('session_start',()=>{throw Error('fixture partial startup');});pi.on('session_shutdown',"));
+				writeFileSync(serviceFile, kind === "incompatible" ? compatible.replace("version:2", "version:1") : compatible.replace("pi.on('session_shutdown',", "pi.on('session_start',()=>{throw Error('fixture partial startup');});pi.on('session_shutdown',"));
 				git(["-C", serviceRepo, "add", "service.ts"]); git(["-C", serviceRepo, "commit", "-qm", kind]);
 				const badRevision = git(["-C", serviceRepo, "rev-parse", "HEAD"]), c = prepare(kind), r = startRpc(c.caseDir, c.env, kind);
 				const failed = await observe(c, r, kind); assert.ok(failed.servicePath);
 				assert.equal(git(["-C", failed.servicePath, "rev-parse", "HEAD"]), badRevision, "never downgrade latest selection");
 				if (kind === "incompatible") {
-					assert.equal(failed.reviewVersion, 99);
-					check("incompatible latest service diagnostic", r.events.some((e) => e.message?.includes("incompatible with review version 1; no older version will be installed")));
+					assert.equal(failed.version, 1);
+					check("incompatible latest service diagnostic", r.events.some((e) => e.message?.includes("incompatible with judge version 2; no older version will be installed")));
 				} else {
 					assert.equal(failed.version, undefined);
 					check("published handle cleaned before startup returns", observations(c.caseDir).some((o) => o.kind === "service-start") && r.events.some((e) => e.message?.includes("Judgment-service activation failed.")));
@@ -423,7 +423,7 @@ esac
 				run(binary, ["update", "--extensions"], join(c.caseDir, "project"), c.env, `${kind} native repair update`);
 				await r.request("prompt", "/delivery-reload");
 				const repaired = await observe(c, r, kind + "-repaired");
-				check(`${kind}: native update and successful reload recover unique ownership`, repaired.reviewVersion === 1 && repaired.commands?.length === 2 && repaired.commands.every((c) => c.sourceInfo.source === SERVICE));
+				check(`${kind}: native update and successful reload recover unique ownership`, repaired.version === 2 && repaired.commands?.length === 2 && repaired.commands.every((c) => c.sourceInfo.source === SERVICE));
 				assert.equal(readFileSync(c.settingsFile, "utf8"), before);
 				await stop(r.child);
 			}
@@ -450,7 +450,7 @@ esac
 				run(binary, ["update", "--extensions"], join(c.caseDir, "project"), c.env, "selected failing service native repair");
 				const repaired = startRpc(c.caseDir, c.env, "selected-failing-repaired");
 				const ready = await observe(c, repaired, "selected-failing-repaired");
-				check("selected failing service recovers through native repair", ready.reviewVersion === 1 && ready.commands?.length === 2 && ready.commands.every((command) => command.sourceInfo.source === SERVICE));
+				check("selected failing service recovers through native repair", ready.version === 2 && ready.commands?.length === 2 && ready.commands.every((command) => command.sourceInfo.source === SERVICE));
 				assert.equal(readFileSync(c.settingsFile, "utf8"), before);
 				await stop(repaired.child);
 			}
@@ -506,7 +506,7 @@ esac
 				check(`${token} actual missing-backend diagnostic, not dispatch-only`, true);
 				await rpc.request("prompt", `/delivery-state ${token}`);
 				const observed = await until(() => observations(current.caseDir).find((o) => o.kind === "state" && o.token === token), token);
-				check(`${token} compatible review capability`, observed.version === 1 && observed.reviewVersion === 1 && observed.review === "function");
+				check(`${token} compatible judge capability`, observed.version === 2 && observed.judge === "function");
 				check(`${token} command owner and no duplicate current service command`, observed.commands?.length === 1 && observed.commands[0].sourceInfo.source === owner);
 				check(`${token} no readiness judgment receipts`, observed.ledgerEntries === 0);
 				assert.equal(observed.sameAsOld, false, "reload must replace the bootstrap instance");
@@ -536,7 +536,7 @@ esac
 			return until(() => observations(current.caseDir).find((o) => o.kind === "state" && o.token === token), token);
 		};
 		const first = await state("before-update");
-		check("first-start capability and bootstrap ownership", first.marker === "S1" && first.review === "function" && first.calls === 0 && first.commands?.every((c) => c.sourceInfo.source === AUDIT));
+		check("first-start capability and bootstrap ownership", first.marker === "S1" && first.judge === "function" && first.calls === 0 && first.commands?.every((c) => c.sourceInfo.source === AUDIT));
 		assert.ok(first.auditPath); assert.ok(first.servicePath);
 		const auditPath = first.auditPath, servicePath = first.servicePath;
 		const identity = () => ({ head: git(["-C", auditPath, "rev-parse", "HEAD"]), manifest: hash(join(auditPath, "package.json")), lock: hash(join(auditPath, "package-lock.json")), entry: hash(join(auditPath, "judgment-service.ts")) });
@@ -557,7 +557,7 @@ esac
 		const shutdown = lifecycle.findIndex((o) => o.kind === "shutdown" && o.reason === "reload");
 		const startup = lifecycle.findIndex((o) => o.kind === "start" && o.reason === "reload");
 		check("supported reload performs ordered shutdown and startup", shutdown >= 0 && startup > shutdown && lifecycle.some((o) => o.kind === "reload-returned"));
-		check("running S2 after reload belongs to native service", after.marker === "S2" && after.review === "function" && after.calls === 0 && after.commands?.length === 2 && after.commands.every((c) => c.sourceInfo.source === SERVICE));
+		check("running S2 after reload belongs to native service", after.marker === "S2" && after.judge === "function" && after.calls === 0 && after.commands?.length === 2 && after.commands.every((c) => c.sourceInfo.source === SERVICE));
 		await rpc.request("prompt", "/llm-as-jev");
 		await until(() => rpc.events.find((e) => e.message === "Fixture S2 status"), "S2 command dispatch");
 		check("no model turn during native delivery", !rpc.events.some((e) => ["agent_start", "message_start"].includes(e.type)));

@@ -40,9 +40,16 @@ export interface AuditConfig {
 	notifyOnAligned: boolean;
 	/** Deprecated endpoint; loaded but never used for dispatch. */
 	apiUrl: string;
-	/** Optional per-call duration passed to the service. Unset: the service
-	 * applies its backend default (native 60 s deadline; LLM Pi's HTTP idle timeout). */
-	timeoutMs?: number;
+	/** Optional generation-progress idle duration (ms), forwarded to each
+	 * attempted backend. Unset: the service applies its defaults (native
+	 * 10,000 ms; LLM 15,000 ms). */
+	idleTimeoutMs?: number;
+	/** Optional whole-model-attempt hard limit (ms). Unset: no hard limit. */
+	modelTimeoutMs?: number;
+	/** Legacy `timeoutMs` was configured and requires explicit migration.
+	 * Audit inference is blocked while this is true; the value itself is
+	 * never read or forwarded. Not a user-settable field. */
+	legacyTimeoutConfigured?: boolean;
 	/** Deprecated: parsed for compatibility, never used as an evidence budget. */
 	activityBudgetChars?: number;
 	/** Audits an in_progress task may span before being flagged stale. */
@@ -60,13 +67,15 @@ export const DEFAULT_CONFIG: AuditConfig = {
 	enabled: true,
 	notifyOnAligned: false,
 	apiUrl: "https://api.typesafe.ai/v1/systemone",
-	timeoutMs: undefined,
+	idleTimeoutMs: undefined,
+	modelTimeoutMs: undefined,
 	activityBudgetChars: undefined,
 	staleAuditSpans: 3,
 };
 
-/** Keys a project-level file may set. apiKey/apiKeyEnvVar stay global-only. */
-const PROJECT_ALLOWED_KEYS: ReadonlySet<keyof AuditConfig> = new Set([
+/** Keys a project-level file may set. apiKey/apiKeyEnvVar stay global-only;
+ * timeoutMs is admitted only to mark its migration (never a value). */
+const PROJECT_ALLOWED_KEYS = new Set<string>([
 	"interval",
 	"cooldownLoops",
 	"confidenceThreshold",
@@ -74,6 +83,8 @@ const PROJECT_ALLOWED_KEYS: ReadonlySet<keyof AuditConfig> = new Set([
 	"enabled",
 	"notifyOnAligned",
 	"apiUrl",
+	"idleTimeoutMs",
+	"modelTimeoutMs",
 	"timeoutMs",
 	"activityBudgetChars",
 	"staleAuditSpans",
@@ -128,7 +139,7 @@ function readJsonFile(path: string): Record<string, unknown> {
 function projectFilter(raw: Record<string, unknown>): Record<string, unknown> {
 	const out: Record<string, unknown> = {};
 	for (const [k, v] of Object.entries(raw)) {
-		if (PROJECT_ALLOWED_KEYS.has(k as keyof AuditConfig)) out[k] = v;
+		if (PROJECT_ALLOWED_KEYS.has(k)) out[k] = v;
 	}
 	return out;
 }
@@ -149,7 +160,9 @@ function applyLayer(cfg: AuditConfig, o: Record<string, unknown>, readLayer = o)
 		enabled: typeof o.enabled === "boolean" ? o.enabled : cfg.enabled,
 		notifyOnAligned: typeof o.notifyOnAligned === "boolean" ? o.notifyOnAligned : cfg.notifyOnAligned,
 		apiUrl: str(o.apiUrl) ?? cfg.apiUrl,
-		timeoutMs: typeof o.timeoutMs === "number" ? num(o.timeoutMs, cfg.timeoutMs ?? 1_000, 1_000) : cfg.timeoutMs,
+		idleTimeoutMs: typeof o.idleTimeoutMs === "number" ? num(o.idleTimeoutMs, cfg.idleTimeoutMs ?? 1_000, 1_000) : cfg.idleTimeoutMs,
+		modelTimeoutMs: typeof o.modelTimeoutMs === "number" ? num(o.modelTimeoutMs, cfg.modelTimeoutMs ?? 1_000, 1_000) : cfg.modelTimeoutMs,
+		legacyTimeoutConfigured: Object.hasOwn(readLayer, "timeoutMs") || cfg.legacyTimeoutConfigured,
 		activityBudgetChars: typeof o.activityBudgetChars === "number" ? o.activityBudgetChars : cfg.activityBudgetChars,
 		staleAuditSpans: num(o.staleAuditSpans, cfg.staleAuditSpans, 1),
 		contextLimits: limits(o.contextLimits) ?? cfg.contextLimits,

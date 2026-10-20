@@ -12,7 +12,10 @@ jobs:
       matrix:
         os: [ubuntu-latest, windows-latest]
     runs-on: ${{ matrix.os }}
-    timeout-minutes: 10
+    timeout-minutes: 30
+    defaults:
+      run:
+        shell: bash
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-node@v4
@@ -23,7 +26,58 @@ jobs:
         with:
           bun-version: '1.4.2'
       - run: npm ci
+      - name: Fetch current source dependencies (no user pins)
+        run: |
+          git clone --depth 1 --branch master https://github.com/xz-dev/pi-llm-as-jev.git "$RUNNER_TEMP/judgment"
+          git clone --depth 1 --branch main https://github.com/xz-dev/pi.git "$RUNNER_TEMP/pi-source"
+          git clone --depth 1 --branch main https://github.com/xz-dev/rpiv-mono.git "$RUNNER_TEMP/rpiv"
+          for repo in judgment pi-source rpiv; do git -C "$RUNNER_TEMP/$repo" rev-parse HEAD; done
+          npm ci --prefix "$RUNNER_TEMP/judgment"
+          npm ci --prefix "$RUNNER_TEMP/rpiv"
+          # The adapter uses the same installed SDK dependencies as this test runner.
+          node --input-type=module -e 'import fs from "node:fs"; import path from "node:path"; fs.symlinkSync(path.resolve("node_modules"), path.join(process.env.RUNNER_TEMP, "pi-source/node_modules"), "junction")'
+          node --input-type=module -e 'import fs from "node:fs"; import path from "node:path"; for (const [key, value] of Object.entries({PI_JUDGMENT_SOURCE:"judgment", PI_CLASSIFIER_SOURCE:"pi-source", PI_TODO_SOURCE:"rpiv/packages/rpiv-todo"})) fs.appendFileSync(process.env.GITHUB_ENV, `${key}=${path.join(process.env.RUNNER_TEMP,value)}\n`)'
+          cmp judgment-client.ts "$RUNNER_TEMP/judgment/client/judgment-client.ts"
+          cd "$RUNNER_TEMP/judgment"
+          node --import tsx --input-type=module -e 'import assert from "node:assert/strict"; import {createJudgmentService} from "./src/service.ts"; const s=createJudgmentService({}); assert.equal(s.version,2); assert.equal(s.capacityVersion,2)'
       - run: bun run typecheck
       - run: bun test
+      - name: Released standalone Pi for native delivery
+        if: runner.os == 'Linux'
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          release=xz-v1.3.0-xz.339.1.g12ba93b4
+          dir="$RUNNER_TEMP/pi-release"
+          mkdir -p "$dir" && cd "$dir"
+          gh release download "$release" -R xz-dev/pi -p pi-linux-x64-gnu-baseline.zip -p SHA256SUMS
+          grep ' pi-linux-x64-gnu-baseline.zip$' SHA256SUMS | sha256sum -c -
+          unzip -q pi-linux-x64-gnu-baseline.zip
+          ./pi --version
+          sha256sum ./pi
+          echo "JEV_PI_BIN=$dir/pi" >> "$GITHUB_ENV"
+      - name: Actual native delivery (all opt-in cases required)
+        if: runner.os == 'Linux'
+        env:
+          JEV_NATIVE_DELIVERY: '1'
+          JEV_NATIVE_REAL_SERVICE: '1'
+        run: bun test test/service-delivery.test.ts
+      - name: Verify Git-source package contents
+        run: |
+          npm pack --json --pack-destination "$RUNNER_TEMP" > "$RUNNER_TEMP/package.json"
+          node --input-type=module -e '
+            import fs from "node:fs";
+            import assert from "node:assert/strict";
+            const [pack] = JSON.parse(fs.readFileSync(process.env.RUNNER_TEMP + "/package.json"));
+            const files = new Set(pack.files.map(f => f.path));
+            for (const file of ["index.ts", "judgment-service.ts", "judgment-client.ts", "incremental.ts", "README.md"]) assert(files.has(file), file);
+            for (const file of files) assert(!/^(test\/|PLAN\/|\.serena\/)/.test(file), file);
+            console.log(pack.filename, pack.integrity, pack.files.length);
+          '
+      - uses: actions/upload-artifact@v4
+        with:
+          name: git-source-package-${{ runner.os }}
+          path: ${{ runner.temp }}/pi-jev-todo-audit-*.tgz
+          if-no-files-found: error
       - name: Native Node ownership and inheritance
         run: node "test/fixtures/node ownership.mjs"

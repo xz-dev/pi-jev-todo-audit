@@ -1,4 +1,4 @@
-/** Real sibling service + installed Pi native adapter; only HTTP responses and ledger storage are fixtures. */
+/** Real sibling service + installed Pi native adapter; only HTTP responses are fixtures. */
 import assert from "node:assert/strict";
 import { join } from "node:path";
 import { pathToFileURL } from "node:url";
@@ -20,19 +20,18 @@ export async function actualNativeFixture(answer: (request: JudgeRequest) => Jud
 	const { createJudgmentService } = await import(pathToFileURL(join(root, "src/service.ts")).href);
 	const { validateConfig } = await import(pathToFileURL(join(root, "src/config.ts")).href);
 	const { classify } = await import(new URL("./api/typesafe-system-one.js", import.meta.resolve("@earendil-works/pi-ai")).href);
-	const wire: WireMetrics[] = [], rows: unknown[] = [];
+	const wire: WireMetrics[] = [];
 	const model = { type: "classifier", id: "jev-latest", name: "Offline", provider: "typesafe", api: "typesafe-system-one", baseUrl: "https://fixture.invalid/v1", input: ["text"], contextWindow: 32000, cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 } };
 	const fetchFixture = async (url: unknown, init?: RequestInit) => {
 		assert.equal(String(url), "https://fixture.invalid/v1/systemone", "Live transport forbidden");
 		const raw = String(init?.body), request = JSON.parse(raw) as JudgeRequest;
-		const fixed = request.state.fixed as { audit: string }; assert.equal(typeof fixed.audit, "string");
-		wire.push({ phase: phase(), bytes: Buffer.byteLength(raw), audit: fixed.audit, ...requestMetrics(fixed.audit) });
+		const audit = (request.state as { audit?: unknown }).audit; assert.equal(typeof audit, "string");
+		wire.push({ phase: phase(), bytes: Buffer.byteLength(raw), audit: audit as string, ...requestMetrics(audit as string) });
 		return Response.json({ answers: answer(request).answers });
 	};
 	const create = (): JudgmentService => createJudgmentService({
-		config: () => validateConfig({ mode: "classifier", classifierModel: "typesafe/jev-latest", timeoutMs: 1000 }).config, nativeFetch: fetchFixture,
-		ledger: { branch: () => rows, append: (customType: string, data: unknown) => rows.push({ type: "custom", customType, data }) },
-		registry: { getAvailableOfType: async () => [model], getModel: () => undefined, getProviders: () => [], getAuth: async () => undefined,
+		config: () => validateConfig({ mode: "classifier", classifierModel: "typesafe/jev-latest", timeouts: { classifier: { idleTimeoutMs: 1000 } } }).config, nativeFetch: fetchFixture,
+		registry: { getAvailableOfType: async () => [model], getModel: () => undefined, getProviders: () => [], getAuth: async () => ({ auth: { apiKey: "offline-fixture-only" } }),
 			streamSimple: () => { throw new Error("Unexpected LLM fallback"); },
 			classify: (_model: unknown, context: unknown, opts: any) => classify(model, context, { ...opts, apiKey: "offline-fixture-only", fetch: opts.fetch ?? fetchFixture }) },
 	});

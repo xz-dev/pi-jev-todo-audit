@@ -21,7 +21,7 @@ export interface SegmentReport {
 	outcome: "advanced" | "partial" | "open" | "failed" | "oversize" | "unchanged";
 	error?: string;
 	contextOverflow?: boolean;
-	reuse?: { hits: number; joined: number; sent: number };
+	/** Provider-reported usage under the service's stated scope; absent is unknown, never zero. */
 	usage?: { input?: number; output?: number };
 	model?: string;
 }
@@ -58,7 +58,7 @@ export async function runIncremental(a: {
 	service: JudgmentService; board: BoardSnapshot; context: AuditContext; state: JudgmentState;
 	/** Active-branch originals for anchor reload and continuation across Pi compaction. Never a different branch. */
 	branchHistory?: EvidenceRecord[];
-	timeoutMs?: number; signal: AbortSignal; secrets?: readonly string[]; stop?: TerminalStopInfo;
+	idleTimeoutMs?: number; modelTimeoutMs?: number; signal: AbortSignal; secrets?: readonly string[]; stop?: TerminalStopInfo;
 	minConfidence?: number; isCurrent?: () => boolean;
 	persist: Persist; fallbackLoops?: number; outputReserve?: number; maxSegmentsPerRun?: number;
 	/** Reset listed tasks to re-judge from first-active (explicit full mode). */
@@ -97,13 +97,15 @@ export async function runIncremental(a: {
 
 	// Capacity: ask the service once per run; absence is surfaced, never guessed.
 	let capacity: CapacityDisclosure | undefined;
-	if (current() && a.service.capacityVersion === 1 && typeof a.service.describeSelection === "function") {
-		const d = await untilAbort(a.service.describeSelection({ signal: a.signal, path: "judge" }), a.signal);
+	if (current() && a.service.capacityVersion === 2 && typeof a.service.describeSelection === "function") {
+		const d = await untilAbort(a.service.describeSelection({ signal: a.signal }), a.signal);
 		if (d && !("error" in d)) capacity = d;
 	}
+	// Explicit consumer estimates: the stateless service declares no ratios or
+	// envelope calibration, so packing applies audit's documented priors.
 	const limits: PackLimits = {
 		stateAndLongestQuestion: capacity?.limits.stateAndLongestQuestion, request: capacity?.limits.request, contextWindow: capacity?.limits.contextWindow,
-		tokensPerByte: capacity?.tokensPerByte ?? 1 / 1.75, envelopeOverheadBytes: capacity?.envelopeOverheadBytes ?? 2048, outputReserve: a.outputReserve ?? 1024,
+		tokensPerByte: 1 / 1.75, envelopeOverheadBytes: 2048, outputReserve: a.outputReserve ?? 1024,
 	};
 	const missingCapacityMetadata = !capacity || (capacity.limits.request === undefined && capacity.limits.stateAndLongestQuestion === undefined && capacity.limits.contextWindow === undefined);
 
@@ -184,7 +186,7 @@ export async function runIncremental(a: {
 		if (packed.oversize && packed.tooManyChoices) {
 			// A single complete loop with more than MAX_CHOICES sources cannot be asked
 			// without slicing it. Fail closed for these scopes; the cursor does not move.
-			reports.push({ scopes: scopeKeys, loops: [packed.oversize.id], outcome: "oversize", error: `one loop carries more than ${MAX_CHOICES} candidate sources`, reuse: { hits: 0, joined: 0, sent: 0 }, model: capacity?.model ?? "" });
+			reports.push({ scopes: scopeKeys, loops: [packed.oversize.id], outcome: "oversize", error: `one loop carries more than ${MAX_CHOICES} candidate sources`, model: capacity?.model ?? "" });
 			return { state, reports, complete: false, tip, capacity, persistenceFailed, missingCapacityMetadata };
 		}
 		if (packed.oversize) packed = { ...packed, loops: [packed.oversize] };
@@ -192,17 +194,17 @@ export async function runIncremental(a: {
 		// Overflow recovery: drop trailing whole loops and retry; never slice a loop.
 		while (packed.loops.length && segments < maxSegments && current()) {
 			const req = buildChangeRequest({ board: a.board, state, segment: packed.loops, anchors, taskIds: askTasks, session: askSession, terminalStop: a.stop, secrets: a.secrets });
-			const result = await untilAbort(a.service.judge({ state: { audit: req.state }, questions: req.questions }, { ...(a.timeoutMs !== undefined ? { timeoutMs: a.timeoutMs } : {}), signal: a.signal, minConfidence: a.minConfidence }), a.signal);
+			const result = await untilAbort(a.service.judge({ state: { audit: req.state }, questions: req.questions }, { ...(a.idleTimeoutMs !== undefined ? { idleTimeoutMs: a.idleTimeoutMs } : {}), ...(a.modelTimeoutMs !== undefined ? { modelTimeoutMs: a.modelTimeoutMs } : {}), signal: a.signal, minConfidence: a.minConfidence }), a.signal);
 			if (!result || !current()) return { state, reports, complete: false, tip, capacity, persistenceFailed, missingCapacityMetadata };
 			const loopIds = packed.loops.map((l) => l.id);
 			segments++;
 			if (result.stopReason !== "stop") {
 				if (result.contextOverflow && packed.loops.length > 1) {
-					reports.push({ scopes: scopeKeys, loops: loopIds, outcome: "partial", contextOverflow: true, reuse: result.reuse, model: result.model });
+					reports.push({ scopes: scopeKeys, loops: loopIds, outcome: "partial", contextOverflow: true, model: result.model });
 					// Halve the complete-loop prefix so rejected segments cannot exhaust every run before any progress.
 					packed = { ...packed, loops: packed.loops.slice(0, Math.floor(packed.loops.length / 2)) }; continue;
 				}
-				reports.push({ scopes: scopeKeys, loops: loopIds, outcome: result.contextOverflow && packed.loops.length === 1 ? "oversize" : "failed", error: result.errorMessage, contextOverflow: result.contextOverflow, reuse: result.reuse, model: result.model });
+				reports.push({ scopes: scopeKeys, loops: loopIds, outcome: result.contextOverflow && packed.loops.length === 1 ? "oversize" : "failed", error: result.errorMessage, contextOverflow: result.contextOverflow, model: result.model });
 				return { state, reports, complete: false, tip, capacity, persistenceFailed, missingCapacityMetadata };
 			}
 			const answers = filterAnswers(result, req.questions);
@@ -218,11 +220,11 @@ export async function runIncremental(a: {
 					const scopedState = { ...state, session: { ...state.session, authorizedScope: { anchor: scopeSource.id } } };
 					const scopedRequest = buildChangeRequest({ board: a.board, state: scopedState, segment: packed.loops, anchors: nextAnchors, taskIds: [], session: true, secrets: a.secrets });
 					const questions = { drift: scopedRequest.questions.drift };
-					const drift = await untilAbort(a.service.judge({ state: { audit: scopedRequest.state }, questions }, { ...(a.timeoutMs !== undefined ? { timeoutMs: a.timeoutMs } : {}), signal: a.signal, minConfidence: a.minConfidence }), a.signal);
+					const drift = await untilAbort(a.service.judge({ state: { audit: scopedRequest.state }, questions }, { ...(a.idleTimeoutMs !== undefined ? { idleTimeoutMs: a.idleTimeoutMs } : {}), ...(a.modelTimeoutMs !== undefined ? { modelTimeoutMs: a.modelTimeoutMs } : {}), signal: a.signal, minConfidence: a.minConfidence }), a.signal);
 					if (!drift || !current()) return { state, reports, complete: false, tip, capacity, persistenceFailed, missingCapacityMetadata };
 					segments++;
 					if (drift.stopReason === "stop" && drift.model === result.model && drift.backend === result.backend) answers.drift = filterAnswers(drift, questions).drift;
-					reports.push({ scopes: ["session:drift"], loops: loopIds, outcome: answers.drift ? "advanced" : "failed", error: answers.drift ? undefined : drift.errorMessage ?? "dependent drift judgment unavailable", reuse: drift.reuse, model: drift.model,
+					reports.push({ scopes: ["session:drift"], loops: loopIds, outcome: answers.drift ? "advanced" : "failed", error: answers.drift ? undefined : drift.errorMessage ?? "dependent drift judgment unavailable", model: drift.model,
 						usage: drift.usage ? { input: drift.usage.input, output: drift.usage.output } : undefined });
 				}
 			}
@@ -232,11 +234,11 @@ export async function runIncremental(a: {
 			// Persist before trusting: an unacknowledged write leaves the previous state and cursors in force.
 			if (!current() || !a.persist(applied.state)) {
 				persistenceFailed = true;
-				reports.push({ scopes: scopeKeys, loops: loopIds, outcome: "failed", error: "state persistence failed", reuse: result.reuse, model: result.model });
+				reports.push({ scopes: scopeKeys, loops: loopIds, outcome: "failed", error: "state persistence failed", model: result.model });
 				return { state, reports, complete: false, tip, capacity, persistenceFailed, missingCapacityMetadata };
 			}
 			state = applied.state;
-			reports.push({ scopes: scopeKeys, loops: loopIds, reuse: result.reuse, model: result.model, usage: result.usage ? { input: result.usage.input, output: result.usage.output } : undefined,
+			reports.push({ scopes: scopeKeys, loops: loopIds, model: result.model, usage: result.usage ? { input: result.usage.input, output: result.usage.output } : undefined,
 				outcome: applied.unanswered.length ? "partial" : applied.open.length ? "open" : "advanced" });
 			judged = true;
 			// Open/unanswered scopes cannot progress this run without new input; advanced scopes continue after this segment.

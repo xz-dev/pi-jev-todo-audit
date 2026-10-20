@@ -29,14 +29,14 @@ function reply(req: JudgeRequest, overrides: Record<string, string> = {}): Judge
 		const choice = choices[id];
 		if (q.type !== "choice" || !choice || !Object.hasOwn(q.criteria, choice)) throw new Error(`Unscripted choice ${id}: ${choice}`);
 		return [id, { type: "choice", choice, confidence: 0.95, probabilities: { [choice]: 0.95 } }];
-	})), backend: "classifier", model: "fixture/native", dropped: [], stopReason: "stop", reuse: { hits: 0, joined: 0, sent: 1 } };
+	})), backend: "classifier", model: "fixture/native", dropped: [], stopReason: "stop" };
 }
 function install(judge: JudgmentService["judge"]): void {
-	const service: JudgmentService = { version: 1, judge, availability: async () => ({}), capacityVersion: 1,
-		describeSelection: async () => ({ backend: "classifier", model: "fixture/native", limits: { request: 32000 }, limitSource: "model", tokensPerByte: 0.5, prior: true, envelopeOverheadBytes: 0 }) };
+	const service: JudgmentService = { version: 2, judge, availability: async () => ({}), capacityVersion: 2,
+		describeSelection: async () => ({ backend: "classifier", model: "fixture/native", limits: { request: 32000 }, limitSource: "model" }) };
 	services[key] = service;
 }
-function host(branch = initial(), opts: { persist?: boolean; enabled?: boolean; interval?: number; cooldownLoops?: number; timeoutMs?: number } = {}) {
+function host(branch = initial(), opts: { persist?: boolean; enabled?: boolean; interval?: number; cooldownLoops?: number; idleTimeoutMs?: number; modelTimeoutMs?: number; legacyTimeoutConfigured?: boolean } = {}) {
 	const handlers = new Map<string, ((e: any, c: any) => Promise<void>)[]>(), commands = new Map<string, any>(), bus = new Map<string, (data: unknown) => void>();
 	const sent: { message: any; options: any }[] = [], notices: [string, string?][] = [];
 	const ctx = { sessionManager: { getSessionId: () => "s", getBranch: () => branch, buildContextEntries: () => branch }, ui: { notify: (m: string, l?: string) => notices.push([m, l]) } };
@@ -60,19 +60,32 @@ test("manual audit persists before delivering reported completion; reload does n
 	expect(requests).toHaveLength(1); expect(h.branch.some((e) => e.customType === STATE_TYPE)).toBe(true);
 	expect(h.sent).toHaveLength(1); expect(h.sent[0].message.content).toContain("reported, not independently verified");
 	expect(h.sent[0].message.content).toContain("not a user message"); expect(h.sent[0].options).toEqual({ deliverAs: "steer" });
-	// No audit default: the service applies its backend default unless the user configures a value.
-	expect(options[0].timeoutMs).toBeUndefined(); expect(options[0].minConfidence).toBe(DEFAULT_CONFIG.confidenceThreshold);
+	// No audit default: the service applies its own defaults unless the user configures a value.
+	expect(options[0].idleTimeoutMs).toBeUndefined(); expect(options[0].modelTimeoutMs).toBeUndefined();
+	expect(options[0].minConfidence).toBe(DEFAULT_CONFIG.confidenceThreshold);
 	expect(Object.keys(options[0]).sort()).toEqual(["minConfidence", "signal"]);
 	await h.manual(); expect(requests).toHaveLength(1); expect(h.sent).toHaveLength(1);
 	const reload = host(h.branch); await reload.emit("session_start"); await reload.manual();
 	expect(requests).toHaveLength(1); expect(reload.sent).toHaveLength(0);
 });
 
-test("a configured timeoutMs reaches the service unchanged; the service interprets it per backend", async () => {
+test("configured idle/model timeouts reach the service unchanged as independent per-attempt options", async () => {
 	const options: JudgeOptions[] = [];
 	install(async (req, opts) => { options.push(opts!); return reply(req); });
-	const h = host(initial(), { timeoutMs: 45_000 }); await h.emit("session_start"); await h.manual();
-	expect(options[0].timeoutMs).toBe(45_000);
+	const h = host(initial(), { idleTimeoutMs: 45_000, modelTimeoutMs: 120_000 }); await h.emit("session_start"); await h.manual();
+	expect(options[0].idleTimeoutMs).toBe(45_000); expect(options[0].modelTimeoutMs).toBe(120_000);
+});
+
+test("legacy configured timeoutMs blocks audit inference with a migration diagnostic, not TODO work", async () => {
+	let calls = 0;
+	install(async (req) => { calls++; return reply(req); });
+	const h = host(initial(), { legacyTimeoutConfigured: true }); await h.emit("session_start"); await h.manual();
+	expect(calls).toBe(0); expect(h.sent).toHaveLength(0);
+	expect(h.notices.some(([m, l]) => m.includes('"timeoutMs"') && m.includes("idleTimeoutMs") && m.includes("modelTimeoutMs") && l === "error")).toBe(true);
+	await h.manual("full"); expect(calls).toBe(0);
+	// A cleared configuration resumes ordinary inference.
+	const migrated = host(h.branch); await migrated.emit("session_start"); await migrated.manual();
+	expect(calls).toBeGreaterThan(0);
 });
 
 test("a second audit sends only the suffix and old protocol ledger entries are not evidence", async () => {
@@ -119,6 +132,18 @@ test("missing dependency stays visible on each manual request; disabled mode doe
 	delete services[key]; const h = host(); await h.emit("session_start"); await h.manual(); await h.manual("full");
 	expect(h.notices.filter(([m, l]) => m.includes("requires pi-llm-as-jev") && l === "error")).toHaveLength(2);
 	const disabled = host(initial(), { enabled: false }); await disabled.manual(); expect(disabled.notices[0][0]).toContain("disabled");
+});
+
+test("incompatible v1 dependency skips advice and rechecks v2 on the next trigger without reload", async () => {
+	let calls = 0;
+	services[key] = { version: 1, judge: async () => { calls++; throw new Error("Incompatible service must not run"); } };
+	const h = host(); const before = structuredClone(h.branch);
+	await h.emit("session_start"); await h.manual();
+	expect(calls).toBe(0); expect(h.sent).toHaveLength(0); expect(h.branch).toEqual(before);
+	expect(h.notices.some(([m]) => m.includes("judgment service version 2") && m.includes("TODO remains available"))).toBe(true);
+	install(async (req) => { calls++; return reply(req); });
+	await h.manual();
+	expect(calls).toBe(1); expect(h.sent).toHaveLength(1);
 });
 
 test("terminal completion remains board-only and ordinary cadence keeps user cooldown", async () => {

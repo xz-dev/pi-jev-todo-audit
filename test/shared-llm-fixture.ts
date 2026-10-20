@@ -25,15 +25,14 @@ export async function llmFixture(transport: (body: any, ordinal: number, init: R
 	const models = createModels();
 	models.setProvider(createProvider({ id: "offline", models: [model], auth: { apiKey: { name: "Offline", resolve: async () => ({ auth: { apiKey: "synthetic-llm-key" } }) } }, api: anthropicMessagesApi() }));
 	const original = globalThis.fetch;
-	const wire: any[] = [], rows: any[] = [], signals: AbortSignal[] = [];
+	const wire: any[] = [], signals: AbortSignal[] = [];
 	globalThis.fetch = (async (url: unknown, init: any) => {
 		if (!String(url).startsWith("https://fixture.invalid/")) throw new Error("live transport forbidden");
 		const body = JSON.parse(init.body); wire.push(body); signals.push(init.signal);
 		return transport(body, wire.length, init);
 	}) as typeof fetch;
-	const config = validateConfig({ mode: "llm", model: "offline/claude-sonnet-4-5", thinkingLevel: "low", classifierModel: "unused/never", timeoutMs: 3000 }).config;
+	const config = validateConfig({ mode: "llm", model: "offline/claude-sonnet-4-5", thinkingLevel: "low", classifierModel: "unused/never", timeouts: { llm: { idleTimeoutMs: 3000 } } }).config;
 	const registry = { getModel: models.getModel.bind(models), getAvailableOfType: async () => [], getAuth: models.getAuth.bind(models), getProviders: models.getProviders.bind(models), streamSimple: models.streamSimple.bind(models), classify: () => { throw new Error("must not use native"); } };
-	const service = createJudgmentService({ config: () => config,
-		ledger: { branch: () => rows, append: (customType: string, data: unknown) => rows.push({ type: "custom", customType, data }) }, registry });
-	return { service, registry, config, model, wire, rows, signals, close: () => { globalThis.fetch = original; } };
+	const service = createJudgmentService({ config: () => config, registry });
+	return { service, registry, config, model, wire, signals, close: () => { globalThis.fetch = original; } };
 }

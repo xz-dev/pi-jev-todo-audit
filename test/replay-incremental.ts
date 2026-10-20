@@ -33,7 +33,7 @@ const wire: { phase: string; bytes: number; questionCount: number; ids: string[]
 const fixtureFetch = async (url: unknown, init?: RequestInit) => {
 	assert.equal(String(url), "https://fixture.invalid/v1/systemone", "No live transport");
 	const raw = String(init?.body), req = JSON.parse(raw) as JudgeRequest;
-	const audit = (req.state.fixed as { audit: string }).audit;
+	const audit = (req.state as { audit: string }).audit;
 	const segment = JSON.parse(audit.split(/New segment \(\d+ complete loops\):\n/)[1].split("\nSegment records")[0]) as { id: string }[];
 	wire.push({ phase, bytes: Buffer.byteLength(raw), questionCount: Object.keys(req.questions).length, ids: segment.map((r) => r.id) });
 	const answers = Object.fromEntries(Object.entries(req.questions).map(([id, q]) => {
@@ -47,9 +47,9 @@ const fixtureFetch = async (url: unknown, init?: RequestInit) => {
 	return Response.json({ answers });
 };
 function service(): JudgmentService {
-	return createJudgmentService({ config: () => validateConfig({ mode: "classifier", classifierModel: "typesafe/jev-latest", timeoutMs: 5000 }).config,
-		ledger: { branch: () => [], append: undefined }, nativeFetch: fixtureFetch,
-		registry: { getAvailableOfType: async () => [model], getModel: () => undefined, getProviders: () => [], getAuth: async () => undefined,
+	return createJudgmentService({ config: () => validateConfig({ mode: "classifier", classifierModel: "typesafe/jev-latest", timeouts: { classifier: { idleTimeoutMs: 5000 } } }).config,
+		nativeFetch: fixtureFetch,
+		registry: { getAvailableOfType: async () => [model], getModel: () => undefined, getProviders: () => [], getAuth: async () => ({ auth: { apiKey: "offline-replay-key" } }),
 			streamSimple: () => { throw new Error("No LLM fallback"); }, classify: (_m: unknown, ctx: unknown, opts: any) => classify(model, ctx, { ...opts, apiKey: "offline-replay-key", fetch: opts.fetch ?? fixtureFetch }) } });
 }
 function input(leaf: string) {
@@ -61,7 +61,7 @@ const rows: unknown[] = [];
 const persist = (s: JudgmentState) => writeState((customType, data) => rows.push(JSON.parse(JSON.stringify({ type: "custom", customType, data }))), s);
 const firstInput = input(firstLeaf), secondInput = input(secondLeaf);
 async function run(i: ReturnType<typeof input>, state: JudgmentState) {
-	return runIncremental({ service: service(), board: i.board, context: i.context, state, timeoutMs: 5000, minConfidence: 0.8,
+	return runIncremental({ service: service(), board: i.board, context: i.context, state, idleTimeoutMs: 5000, minConfidence: 0.8,
 		signal: new AbortController().signal, persist, maxSegmentsPerRun: 10000 });
 }
 const first = await run(firstInput, emptyState());

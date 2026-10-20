@@ -5,7 +5,7 @@
  * rejected) from the retired protocol are tolerated on read and ignored.
  */
 import { object } from "./context.js";
-import type { Attempt, WithheldChoice } from "./typesafe.js";
+import type { WithheldChoice } from "./typesafe.js";
 
 export const LEDGER_TYPE = "jev-todo-audit-ledger";
 /** This extension's own bookkeeping: never evidence, never a freshness change. */
@@ -15,12 +15,22 @@ export type LedgerRecord =
 	/** Compact accounting only: never replayed as evidence or cache, never transcript bodies or credentials. */
 	| { kind: "diag"; diag: AuditDiagnostics };
 
-/** One audit's observable cost. Bytes are request shape, not tokens; missing usage is "unknown", never zero. */
+/** One judged segment's outcome. Model is the terminal model; usage keeps its stated scope. */
+export interface SegmentDiag {
+	scopes: string[];
+	loops: string[];
+	outcome: string;
+	error?: string;
+	contextOverflow?: boolean;
+	model?: string;
+	/** Provider-reported usage under the service's stated scope; absent is unknown. */
+	usage?: { input?: number; output?: number };
+}
+
+/** One audit's compact observations. Missing usage is "unknown", never zero. */
 export interface AuditDiagnostics {
 	audit: string;
 	label: string;
-	/** Questions answered locally versus sent to the provider. */
-	hits: number; misses: number;
 	/** Session cursor before and after this audit. */
 	range: { from: string | null; to: string | null };
 	outcome: "unchanged" | "completed" | "recovered" | "incomplete" | "failed";
@@ -28,24 +38,13 @@ export interface AuditDiagnostics {
 	channel?: string;
 	presplits?: number;
 	withheld?: WithheldChoice[];
-	attempts: { id?: string; phase?: "start" | "end"; n: number; outcome: Attempt["outcome"]; status?: number; model?: string; stateBytes?: number; questionBytes?: number; longestQuestionBytes?: number; inputTokens: number | "unknown"; outputTokens: number | "unknown"; costUsd?: number }[];
-	usage: { inputTokens: number; outputTokens: number; costUsd?: number; unreported?: { inputTokens?: number; outputTokens?: number; costUsd?: number } };
+	segments: SegmentDiag[];
 }
 
-/** Pure: builds diagnostics from observed attempts without sending anything. */
-export function diagnose(audit: string, label: string, reuse: { hits: number; joined: number; sent: number }, range: AuditDiagnostics["range"],
-	outcome: AuditDiagnostics["outcome"], attempts: Attempt[], capacity?: { channel?: string; presplits?: number; withheld?: WithheldChoice[] }): AuditDiagnostics {
-	const known = (v: number | undefined): number | "unknown" => v ?? "unknown";
-	type Figure = "inputTokens" | "outputTokens" | "costUsd";
-	const sum = (k: Figure) => attempts.reduce((s, a) => s + (a[k] ?? 0), 0);
-	const charged = attempts.some((a) => a.costUsd !== undefined);
-	const figures: Figure[] = charged ? ["inputTokens", "outputTokens", "costUsd"] : ["inputTokens", "outputTokens"];
-	const unreported = Object.fromEntries(figures.map((k) => [k, attempts.filter((a) => a[k] === undefined).length]).filter(([, n]) => n));
-	return { audit, label, hits: reuse.hits + reuse.joined, misses: reuse.sent, range, outcome, ...capacity,
-		attempts: attempts.map((a, i) => ({ n: i + 1, ...(a.id ? { id: a.id, phase: a.phase } : {}), outcome: a.outcome, status: a.status, model: a.model, stateBytes: a.stateBytes, questionBytes: a.questionBytes, longestQuestionBytes: a.longestQuestionBytes,
-			inputTokens: known(a.inputTokens), outputTokens: known(a.outputTokens), ...(a.costUsd === undefined ? {} : { costUsd: a.costUsd }) })),
-		usage: { inputTokens: sum("inputTokens"), outputTokens: sum("outputTokens"), ...(charged ? { costUsd: sum("costUsd") } : {}),
-			...(Object.keys(unreported).length ? { unreported } : {}) } };
+/** Pure: builds diagnostics from returned segment reports without sending anything. */
+export function diagnose(audit: string, label: string, range: AuditDiagnostics["range"],
+	outcome: AuditDiagnostics["outcome"], segments: SegmentDiag[], capacity?: { channel?: string; presplits?: number; withheld?: WithheldChoice[] }): AuditDiagnostics {
+	return { audit, label, range, outcome, ...capacity, segments };
 }
 
 /** Returns false when the write failed; callers must not treat that record as durable. */

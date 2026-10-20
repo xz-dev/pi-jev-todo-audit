@@ -6,13 +6,11 @@
 
 export const MOCK_CAPACITY = 24_000;
 export interface CaseMetrics {
-	requests: number; presplits: number; receipts: number; rejected: number; failed: number; bytes: number; stateBytes: number; questionBytes: number; maxStatePlusQuestion: number;
+	requests: number; rejected: number; failed: number; bytes: number; stateBytes: number; questionBytes: number; maxStatePlusQuestion: number;
 	questionsAsked: number; textSeen: number; textTotal: number; toolBodyLeaks: number;
 	/** Bytes of non-task records already sent in an earlier request of this case (re-sent processed input). */
 	resentBytes: number;
-	/** Bytes of the rolling opinions/progress block (added overhead). */
-	rollingBytes: number;
-	/** Requests that reused nothing but the cache: full-repeat audits answered locally. */
+	/** Audits that needed no new judgment: consumer-scheduled coverage, never a service cache hit. */
 	auditsWithoutRequest: number;
 }
 type Step = { push: unknown[] } | { audit: string } | { failNext: number } | { omit: RegExp } | { answerAll: true };
@@ -29,10 +27,13 @@ export const tool = (name: string, args: unknown, body: string, isError = false)
 		{ id: id("r"), type: "message", message: { role: "toolResult", toolCallId: call, toolName: name, isError, content: [{ type: "text", text: body }] } },
 	];
 };
-export const todo = (tasks: unknown[]) => [
-	{ id: id("a"), type: "message", message: { role: "assistant", content: [{ type: "toolCall", id: id("todo"), name: "todo", arguments: { action: "update" } }] } },
-	{ id: id("r"), type: "message", message: { role: "toolResult", toolName: "todo", content: [{ type: "text", text: "Board updated" }], details: { tasks, nextId: 20 } } },
-];
+export const todo = (tasks: unknown[]) => {
+	const call = id("todo");
+	return [
+		{ id: id("a"), type: "message", message: { role: "assistant", content: [{ type: "toolCall", id: call, name: "todo", arguments: { action: "update" } }] } },
+		{ id: id("r"), type: "message", message: { role: "toolResult", toolCallId: call, toolName: "todo", content: [{ type: "text", text: "Board updated" }], details: { tasks, nextId: 20 } } },
+	];
+};
 const TOOL_BODY = "TOOL_BODY_MARK";
 const pad = (mark: string, bytes: number) => `${mark} ` + "analysis detail sentence. ".repeat(Math.ceil(bytes / 26));
 const t5 = { id: 5, subject: "Parser rewrite", description: "Reject malformed input in src/parser.ts", status: "in_progress" };

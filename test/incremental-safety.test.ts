@@ -11,10 +11,10 @@ const response = (req: JudgeRequest): JudgeResult => ({
 	answers: Object.fromEntries(Object.keys(req.questions).map((key) => [key, { type: "choice", confidence: 0.95,
 		choice: key.startsWith("task_granularity_evidence_") || key.endsWith("_evidence") ? "none_in_segment" : key.startsWith("task_item_") ? "no_change" : key.startsWith("task_status_") ? "no_change" : key.startsWith("task_evidence_") ? "none_in_segment" : key.startsWith("task_board_") ? "accurate" : key.startsWith("task_granularity_") ? "unchanged" :
 			({ interaction: "unchanged", work_evidence: "none_in_segment", current_work_evidence: "none_in_segment", scope_evidence: "none_in_segment", current_work: "same_work", scope_update: "no_scope_change", drift: "on_track" } as Record<string, string>)[key], probabilities: {} }])),
-	dropped: [], backend: "classifier", model: "fixture/m", stopReason: "stop", reuse: { hits: 0, joined: 0, sent: 1 },
+	dropped: [], backend: "classifier", model: "fixture/m", stopReason: "stop",
 });
-const service = (judge: JudgmentService["judge"]): JudgmentService => ({ version: 1, judge, availability: async () => ({}) });
-const args = () => ({ board, context, state: emptyState(), timeoutMs: 12345, minConfidence: 0.8, signal: new AbortController().signal });
+const service = (judge: JudgmentService["judge"]): JudgmentService => ({ version: 2, judge, availability: async () => ({}) });
+const args = () => ({ board, context, state: emptyState(), idleTimeoutMs: 12345, minConfidence: 0.8, signal: new AbortController().signal });
 
 test("in-flight invalidation without a lifecycle event discards every answer and cursor", async () => {
 	let current = true, written = 0;
@@ -37,7 +37,7 @@ test("abort settles an uncooperative service and its late success never writes",
 
 test("caller threshold is passed and low-confidence native answers cannot become confidence one", async () => {
 	const out = await runIncremental({ ...args(), service: service(async (req, opts) => {
-		expect(opts?.timeoutMs).toBe(12345); expect(opts?.minConfidence).toBe(0.8);
+		expect(opts?.idleTimeoutMs).toBe(12345); expect(opts?.modelTimeoutMs).toBeUndefined(); expect(opts?.minConfidence).toBe(0.8);
 		const result = response(req);
 		for (const answer of Object.values(result.answers)) if (answer.type === "choice") answer.confidence = 0.1;
 		return result;
@@ -57,8 +57,8 @@ test("full invalidation is durable before a failed judge call", async () => {
 
 test("single-loop predicted overflow gets one actual admission attempt", async () => {
 	let calls = 0;
-	const svc: JudgmentService = { ...service(async (req) => { calls++; return response(req); }), capacityVersion: 1,
-		describeSelection: async () => ({ backend: "classifier", model: "fixture/m", limits: { request: 1 }, limitSource: "override", tokensPerByte: 1, prior: true, envelopeOverheadBytes: 0 }) };
+	const svc: JudgmentService = { ...service(async (req) => { calls++; return response(req); }), capacityVersion: 2,
+		describeSelection: async () => ({ backend: "classifier", model: "fixture/m", limits: { request: 1 }, limitSource: "override" }) };
 	const out = await runIncremental({ ...args(), service: svc, persist: () => true });
 	expect(calls).toBe(1); expect(out.complete).toBe(true); expect(out.reports.some((r) => r.outcome === "oversize")).toBe(false);
 });
