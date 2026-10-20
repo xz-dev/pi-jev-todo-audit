@@ -2,7 +2,7 @@ import assert from "node:assert/strict";
 import { spawn, spawnSync, type ChildProcess } from "node:child_process";
 import { createHash } from "node:crypto";
 import { appendFileSync, chmodSync, copyFileSync, cpSync, existsSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, writeFileSync } from "node:fs";
-import { join } from "node:path";
+import { dirname, join } from "node:path";
 import { pathToFileURL } from "node:url";
 import { stripVTControlCharacters } from "node:util";
 
@@ -27,6 +27,9 @@ async function until<T>(read: () => T | undefined | false, label: string): Promi
 /** Real native operations, but every path/config/credential boundary is test-owned. */
 export async function nativeDelivery(repo: string, binary: string, route: "bun" | "npm" | "safety", realServiceRepo?: string, realTodoRepo?: string): Promise<void> {
 	assert.ok(binary, "JEV_PI_BIN must explicitly select the native Pi executable");
+	const npm = Bun.which("npm"), node = Bun.which("node");
+	assert.ok(npm && node, "Native delivery requires npm and node on the parent PATH");
+	const nodeBin = dirname(node);
 	const dir = mkdtempSync(`/var/tmp/jev-native-${route}-`);
 	console.log(`Native ${route} evidence: ${dir}`);
 	const gitConfig = join(dir, "gitconfig");
@@ -37,7 +40,7 @@ export async function nativeDelivery(repo: string, binary: string, route: "bun" 
 	const check = (name: string, condition: unknown) => { assert.ok(condition, name); results.push(name); };
 	function environment(caseDir: string): NodeJS.ProcessEnv {
 		const env: NodeJS.ProcessEnv = {
-			PATH: `${dir}/bin:/usr/bin:/bin`, LANG: "C.UTF-8", TERM: "xterm-256color",
+			PATH: `${dir}/bin:${nodeBin}:/usr/bin:/bin`, LANG: "C.UTF-8", TERM: "xterm-256color",
 			HOME: join(caseDir, "home"), PI_CODING_AGENT_DIR: join(caseDir, "agent"), TMPDIR: join(caseDir, "tmp"),
 			XDG_CONFIG_HOME: join(caseDir, "xdg-config"), XDG_CACHE_HOME: join(caseDir, "xdg-cache"), XDG_DATA_HOME: join(caseDir, "xdg-data"),
 			GIT_CONFIG_NOSYSTEM: "1", GIT_CONFIG_GLOBAL: gitConfig, GIT_TERMINAL_PROMPT: "0",
@@ -58,7 +61,8 @@ export async function nativeDelivery(repo: string, binary: string, route: "bun" 
 		const result = spawnSync(command, args, { cwd, env, encoding: "utf8", timeout: 90_000, maxBuffer: 8 * 1024 * 1024 });
 		appendFileSync(join(dir, "commands.jsonl"), JSON.stringify({ label, command, args, code: result.status, error: result.error?.message }) + "\n");
 		appendFileSync(join(dir, "commands.log"), `\n=== ${label} ===\n${result.stdout ?? ""}${result.stderr ?? ""}`);
-		assert.equal(result.status, 0, `${label} failed; see ${dir}/commands.log`);
+		const tail = `${result.stdout ?? ""}\n${result.stderr ?? ""}`.replace(/(?:authorization|_authToken)\s*[:=]\s*[^\r\n]+|Bearer\s+\S+/gi, "<redacted>").slice(-4096);
+		assert.equal(result.status, 0, `${label}: ${command} ${args.join(" ")} exited ${result.status}; see ${dir}/commands.log\n${tail}`);
 		return result.stdout.trim();
 	}
 	const git = (args: string[]) => run("git", args, dir, buildEnv, `git ${args[0]}`);
@@ -113,7 +117,7 @@ export async function nativeDelivery(repo: string, binary: string, route: "bun" 
 		const version = run(binary, ["--version"], dir, buildEnv, "host identity");
 		const files = readdirSync(repo).filter((name) => name.endsWith(".ts") || ["package.json", "package-lock.json", "README.md", "LICENSE"].includes(name));
 		const candidate = Object.fromEntries(files.map((name) => [name, hash(join(repo, name))]));
-		save("identity.json", { binary, version, binaryHash: hash(binary), candidate, route, envNames: Object.keys(buildEnv).sort() });
+		save("identity.json", { binary, version, binaryHash: hash(binary), npm, node, candidate, route, envNames: Object.keys(buildEnv).sort() });
 		const auditRepo = join(dir, "audit-remote"), serviceRepo = join(dir, "service-remote");
 		for (const path of [auditRepo, serviceRepo]) {
 			mkdirSync(path); git(["init", "--initial-branch=main", path]);
@@ -168,7 +172,7 @@ export async function nativeDelivery(repo: string, binary: string, route: "bun" 
 			}
 		}
 		mkdirSync(join(dir, "bin"));
-		writeFileSync(join(dir, "bin", "npm"), '#!/bin/sh\nprintf "%s\\n" "$*" >> "$JEV_NPM_TRACE"\nexec /usr/bin/npm "$@"\n', { mode: 0o755 });
+		writeFileSync(join(dir, "bin", "npm"), `#!/bin/sh\nprintf "%s\\n" "$*" >> "$JEV_NPM_TRACE"\nexec '${npm.replaceAll("'", "'\\''")}' "$@"\n`, { mode: 0o755 });
 
 		function setup(label: string, local = false) {
 			const caseDir = join(dir, label), env = environment(caseDir);
