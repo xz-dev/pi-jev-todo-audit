@@ -26,7 +26,7 @@ function branch(leaf: string): SessionEntry[] {
 }
 const { createJudgmentService } = await import(pathToFileURL(join(root, "src/service.ts")).href);
 const { validateConfig } = await import(pathToFileURL(join(root, "src/config.ts")).href);
-const { classify } = await import(new URL("./api/typesafe-system-one.js", import.meta.resolve("@earendil-works/pi-ai")).href);
+const { classify } = await import(new URL("./api/typesafe-system-one.js", pathToFileURL(Bun.resolveSync("@earendil-works/pi-ai", root))).href);
 const model = { type: "classifier", id: "jev-latest", provider: "typesafe", name: "Offline replay", api: "typesafe-system-one", baseUrl: "https://fixture.invalid/v1", input: ["text"], contextWindow: 32000, cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 } };
 let phase = "first";
 const wire: { phase: string; bytes: number; questionCount: number; ids: string[] }[] = [];

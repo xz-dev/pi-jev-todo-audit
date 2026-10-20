@@ -34,8 +34,8 @@ jobs:
           for repo in judgment pi-source rpiv; do git -C "$RUNNER_TEMP/$repo" rev-parse HEAD; done
           npm ci --prefix "$RUNNER_TEMP/judgment"
           npm ci --prefix "$RUNNER_TEMP/rpiv"
-          # The adapter uses the same installed SDK dependencies as this test runner.
-          node --input-type=module -e 'import fs from "node:fs"; import path from "node:path"; fs.symlinkSync(path.resolve("node_modules"), path.join(process.env.RUNNER_TEMP, "pi-source/node_modules"), "junction")'
+          # The adapter uses the SDK dependencies of the service under test.
+          node --input-type=module -e 'import fs from "node:fs"; import path from "node:path"; fs.symlinkSync(path.join(process.env.RUNNER_TEMP, "judgment/node_modules"), path.join(process.env.RUNNER_TEMP, "pi-source/node_modules"), "junction")'
           node --input-type=module -e 'import fs from "node:fs"; import path from "node:path"; for (const [key, value] of Object.entries({PI_JUDGMENT_SOURCE:"judgment", PI_CLASSIFIER_SOURCE:"pi-source", PI_TODO_SOURCE:"rpiv/packages/rpiv-todo"})) fs.appendFileSync(process.env.GITHUB_ENV, `${key}=${path.join(process.env.RUNNER_TEMP,value)}\n`)'
           cmp judgment-client.ts "$RUNNER_TEMP/judgment/client/judgment-client.ts"
           cd "$RUNNER_TEMP/judgment"

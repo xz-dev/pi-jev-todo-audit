@@ -19,7 +19,7 @@ export async function actualNativeFixture(answer: (request: JudgeRequest) => Jud
 	assert(root, "PI_JUDGMENT_SOURCE required; no installed-copy activation");
 	const { createJudgmentService } = await import(pathToFileURL(join(root, "src/service.ts")).href);
 	const { validateConfig } = await import(pathToFileURL(join(root, "src/config.ts")).href);
-	const { classify } = await import(new URL("./api/typesafe-system-one.js", import.meta.resolve("@earendil-works/pi-ai")).href);
+	const { classify } = await import(new URL("./api/typesafe-system-one.js", pathToFileURL(Bun.resolveSync("@earendil-works/pi-ai", root))).href);
 	const wire: WireMetrics[] = [];
 	const model = { type: "classifier", id: "jev-latest", name: "Offline", provider: "typesafe", api: "typesafe-system-one", baseUrl: "https://fixture.invalid/v1", input: ["text"], contextWindow: 32000, cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 } };
 	const fetchFixture = async (url: unknown, init?: RequestInit) => {

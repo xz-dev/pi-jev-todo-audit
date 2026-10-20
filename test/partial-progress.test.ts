@@ -75,7 +75,7 @@ test.skipIf(!process.env.PI_JUDGMENT_SOURCE)("A+B through the actual sibling ser
 	const root = process.env.PI_JUDGMENT_SOURCE!;
 	const { createJudgmentService } = await import(pathToFileURL(join(root, "src/service.ts")).href);
 	const { validateConfig } = await import(pathToFileURL(join(root, "src/config.ts")).href);
-	const { classify } = await import(new URL("./api/typesafe-system-one.js", import.meta.resolve("@earendil-works/pi-ai")).href);
+	const { classify } = await import(new URL("./api/typesafe-system-one.js", pathToFileURL(Bun.resolveSync("@earendil-works/pi-ai", root))).href);
 	let phase: "A" | "B" = "A";
 	const wire: { bytes: number; state: string }[] = [], rows: unknown[] = [];
 	const model = { type: "classifier", id: "jev-latest", name: "Offline", provider: "typesafe", api: "typesafe-system-one", baseUrl: "https://fixture.invalid/v1", input: ["text"], contextWindow: 32000, cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 } };
