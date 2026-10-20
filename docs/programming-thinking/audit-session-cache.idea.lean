@@ -1,4 +1,7 @@
 -- Core/Std model of incremental scope commits. Accepted foundations: propext and Quot.sound.
+-- The judgment service is stateless (version two): all durable progress, source
+-- identity, packing and admission gates below are CONSUMER-owned; no service
+-- checkpoint, cache, ledger or learned-capacity state exists to model.
 import Std
 
 set_option autoImplicit false

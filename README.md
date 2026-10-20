@@ -64,7 +64,7 @@ own provenance even when `index.ts` is filtered out.
 
 ### Installation is not backend readiness
 
-Requires a loaded **pi-llm-as-jev service with `version: 1` and `judge()`**. `capacityVersion: 1` / `describeSelection({path: "judge"})` provides selected-model limits; absent metadata produces a warning and bounded loop-count fallback, not a guessed token window. Configure model selection in the service and credentials/endpoints in Pi (see [Configuration](#configuration)). Updating files does not activate or verify an already-running installed extension.
+Requires a loaded **pi-llm-as-jev service with `version: 2` and `judge()`** — the stateless contract: no `review()`, checkpoints, caches, ledgers or learned capacity exist on the service; audit packs every needed fact into `state` and owns its business progress. `capacityVersion: 2` / `describeSelection()` provides selected-model declared limits (`request`, `stateAndLongestQuestion`, `contextWindow`; `limitSource` `override`/`model`/`none`); absent metadata produces a warning and bounded loop-count fallback, not a guessed token window. Configure model selection in the service and credentials/endpoints in Pi (see [Configuration](#configuration)). Updating files does not activate or verify an already-running installed extension.
 
 Startup diagnostics distinguish installation, registration and activation failures.
 A successful clone alone is not durable registration or backend readiness. Audit
@@ -322,6 +322,14 @@ probe. Read legacy file keys and the configured legacy environment value remain
 redaction inputs only. They are never service authentication options. Move desired
 settings deliberately; leaving an old audit model field does not select that model.
 
+**Timing migration:** a configured legacy `timeoutMs` had two incompatible old
+meanings (native whole-call deadline vs LLM inactivity). It is never silently
+mapped or dropped: while present in a read layer, audit emits a bounded
+migration diagnostic naming the required replacement — `idleTimeoutMs`,
+`modelTimeoutMs`, or removal for the service defaults — and skips
+inference-dependent audit work until resolved. TODO/main-agent work is
+unaffected and no file is rewritten.
+
 ### Audit business settings
 
 Layers remain defaults → `<agentDir>/jev-todo-audit.json` →
@@ -337,7 +345,9 @@ notice and is not loaded.
 | `interval` | Audit every Nth completed loop | `10` |
 | `cooldownLoops` | Skip periodic audit at or below this distance from the latest user message; independent of interval | `10` |
 | `confidenceThreshold` | Native service gate only; never substitutes for evidence checks or gates LLM choices | `0.5` |
-| `timeoutMs` | One value per service call: native logical-call deadline, LLM per-request transport inactivity; setup is bounded in both modes | unset: service backend default (native 60 s deadline; LLM = Pi `httpIdleTimeoutMs`, default 300 s) |
+| `idleTimeoutMs` | Optional per-attempt generation-progress idle duration forwarded to each judgment call | unset: service defaults (native 10,000 ms; LLM 15,000 ms) |
+| `modelTimeoutMs` | Optional whole-model-attempt hard limit forwarded to each judgment call | unset: no hard limit |
+| `timeoutMs` | Legacy field requiring migration: while present, audit inference is skipped with a diagnostic naming `idleTimeoutMs`/`modelTimeoutMs` or removal; the value is never forwarded | unset |
 | `activityBudgetChars` | Deprecated and ignored; explicit values produce a bounded notice | no budget |
 | `notifyOnAligned` | Also notify on aligned audits | `false` |
 | `staleAuditSpans` | Diagnostic age threshold in audit intervals, not a split rule | `3` |

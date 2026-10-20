@@ -259,7 +259,7 @@ Audit failures SHALL remain isolated. Network errors, timeouts, malformed answer
 
 ### Requirement: Configuration
 
-The extension SHALL retain configurable audit interval (default 10), user-message cooldown (default 10), native confidence threshold (default 0.5), enable/disable switch, notifications, timeout and `staleAuditSpans` (default 3). The age threshold SHALL control diagnostic review, not an unconditional splitting rule. Backend/model selection and capacity configuration SHALL belong to the shared judgment service; provider endpoints and credentials SHALL belong to Pi.
+The extension SHALL retain configurable audit interval (default 10), user-message cooldown (default 10), native confidence threshold (default 0.5), enable/disable switch, notifications, explicit timing fields and `staleAuditSpans` (default 3). The age threshold SHALL control diagnostic review, not an unconditional splitting rule. Optional `idleTimeoutMs` and `modelTimeoutMs` SHALL be forwarded per judgment call; when absent, the service applies its own defaults (10,000 ms native / 15,000 ms LLM idle, no hard cap, no combined fallback deadline). An explicitly configured legacy `timeoutMs` SHALL produce a migration diagnostic naming `idleTimeoutMs`, `modelTimeoutMs` or removal, and SHALL block only inference-dependent audit work while the rest of the audit and TODO work continue; its value SHALL NOT be forwarded as a fallback. Backend/model selection and capacity configuration SHALL belong to the shared judgment service; provider endpoints and credentials SHALL belong to Pi.
 
 The deprecated `activityBudgetChars` field SHALL remain load-compatible but SHALL NOT constrain evidence below verified provider hard limits. An explicitly configured legacy value SHALL produce a one-time deprecation notice instead of silently restoring a character budget. No replacement cost-saving character cap, fixed record count, or context-allocation ratio SHALL be imposed.
 
@@ -288,6 +288,18 @@ The service SHALL use Pi's own authentication and credential behavior. When the 
 #### Scenario: Project cannot inject apiKey
 - **WHEN** project configuration contains an API key and Pi has none
 - **THEN** the project value is not used as a credential or copied into Pi
+
+#### Scenario: Legacy timeout blocks inference but not TODO work
+- **WHEN** a read configuration layer contains `timeoutMs`
+- **THEN** a bounded diagnostic names the required replacement `idleTimeoutMs`, `modelTimeoutMs` or removal, audit inference is skipped until resolved, and TODO/main-agent work continues
+
+#### Scenario: Explicit timing fields pass through
+- **WHEN** `idleTimeoutMs` and/or `modelTimeoutMs` are configured without `timeoutMs`
+- **THEN** each value is forwarded to the judgment call and unset fields keep the service defaults
+
+#### Scenario: No timing configured
+- **WHEN** none of `idleTimeoutMs`, `modelTimeoutMs` or `timeoutMs` are configured
+- **THEN** each judgment call runs under service defaults (10,000 ms native / 15,000 ms LLM generation-progress idle, no model hard cap, no combined fallback deadline)
 
 #### Scenario: Pi key wins for TypeSafe direct
 - **WHEN** the shared service selects TypeSafe direct, Pi resolves its key, and the global audit config also has `apiKey`
@@ -403,7 +415,7 @@ Selection and processing receipts SHALL distinguish already-reviewed ranges, exe
 
 ### Requirement: Provider context limits without artificial quotas
 
-Segment packing SHALL use the selected judgment model's declared capacity as reported by the judgment service, counting stored state, question definitions, loops, backend envelope and output reserve. Character/byte counts SHALL NOT be asserted as token counts; the bytes-to-tokens prior and provider-reported usage remain the calibration source. A predicted or reported overflow SHALL be recovered by dropping trailing whole loops; a single loop with required state that cannot be admitted SHALL stop that scope with an actionable diagnostic and SHALL NOT be sliced or silently truncated. Authentication, quota, payload-size and validation errors SHALL NOT be treated as overflow. Capacity for the audit SHALL never be derived from the main chat model.
+Segment packing SHALL use the selected judgment model's declared capacity as reported by the version-two judgment service, counting stored state, question definitions, loops, backend envelope and output reserve. The service declares only `request`, `stateAndLongestQuestion` and `contextWindow` limits with source `override`, `model` or `none`; absent limits SHALL remain absent and unknown. Character/byte counts SHALL NOT be asserted as token counts; audit-owned packing estimates (`1/1.75` tokens per byte, 2,048-byte envelope allowance) SHALL remain labelled consumer estimates, not provider facts, and actual provider admission SHALL remain the fit authority. A predicted or reported overflow SHALL be recovered by dropping trailing whole loops; a single loop with required state that cannot be admitted SHALL stop that scope with an actionable diagnostic and SHALL NOT be sliced or silently truncated. Authentication, quota, payload-size and validation errors SHALL NOT be treated as overflow. Capacity for the audit SHALL never be derived from the main chat model.
 
 #### Scenario: Overflow with several loops
 - **WHEN** a segment of five loops is rejected for input size
@@ -415,11 +427,19 @@ Segment packing SHALL use the selected judgment model's declared capacity as rep
 
 #### Scenario: OpenRouter reports a context overflow
 - **WHEN** the OpenRouter endpoint rejects a request with `error.metadata.error_type` `context_length_exceeded`
-- **THEN** it is treated as an explicit overflow and the segment is retried with fewer trailing loops, while its other typed errors fail through the ordinary isolated error path
+- **THEN** the terminal result classifies it as explicit overflow and the segment is retried with fewer trailing loops, while other typed errors fail through the ordinary isolated error path
 
 #### Scenario: OpenRouter's published window is applied to both dimensions
-- **WHEN** the selected channel publishes a single context window
+- **WHEN** the selected model publishes a single context window as its declared limit
 - **THEN** segment packing bounds both the request-wide and state-plus-longest-question dimensions by that window as disclosed by the service
+
+#### Scenario: Questions cause a request overflow
+- **WHEN** state and loops fit but all questions together exceed the request-wide limit
+- **THEN** the terminal overflow result drives the existing whole-loop reduction; audit does not ask the stateless service to split question batches and does not crop required state
+
+#### Scenario: Fallback changes the model's capacity
+- **WHEN** a judgment succeeds through an automatic alternate with different declared limits
+- **THEN** the disclosed capacity belongs to that terminal model and does not imply learned prediction or guaranteed fit
 
 #### Scenario: Relevant context exceeds the old application budget
 - **WHEN** the new complete loops exceed any old character or fragment cutoff
@@ -429,23 +449,23 @@ Segment packing SHALL use the selected judgment model's declared capacity as rep
 - **WHEN** stored state plus the longest question exceeds its limit before any loop is added
 - **THEN** the scope stops with a diagnostic naming the oversized state; no loop is dropped to hide it
 
-#### Scenario: Questions cause a request overflow
-- **WHEN** state and loops fit but all questions together exceed the request-wide limit
-- **THEN** the service splits independent question batches over the same frozen state and answered questions are retained
-
 #### Scenario: Reduction removes evidence needed to split a task
 - **WHEN** a task's segment is still partly unjudged or oversize
 - **THEN** no definitive split instruction is issued from that task's incomplete state
 
 #### Scenario: Token accounting is unverified
 - **WHEN** no authoritative tokenizer/counting contract is available
-- **THEN** packing uses the disclosed bytes-to-tokens ratio with server admission as the authority and does not claim that a byte estimate proves fit
+- **THEN** packing uses audit's disclosed bytes-to-tokens prior with server admission as the authority and does not claim that a byte estimate proves fit
 
 #### Scenario: A predictably oversized envelope is split before sending
-- **WHEN** the calibrated estimate of state plus loops exceeds the disclosed limit
+- **WHEN** the consumer estimate of state plus loops exceeds the disclosed limit
 - **THEN** trailing whole loops are removed before any provider request and no rejection is recorded for it
 
 #### Scenario: Channel capacity is used rather than a stricter guess
+- **WHEN** state plus the longest question and state plus all questions both fit the declared limits for the selected backend
+- **THEN** the segment is sent whole even if its total exceeds a smaller per-question limit; no built-in channel constants remain to tighten the guess
+
+#### Scenario: Declared window is used rather than a stricter guess
 - **WHEN** state plus the longest question and state plus all questions both fit the disclosed limits
 - **THEN** the segment is sent whole even if its total exceeds a smaller per-question limit
 
@@ -454,8 +474,8 @@ Segment packing SHALL use the selected judgment model's declared capacity as rep
 - **THEN** it is sent once and only an actual rejection marks it oversize
 
 #### Scenario: Learning survives reload
-- **WHEN** the extension reloads on the same branch after admitted and rejected attempts
-- **THEN** the calibrated ratio and recorded rejections disclosed by the service are reused without re-sending anything
+- **WHEN** the extension reloads on the same branch after admitted and rejected judgments
+- **THEN** only audit's own documented packing priors and durable business state are reused; no learned service ratios or recorded service rejections exist to restore, and no envelope is re-sent merely because a prediction once rejected it
 
 #### Scenario: A validation error is not an overflow
 - **WHEN** a request fails for invalid question syntax or an unfamiliar error
@@ -478,33 +498,39 @@ Segment packing SHALL use the selected judgment model's declared capacity as rep
 - **THEN** the affected scope reports what must be shortened or clarified, retains stored state and does not loop on the same rejection
 
 #### Scenario: Later low-density input corrects an earlier high estimate
-- **GIVEN** the channel has previously observed approximately 0.478 input tokens per request byte
-- **WHEN** later successful responses report approximately 0.347 input tokens per request byte for current work
-- **THEN** subsequent prediction and same-branch reload use the corrected observations rather than treating the older maximum as a permanent lower bound
-- **AND** observations from a different endpoint or requested model do not alter this channel
+- **GIVEN** audit's byte-based packing prior previously overestimated a segment's size
+- **WHEN** a later segment packs low-density input
+- **THEN** each new estimate applies the same prior independently without any learned correction, and actual admission remains the fit authority for every segment
+- **AND** results from a different backend or requested model do not alter this consumer estimate
 
 #### Scenario: Fixed-state prediction would multiply an admissible batch
-- **GIVEN** retained state is predicted to exceed the state-related limit, 69 new records remain, 12 questions are unresolved, and the provider can admit their complete batch
+- **GIVEN** retained state is predicted to exceed the state-related limit, many new records remain, several questions are unresolved, and the provider can admit their complete batch
 - **WHEN** an eligible audit runs without transport failure
-- **THEN** one provider attempt evaluates the complete unanswered batch, every new record remains represented, and all required valid answers permit the range to advance
-- **AND** the extension does not make 69 groups of single-question requests or introduce an extra validation-only call
+- **THEN** one service call evaluates the complete unanswered batch, every new record remains represented, and all required valid answers permit the range to advance
+- **AND** the extension does not make many groups of single-question requests or introduce an extra validation-only call
+
+#### Scenario: One call answers the complete batch
+- **GIVEN** retained state fits its declared limit, many new records remain, all questions are required, and the provider can admit the complete batch
+- **WHEN** an eligible audit runs without transport failure
+- **THEN** one service call evaluates the complete batch, every new record remains represented, and all required valid answers permit the range to advance
+- **AND** the extension does not split into per-question calls or introduce an extra validation-only call
 
 #### Scenario: The admission check actually rejects the full batch
-- **WHEN** an overestimated fixed-state prediction is checked by sending the current batch and the provider rejects it with an explicit context overflow
-- **THEN** the actual rejection is recorded and existing complete-coverage recovery applies to reducible evidence or questions
-- **AND** no success is inferred from the prediction check, no unchanged rejected envelope is resent, and only completed stages advance progress
+- **WHEN** the complete batch is sent and the provider rejects it with an explicit context overflow
+- **THEN** existing complete-coverage recovery applies to reducible trailing loops
+- **AND** no success is inferred from the prediction check and no unchanged rejected envelope is resent
 
 #### Scenario: Confirmed fixed-state failure stops the affected scope
-- **GIVEN** required retained state remains too large even with an irreducible evidence fragment and the smallest applicable unanswered question
+- **GIVEN** required retained state remains too large with the smallest reducible segment and required questions
 - **WHEN** provider admission confirms the context overflow
-- **THEN** the audit stops that scope with a concise shortening/clarification diagnostic rather than repeating the fixed state for every remaining record and question
-- **AND** it retains user constraints, cached valid answers, and prior durable progress without injecting definitive completion or continuation advice
+- **THEN** the audit stops that scope with a concise shortening/clarification diagnostic
+- **AND** it retains user constraints and prior durable progress without injecting definitive completion or continuation advice
 
 #### Scenario: A successful smaller-density envelope contradicts a size heuristic
-- **GIVEN** a different-content envelope on the channel previously failed for context size
-- **WHEN** a later envelope of equal or larger measured dimensions is admitted successfully
-- **THEN** that historical size comparison alone no longer forces subsequent comparable work through the contradicted prediction
-- **AND** the exact historical rejected envelope remains protected against unchanged retransmission
+- **GIVEN** an earlier segment of similar measured dimensions was rejected for context size
+- **WHEN** a later segment of equal or larger estimated size is admitted successfully
+- **THEN** the successful admission controls that call's outcome without any service-side rejection memory suppressing the attempt
+- **AND** audit still does not resend an unchanged envelope it already knows was rejected
 
 ### Requirement: Engineering-grounded granularity assessment
 
@@ -704,33 +730,33 @@ Reported work, model judgments and processing progress SHALL remain distinguisha
 
 ### Requirement: Observable cost and capacity outcomes
 
-The extension SHALL report compact observations for cache hits/misses, actual provider attempts, projected state/question sizes, chunk progress, response model and provider-reported input/output usage when available. Retries, recovery and stale responses SHALL count as attempts; missing usage on an attempt SHALL be unknown rather than zero. Totals SHALL sum the usage that was reported and SHALL state how many attempts did not report each figure; a total with any unreported attempt SHALL be presented as a lower bound, never as a complete total and never as unknown when other attempts reported usage. A provider-reported charge (such as OpenRouter `usage.cost` in USD) SHALL be recorded per attempt and totalled; a channel that reports no charge SHALL show none rather than zero, and a total with any attempt lacking a reported charge SHALL follow the same lower-bound rule. Cached answers SHALL not charge their original usage again. Accounting SHALL not export transcript bodies or credentials or trigger additional evaluations.
+The extension SHALL report compact observations for segment progress, judgment-call dispositions, response model, and any provider-reported usage the version-two service supplies with its declared scope. Each segment/call outcome SHALL distinguish success, confirmed context overflow, cancellation and other failures; the reduced complete-loop scope SHALL remain visible. Logical judgment calls and question counts SHALL NOT be relabeled measured HTTP attempts; absence of ledger, cache-hit or reuse fields SHALL be real rather than reported as zero. Usage SHALL NOT be assumed per call: when the service omits usage, the affected dimension SHALL be reported as absent, and scoped totals SHALL be labelled by their actual scope, never as complete-operation billing. No cache-hit accounting exists; a successful judgment reflects exactly the calls the stateless service made for it. Accounting SHALL not export transcript bodies or credentials or trigger additional evaluations.
 
-Comparisons SHALL use matching event sequences and endpoint/model settings and report per-workload and aggregate observations for tool-heavy, text-only and short-context cases. Input tokens and an applicable verified rate or provider charge SHALL be the monetary evidence; bytes SHALL not be presented as tokens. Oversized-input recovery SHALL be evaluated for successful coverage and resumption separately from cost comparisons against already successful baselines. No savings percentage or semantic-equivalence claim SHALL be inferred solely from mocked responses.
+Comparisons SHALL use matching event sequences and endpoint/model settings and report per-workload and aggregate observations for tool-heavy, text-only and short-context cases. Only provider-reported usage with its declared scope SHALL be monetary evidence; bytes SHALL not be presented as tokens and missing usage SHALL remain unknown. Oversized-input recovery SHALL be evaluated for successful coverage and resumption separately from cost comparisons against already successful baselines. No savings percentage or semantic-equivalence claim SHALL be inferred solely from mocked responses.
 
-#### Scenario: A cache hit costs no new provider work
-- **WHEN** an answer is reused
-- **THEN** its accounting shows zero new provider attempts and does not add the original response's tokens a second time
+#### Scenario: A judgment reports no usage
+- **WHEN** a terminal judgment carries no usage fields
+- **THEN** diagnostics omit token/charge claims for that call rather than recording zero or inventing usage
+
+#### Scenario: A judgment reports scoped usage
+- **WHEN** a terminal judgment reports usage for its model only
+- **THEN** diagnostics keep that scope instead of claiming coverage of preceding failed or alternate calls
 
 #### Scenario: An overflow is recovered
-- **WHEN** a request is rejected and subsequent smaller parts complete the review
-- **THEN** diagnostics distinguish the rejected attempt, successful parts and final success instead of reporting the initial 400 as the final audit failure
+- **WHEN** a request is rejected and subsequent smaller segments complete the review
+- **THEN** diagnostics distinguish the rejected call, successful parts and final success instead of reporting the initial 400 as the final audit failure
 
 #### Scenario: A split is predicted rather than rejected
 - **WHEN** an envelope is subdivided before sending
-- **THEN** diagnostics count the pre-split separately from actual provider attempts and overflow rejections, and attribute no usage to it
+- **THEN** diagnostics report the consumer-side packing decision and attribute no provider usage to the prediction
 
 #### Scenario: A failure lacks usage
-- **WHEN** a provider attempt has no usable token observation
-- **THEN** the report marks that attempt's usage unknown, still totals the usage other attempts reported, counts the unreported attempt, and does not claim a complete total
+- **WHEN** a terminal failure has no usable usage observation
+- **THEN** the report marks the affected usage unknown rather than counting the call as zero-cost
 
-#### Scenario: Short-context overhead is measurable
-- **WHEN** rolling-state overhead makes a short-context request larger than its baseline
-- **THEN** that regression appears alongside savings on other workloads rather than being omitted from the comparison
-
-#### Scenario: A provider reports the charge
-- **WHEN** every attempt of an audit on OpenRouter reports `usage.cost`
-- **THEN** diagnostics record each charge and their USD total, and a channel without reported charges shows no dollar total
+#### Scenario: Historical service records remain history
+- **WHEN** a session contains `llm-as-jev-ledger` entries from earlier service versions
+- **THEN** upgrade leaves them intact as history and never counts their recorded usage toward current calls
 
 ### Requirement: One visible body for each main-agent advisory
 
