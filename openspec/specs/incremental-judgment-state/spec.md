@@ -86,3 +86,7 @@ A segment SHALL consist of consecutive complete loops (assistant message with al
 #### Scenario: Ordinary failure
 - **WHEN** the service reports an error without a context-overflow classification
 - **THEN** the audit stops without subdividing that request
+
+#### Scenario: Estimates do not decide fit
+- **WHEN** a packed segment is predicted too large but the provider actually admits or rejects it
+- **THEN** the actual terminal result governs retry with fewer trailing loops or an oversize report; the byte/density estimate is never presented as proof of fit or as a provider-reported limit

@@ -259,7 +259,9 @@ Audit failures SHALL remain isolated. Network errors, timeouts, malformed answer
 
 ### Requirement: Configuration
 
-The extension SHALL retain configurable audit interval (default 10), user-message cooldown (default 10), native confidence threshold (default 0.5), enable/disable switch, notifications, explicit timing fields and `staleAuditSpans` (default 3). The age threshold SHALL control diagnostic review, not an unconditional splitting rule. Optional `idleTimeoutMs` and `modelTimeoutMs` SHALL be forwarded per judgment call; when absent, the service applies its own defaults (10,000 ms native / 15,000 ms LLM idle, no hard cap, no combined fallback deadline). An explicitly configured legacy `timeoutMs` SHALL produce a migration diagnostic naming `idleTimeoutMs`, `modelTimeoutMs` or removal, and SHALL block only inference-dependent audit work while the rest of the audit and TODO work continue; its value SHALL NOT be forwarded as a fallback. Backend/model selection and capacity configuration SHALL belong to the shared judgment service; provider endpoints and credentials SHALL belong to Pi.
+The extension SHALL retain configurable audit interval (default 10), user-message cooldown (default 10), native confidence threshold (default 0.5), enable/disable switch, notifications and `staleAuditSpans` (default 3). The age threshold SHALL control diagnostic review, not an unconditional splitting rule. Backend/model selection, timing defaults and capacity configuration SHALL belong to the shared judgment service; provider endpoints and credentials SHALL belong to Pi.
+
+Audit MAY accept optional `idleTimeoutMs` and `modelTimeoutMs` fields as per-call overrides forwarded to each model attempt independently; omission SHALL delegate to service defaults. The legacy audit `timeoutMs` field has incompatible old meanings and SHALL be recognized as requiring migration: while configured, audit SHALL emit a clear affected-feature diagnostic naming the field and the required explicit replacement (`idleTimeoutMs`, `modelTimeoutMs`, or removal for defaults) and SHALL skip inference-dependent audit work until it is removed or replaced. The migration diagnostic SHALL NOT interrupt TODO/main-agent work, rewrite the user's configuration, silently map the old value to one new field, or disable unrelated audit behavior.
 
 The deprecated `activityBudgetChars` field SHALL remain load-compatible but SHALL NOT constrain evidence below verified provider hard limits. An explicitly configured legacy value SHALL produce a one-time deprecation notice instead of silently restoring a character budget. No replacement cost-saving character cap, fixed record count, or context-allocation ratio SHALL be imposed.
 
@@ -271,7 +273,15 @@ The service SHALL use Pi's own authentication and credential behavior. When the 
 
 #### Scenario: Defaults apply when unconfigured
 - **WHEN** the extension loads without configuration
-- **THEN** interval 10, cooldown 10, native threshold 0.5 and age-review threshold 3 apply, without an application character cap, and the service selects the model
+- **THEN** interval 10, cooldown 10, native threshold 0.5 and age-review threshold 3 apply, without an application character cap, calls carry no timing overrides, and the service applies its own defaults
+
+#### Scenario: Explicit timing overrides
+- **WHEN** audit configuration sets `idleTimeoutMs: 5000` and `modelTimeoutMs: 20000`
+- **THEN** each judgment call forwards both options and the service applies them independently to each attempted backend
+
+#### Scenario: Legacy timeout requires migration
+- **WHEN** configuration contains `timeoutMs`
+- **THEN** audit emits a bounded migration diagnostic naming the field and skips inference-dependent audit work until it is removed or replaced, without interrupting TODO/main-agent work or rewriting the file
 
 #### Scenario: Legacy budget configuration remains loadable
 - **WHEN** an existing configuration contains `activityBudgetChars: 4000`
@@ -469,13 +479,13 @@ Segment packing SHALL use the selected judgment model's declared capacity as rep
 - **WHEN** state plus the longest question and state plus all questions both fit the disclosed limits
 - **THEN** the segment is sent whole even if its total exceeds a smaller per-question limit
 
-#### Scenario: A prediction does not declare a unit irreducible
-- **WHEN** one loop with required state is still predicted too large
-- **THEN** it is sent once and only an actual rejection marks it oversize
-
 #### Scenario: Learning survives reload
 - **WHEN** the extension reloads on the same branch after admitted and rejected judgments
 - **THEN** only audit's own documented packing priors and durable business state are reused; no learned service ratios or recorded service rejections exist to restore, and no envelope is re-sent merely because a prediction once rejected it
+
+#### Scenario: A prediction does not declare a unit irreducible
+- **WHEN** one loop with required state is still predicted too large
+- **THEN** it is sent once and only an actual rejection marks it oversize
 
 #### Scenario: A validation error is not an overflow
 - **WHEN** a request fails for invalid question syntax or an unfamiliar error
@@ -602,46 +612,6 @@ New user instructions, relevant non-audit work evidence, or meaningful task chan
 - **WHEN** the user changes the authorized scope after the audit request was captured but before its response is delivered
 - **THEN** the stale correction is discarded instead of overriding the newer instruction
 
-### Requirement: Uniform reuse of identical JEV evaluations
-
-Reuse SHALL operate through stored judgment state and cursors: a loop judged for a scope SHALL NOT be judged again for that scope, regardless of question category. Exact-repeat request caching is not a goal of the extension and SHALL NOT be required for correctness. Valid `no_change`, uncertain and low-confidence answers SHALL be stored without becoming stronger findings. Explicit forced full review is the documented exception.
-
-#### Scenario: Every decision category uses stored state
-- **WHEN** lifecycle, granularity, interaction and drift questions are asked on the same new segment
-- **THEN** each reads its own stored state and none re-receives loops before its cursor
-
-#### Scenario: Forced full review
-- **WHEN** the user requests a full re-judgment
-- **THEN** cursors reset to each task's first-active loop and the session start, and state is rebuilt from complete loops in order
-
-#### Scenario: Only one question is new
-- **WHEN** questions A and B already have state covering the new segment and C does not
-- **THEN** only C is asked on that segment and the combined state is used by the verdict
-
-#### Scenario: Concurrent identical work
-- **WHEN** two audits for the same session would judge the same segment concurrently
-- **THEN** single-active scheduling prevents the duplicate; the second observes the stored result
-
-#### Scenario: No correction was emitted
-- **WHEN** a previous segment produced `no_change` or an uncertain answer
-- **THEN** that result is stored and reused as state rather than requiring a sent reminder as the record
-
-#### Scenario: Question meaning changes
-- **WHEN** a question's instructions, options or the judgment model change
-- **THEN** stored answers to the earlier definition are kept as reference only and segments after the cursor are re-judged under the new definition
-
-#### Scenario: A partial response has useful answers
-- **WHEN** a segment returns valid answers for tasks A and B but none for C
-- **THEN** A and B advance their cursors and only C is asked again on that segment
-
-#### Scenario: Transport failure is not a judgment
-- **WHEN** a service call fails or returns an invalid answer
-- **THEN** no transition is written and no cursor advances for that segment
-
-#### Scenario: Every decision category uses the cache
-- **WHEN** lifecycle, granularity, interaction or drift is asked again on a segment already judged for that scope
-- **THEN** the stored transition is used and no provider request repeats that segment
-
 ### Requirement: TODO-defined state segments
 
 A segment SHALL be a run of complete Pi loops after a scope cursor. A loop (assistant message with all its tool results) SHALL never be split across segments. TODO snapshot changes, byte thresholds and compaction summaries SHALL NOT define segment boundaries; a successful TODO update is evidence within its loop. Segmentation SHALL NOT add a paid audit per update; cadence, cooldown, manual and terminal eligibility remain the trigger policy.
@@ -730,9 +700,37 @@ Reported work, model judgments and processing progress SHALL remain distinguisha
 
 ### Requirement: Observable cost and capacity outcomes
 
-The extension SHALL report compact observations for segment progress, judgment-call dispositions, response model, and any provider-reported usage the version-two service supplies with its declared scope. Each segment/call outcome SHALL distinguish success, confirmed context overflow, cancellation and other failures; the reduced complete-loop scope SHALL remain visible. Logical judgment calls and question counts SHALL NOT be relabeled measured HTTP attempts; absence of ledger, cache-hit or reuse fields SHALL be real rather than reported as zero. Usage SHALL NOT be assumed per call: when the service omits usage, the affected dimension SHALL be reported as absent, and scoped totals SHALL be labelled by their actual scope, never as complete-operation billing. No cache-hit accounting exists; a successful judgment reflects exactly the calls the stateless service made for it. Accounting SHALL not export transcript bodies or credentials or trigger additional evaluations.
+The extension SHALL report compact observations for judged segments, response backend/model identity, confirmed overflow and failure dispositions, and provider-reported usage fields when the service returns them under their stated scope. Missing usage on a judgment SHALL be unknown rather than zero; a usage figure SHALL NOT be presented as a complete-operation total when it only names one terminal attempt's reported scope. Logical judgment or question counts SHALL retain their accurate labels and SHALL NOT be renamed as HTTP-attempt counts, cache hits or joins. There is no service observation contract: no requirement to count transport attempts, no fabricated observation completeness, and no charge totals when none were reported. Accounting SHALL not export transcript bodies or credentials or trigger additional evaluations.
 
-Comparisons SHALL use matching event sequences and endpoint/model settings and report per-workload and aggregate observations for tool-heavy, text-only and short-context cases. Only provider-reported usage with its declared scope SHALL be monetary evidence; bytes SHALL not be presented as tokens and missing usage SHALL remain unknown. Oversized-input recovery SHALL be evaluated for successful coverage and resumption separately from cost comparisons against already successful baselines. No savings percentage or semantic-equivalence claim SHALL be inferred solely from mocked responses.
+Comparisons SHALL use matching event sequences and endpoint/model settings and report per-workload and aggregate observations for tool-heavy, text-only and short-context cases. Input tokens and an applicable verified rate or provider charge SHALL be the monetary evidence; bytes SHALL not be presented as tokens. Oversized-input recovery SHALL be evaluated for successful coverage and resumption separately from cost comparisons against already successful baselines. No savings percentage or semantic-equivalence claim SHALL be inferred solely from mocked responses.
+
+#### Scenario: An overflow is recovered
+- **WHEN** a request is rejected and subsequent smaller segments complete the audit
+- **THEN** diagnostics distinguish the rejected judgment, successful segments and final success instead of reporting the initial overflow as the final audit failure
+
+#### Scenario: A cache hit costs no new provider work
+- **WHEN** audit's own stored state already covers a segment
+- **THEN** no service call is made for it; this is consumer scheduling, not a claimed service cache hit, and no usage is attributed
+
+#### Scenario: A split is predicted rather than rejected
+- **WHEN** an envelope is subdivided before sending under audit's packing estimates
+- **THEN** diagnostics count the pre-split separately from actual judgments and overflow rejections, and attribute no usage to it
+
+#### Scenario: A failure lacks usage
+- **WHEN** a failed judgment reports no usage
+- **THEN** the report marks that usage unknown, totals only what was actually reported elsewhere, counts the judgment's outcome accurately, and does not claim a complete total or zero charge
+
+#### Scenario: A successful judgment lacks usage
+- **WHEN** a successful terminal judgment reports no usage
+- **THEN** the report marks that usage unknown, totals only what was actually reported elsewhere, and does not claim a complete total or a zero charge
+
+#### Scenario: Short-context overhead is measurable
+- **WHEN** rolling-state overhead makes a short-context request larger than its baseline
+- **THEN** that regression appears alongside savings on other workloads rather than being omitted from the comparison
+
+#### Scenario: A provider reports the charge
+- **WHEN** a terminal judgment result includes a provider-reported charge under its stated scope
+- **THEN** diagnostics record it with that scope, and results without a reported charge show none rather than zero
 
 #### Scenario: A judgment reports no usage
 - **WHEN** a terminal judgment carries no usage fields
@@ -741,18 +739,6 @@ Comparisons SHALL use matching event sequences and endpoint/model settings and r
 #### Scenario: A judgment reports scoped usage
 - **WHEN** a terminal judgment reports usage for its model only
 - **THEN** diagnostics keep that scope instead of claiming coverage of preceding failed or alternate calls
-
-#### Scenario: An overflow is recovered
-- **WHEN** a request is rejected and subsequent smaller segments complete the review
-- **THEN** diagnostics distinguish the rejected call, successful parts and final success instead of reporting the initial 400 as the final audit failure
-
-#### Scenario: A split is predicted rather than rejected
-- **WHEN** an envelope is subdivided before sending
-- **THEN** diagnostics report the consumer-side packing decision and attribute no provider usage to the prediction
-
-#### Scenario: A failure lacks usage
-- **WHEN** a terminal failure has no usable usage observation
-- **THEN** the report marks the affected usage unknown rather than counting the call as zero-cost
 
 #### Scenario: Historical service records remain history
 - **WHEN** a session contains `llm-as-jev-ledger` entries from earlier service versions
@@ -981,3 +967,23 @@ Candidate definitions, factual material and provenance changes SHALL participate
 #### Scenario: A fact or source definition changes
 - **WHEN** an applicable brief, coverage reference or option definition changes while older Choice labels happen to remain the same
 - **THEN** the changed material invalidates the old evaluated-pair identity and stale delivery is suppressed
+
+### Requirement: Audit calls the stateless service with packed state
+
+Every service call SHALL submit audit-owned packed `state` plus the segment's questions through version-two `judge()`, including stored scope state, applicable anchors and the complete-loop segment; the service `evidence` array, `fresh` tokens, checkpoints, stage projections and removed option fields SHALL NOT be sent. Calls SHALL respect caller cancellation and produce a terminal `stop`/`error`/`aborted` result; audit SHALL treat only a `stop` result with valid required answers as a judgment. Dependent-drift rejudgment, per-run segment budgets and whole-loop overflow recovery SHALL remain audit-owned against this stateless result contract.
+
+#### Scenario: Stateless segment judgment
+- **WHEN** an eligible segment is packed and judged
+- **THEN** the request carries the complete stored state and loops in `state` plus the segment's questions, with no legacy envelope fields
+
+#### Scenario: Removed option is never sent
+- **WHEN** audit builds call options
+- **THEN** it supplies only `signal`, native threshold policy and optional `idleTimeoutMs`/`modelTimeoutMs`; no `timeoutMs`, `fresh`, checkpoint or cache fields are forwarded
+
+#### Scenario: Dependent drift rejudgment
+- **WHEN** a `scope_updated` answer requires rejudging drift against the newly selected user scope
+- **THEN** audit issues one additional bounded `judge()` call for only the drift question and tolerates its independent failure without discarding the segment's other valid answers
+
+#### Scenario: Failed judgment advances nothing
+- **WHEN** a `judge()` call resolves `error`, `aborted` or is cancelled
+- **THEN** no transition is written, no cursor advances for that segment, and audit continues or stops under its existing isolation rules
