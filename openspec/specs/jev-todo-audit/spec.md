@@ -133,7 +133,9 @@ When work is aligned, the extension SHALL take no conversational action unless a
 
 For native classifiers, the shared judgment service SHALL gate each used decision independently using the configured threshold (default 0.5). Audit SHALL supply this policy and consume the service's accepted final view rather than repeating numerical gates. For LLM judgments the service SHALL ignore numerical thresholds and audit SHALL consume the discrete business choice, never using compatibility confidence/probability encodings as numerical evidence. Accepted choices SHALL NOT substitute for required evidence. Missing, unclear, contradictory, or native-policy-dropped evidence SHALL withhold that action and yield at most an uncertainty notification under the repeat-suppression rule; it SHALL NOT suppress supported actions for unrelated tasks.
 
-Parallel `in_progress` tasks SHALL remain valid unless specific evidence identifies a mismatch. Completed tasks SHALL be individually marked completed, cancelled tasks individually deleted, and deliberately deferred tasks returned to a pending/deferred representation with the reason recorded. Blocked tasks SHALL be reconciled only when the board lacks the relevant blocker representation. Tasks already accurately represented as blocked, deferred, or future work SHALL not be blindly resumed or repeatedly reconciled.
+Up to three parallel `in_progress` tasks SHALL remain valid unless specific evidence identifies a mismatch. Completed tasks SHALL be individually marked completed, cancelled tasks individually deleted, and deliberately deferred tasks returned to a pending/deferred representation with the reason recorded. Blocked tasks SHALL be reconciled only when the board lacks the relevant blocker representation. Tasks already accurately represented as blocked, deferred, or future work SHALL not be blindly resumed or repeatedly reconciled.
+
+Independently of JEV availability, busy/error state, audit cadence and user-message cooldown, an enabled extension SHALL check the final recorded board at each completed-loop boundary. Only `in_progress` tasks SHALL count; pending queue size SHALL be unlimited. Four or more active tasks SHALL immediately produce deterministic plugin advice to split/reorganize work, cancel when authorized, or return tasks to pending until at most three remain active. Reminder distances 1–9 assistant loops SHALL be silent; distance 10 or later SHALL permit another reminder only while four or more remain active. Cooldown SHALL follow the active branch across reload, tree navigation and compaction. This advisory SHALL NOT intercept TODO calls, edit the board, grant authorization or request a terminal wake. A final board corrected to at most three SHALL produce no stale queued reminder.
 
 An ongoing verdict SHALL leave the task ongoing and SHALL NOT itself authorize a terminal restart. Terminal continuation SHALL require an explicit, supported, service-accepted actionable-now verdict establishing work that can proceed within authorization and without unresolved input or dependencies. A current-match result SHALL NOT override lifecycle, blockers, uncertainty, or a newer user decision. The same task SHALL NOT receive contradictory complete/delete/park and claim/continue/split instructions in one correction.
 
@@ -201,9 +203,17 @@ Audit failures SHALL remain isolated. Network errors, timeouts, malformed answer
 - **WHEN** #5 is supported as completed and #7 remains ongoing during periodic work
 - **THEN** the correction completes #5 without changing #7
 
-#### Scenario: Parallel tasks are not an error by themselves
-- **WHEN** multiple tasks are active and consistent with the observable work
+#### Scenario: Up to three parallel tasks are not an error by themselves
+- **WHEN** at most three tasks are active and consistent with the observable work
 - **THEN** their simultaneous status alone produces no correction
+
+#### Scenario: Fourth active task receives an immediate limit reminder
+- **WHEN** a completed loop records four active tasks with no prior limit reminder on the branch
+- **THEN** deterministic plugin advice is injected after the recorded results, without waiting for a JEV audit
+
+#### Scenario: Limit reminder cooldown expires at ten loops
+- **WHEN** ten assistant loops have elapsed since the last limit reminder on the active branch
+- **THEN** another reminder is injected only if four or more tasks remain active, with distances one through nine silent
 
 #### Scenario: Cancelled task is deleted individually
 - **WHEN** supported evidence establishes cancellation of #5
