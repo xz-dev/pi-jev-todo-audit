@@ -162,6 +162,23 @@ export default function (pi: ExtensionAPI, cfgOverride?: AuditConfig) {
 			for (const key of Array.isArray(m.details?.auditKeys) ? m.details.auditKeys : []) if (typeof key === "string") sentKeys.add(key);
 		}
 	};
+	// Read the final recorded board, never queue a notice from an intermediate tool result.
+	const remindInProgressLimit = (ctx: Ctx, loop: number) => {
+		const branch = [...ctx.sessionManager.getBranch()];
+		const count = inProgressBoardTasks(replayBoardWithAges(branch)).length;
+		if (count <= 3) return false;
+		let lastReminderAt: number | undefined;
+		for (const raw of branch) {
+			const e = object(raw), m = e.type === "custom_message" ? e : object(e.message);
+			if (m.customType === "jev-todo-audit" && Number.isSafeInteger(m.details?.inProgressLimitLoop)) lastReminderAt = m.details.inProgressLimitLoop;
+		}
+		if (lastReminderAt !== undefined && loop - lastReminderAt < 10) return false;
+		pi.sendMessage({ customType: "jev-todo-audit", display: true,
+			content: formatAdvisory("IN-PROGRESS LIMIT", `Board has ${count} in_progress tasks (limit 3). Consider whether to split or reorganize work, cancel tasks when authorized, or return tasks to pending until at most 3 remain in_progress. The pending queue is unlimited. Do not start or resume work solely for this reminder.`),
+			details: { inProgressLimitLoop: loop },
+		}, { deliverAs: "steer", triggerTurn: false });
+		return true;
+	};
 	let pendingStop: { key: string; stop: TerminalStopInfo } | undefined;
 	let auditAbort: AbortController | undefined;
 
@@ -381,8 +398,11 @@ export default function (pi: ExtensionAPI, cfgOverride?: AuditConfig) {
 		if (!cfg.enabled) return;
 		const c = counterFor(sid(ctx));
 		onTurnEnd(c);
+		const reminded = remindInProgressLimit(ctx, c.totalLoops);
 		if (!shouldAudit(c, cfg.interval, cfg.cooldownLoops) || inFlight) return;
-		await auditNow(ctx, `@ loop ${c.totalLoops}`);
+		// Let Pi flush the context-only reminder; auditNow contains its own errors.
+		if (reminded) void auditNow(ctx, `@ loop ${c.totalLoops}`);
+		else await auditNow(ctx, `@ loop ${c.totalLoops}`);
 	});
 
 	// Optional terminal-stop check: consume user-ready from the neutral bus.

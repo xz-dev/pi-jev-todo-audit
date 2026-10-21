@@ -1,6 +1,7 @@
 /** Active entrypoint regressions for the stateless judgment port. No provider inference. */
 import { afterEach, beforeEach, expect, test } from "bun:test";
-import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
+import { AgentSession, createExtensionRuntime, SessionManager, SettingsManager, type ExtensionAPI, type ModelRuntime, type ResourceLoader } from "@earendil-works/pi-coding-agent";
+import { createAssistantMessageEventStream, type AssistantMessage } from "@earendil-works/pi-ai";
 import makeExtension from "../index.js";
 import { DEFAULT_CONFIG } from "../config.js";
 import type { JudgeOptions, JudgeRequest, JudgeResult, JudgmentService } from "../judgment-client.js";
@@ -52,6 +53,163 @@ function host(branch = initial(), opts: { persist?: boolean; enabled?: boolean; 
 	};
 }
 const tick = () => new Promise<void>((resolve) => setTimeout(resolve, 0));
+
+const parallelTasks = (active: number, pending = 0) => Array.from({ length: active + pending }, (_, i) => ({
+	...task, id: i + 1, status: i < active ? "in_progress" : "pending",
+}));
+async function finishLoop(h: ReturnType<typeof host>, tasks?: ReturnType<typeof parallelTasks>) {
+	const assistant = message(`loop-${h.branch.length}`, "assistant", "Continuing within the agreed scope.");
+	await h.emit("message_end", { message: assistant.message }); h.branch.push(assistant);
+	if (tasks) {
+		const result = { id: `todo-${h.branch.length}`, type: "message", message: { role: "toolResult", toolName: "todo", content: "Updated", details: { tasks, nextId: tasks.length + 1 } } };
+		// Pi emits message_end before persistence; turn_end sees all recorded tool results.
+		await h.emit("message_end", { message: result.message }); h.branch.push(result);
+	}
+	await h.emit("turn_end");
+}
+
+test("in-progress limit: three stay silent; fourth recorded result immediately reminds without JEV", async () => {
+	delete services[key];
+	const h = host([message("u", "user", "Work within the agreed scope.")], { interval: 1000, cooldownLoops: 1000 });
+	await h.emit("session_start");
+	await finishLoop(h, parallelTasks(3, 100)); expect(h.sent).toHaveLength(0);
+	const tasks = parallelTasks(4, 100), before = structuredClone(tasks);
+	await finishLoop(h, tasks);
+	expect(h.sent).toHaveLength(1);
+	const advice = h.sent[0];
+	expect(advice.message.content).toContain("4 in_progress");
+	for (const text of ["3", "split", "reorganize", "cancel", "pending", "not a user message", "new authorization"]) expect(advice.message.content).toContain(text);
+	expect(advice.options).toEqual({ deliverAs: "steer", triggerTurn: false });
+	expect(h.branch.at(-2).message.details.tasks).toEqual(before);
+	expect(h.branch.at(-1).customType).toBe("jev-todo-audit");
+	expect(tasks).toEqual(before);
+});
+
+test("in-progress limit: distances one through nine are silent; ten reminds; corrected board stays silent", async () => {
+	delete services[key];
+	const h = host([], { interval: 1000, cooldownLoops: 1000 }); await h.emit("session_start");
+	await finishLoop(h, parallelTasks(4)); expect(h.sent).toHaveLength(1);
+	for (let distance = 1; distance <= 9; distance++) {
+		if (distance === 5) {
+			const user = message("steer", "user", "Keep the existing scope.");
+			await h.emit("message_end", { message: user.message }); h.branch.push(user);
+		}
+		await finishLoop(h); expect(h.sent).toHaveLength(1);
+	}
+	await finishLoop(h); expect(h.sent).toHaveLength(2);
+	await finishLoop(h, parallelTasks(3, 100));
+	for (let i = 0; i < 10; i++) await finishLoop(h);
+	expect(h.sent).toHaveLength(2);
+});
+
+test("in-progress limit: cooldown follows the active branch through reload, compaction and tree navigation", async () => {
+	delete services[key];
+	const opts = { interval: 1000, cooldownLoops: 1000 };
+	const first = host([], opts); await first.emit("session_start");
+	await finishLoop(first, parallelTasks(4));
+	for (let i = 0; i < 4; i++) await finishLoop(first);
+	const original = structuredClone(first.branch), reload = host(structuredClone(original), opts);
+	await reload.emit("session_start");
+	await finishLoop(reload); expect(reload.sent).toHaveLength(0); // distance 5
+	reload.ctx.sessionManager.buildContextEntries = () => [message("summary", "assistant", "Derived summary only.")];
+	await reload.emit("session_compact");
+	for (let distance = 6; distance <= 9; distance++) { await finishLoop(reload); expect(reload.sent).toHaveLength(0); }
+	await finishLoop(reload); expect(reload.sent).toHaveLength(1);
+	// An alternative branch cannot inherit the other branch's reminder.
+	reload.branch.splice(0, reload.branch.length, message("other", "user", "Different authorized work."));
+	await reload.emit("session_tree"); await finishLoop(reload, parallelTasks(4)); expect(reload.sent).toHaveLength(2);
+	// Returning to the original branch restores its own distance-four checkpoint.
+	reload.branch.splice(0, reload.branch.length, ...original); await reload.emit("session_tree");
+	for (let distance = 5; distance <= 9; distance++) { await finishLoop(reload); expect(reload.sent).toHaveLength(2); }
+	await finishLoop(reload); expect(reload.sent).toHaveLength(3);
+});
+
+for (const serviceState of ["busy", "error"]) test(`in-progress limit: JEV ${serviceState} does not block the reminder`, async () => {
+	let entered!: () => void, release!: () => void;
+	const started = new Promise<void>((r) => { entered = r; }), waiting = new Promise<void>((r) => { release = r; });
+	install(async () => { entered(); if (serviceState === "busy") await waiting; throw new Error("fixture service unavailable"); });
+	const h = host(initial(), { interval: 1000, cooldownLoops: 1000 }); await h.emit("session_start");
+	const audit = h.manual(); await started;
+	if (serviceState === "error") await audit;
+	await finishLoop(h, parallelTasks(4)); expect(h.sent).toHaveLength(1);
+	expect(h.sent[0].message.content).toContain("4 in_progress");
+	release(); await audit; expect(h.sent).toHaveLength(1);
+});
+
+test("in-progress limit: corrected final tool result and disabled configuration produce no queued notice or wake", async () => {
+	delete services[key];
+	for (const enabled of [true, false]) {
+		const h = host([], { enabled, interval: 1000 }); await h.emit("session_start");
+		const assistant = message("loop", "assistant", "Reorganizing within the existing scope.");
+		await h.emit("message_end", { message: assistant.message }); h.branch.push(assistant);
+		for (const active of enabled ? [4, 3] : [4]) {
+			const result = { id: `todo-${active}`, type: "message", message: { role: "toolResult", toolName: "todo", details: { tasks: parallelTasks(active), nextId: 5 } } };
+			await h.emit("message_end", { message: result.message }); h.branch.push(result);
+			expect(h.sent).toHaveLength(0);
+		}
+		await h.emit("turn_end"); h.stop(); await tick(); expect(h.sent).toHaveLength(0);
+	}
+});
+
+// Resolve Pi's own Agent dependency; exercise its real loop and AgentSession delivery/flush ordering.
+const { Agent } = await import(import.meta.resolve("@earendil-works/pi-agent-core", import.meta.resolve("@earendil-works/pi-coding-agent")));
+async function deliverySession(interval: number) {
+	const sessionManager = SessionManager.inMemory(), settingsManager = SettingsManager.inMemory();
+	settingsManager.setCompactionEnabled(false); settingsManager.setRetryEnabled(false);
+	const model = { api: "openai-responses", provider: "openai", id: "local-fixture", name: "Local fixture", reasoning: false,
+		input: ["text"], cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 }, contextWindow: 32000, maxTokens: 1000 };
+	const answer = { role: "assistant", api: model.api, provider: model.provider, model: model.id,
+		content: [{ type: "text", text: "Finished. Waiting for input." }], stopReason: "stop", timestamp: 0,
+		usage: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, totalTokens: 0, cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, total: 0 } } } satisfies AssistantMessage;
+	sessionManager.appendMessage({ role: "user", content: "Keep the agreed scope; wait when finished.", timestamp: 0 });
+	sessionManager.appendMessage({ ...answer, stopReason: "toolUse", content: [{ type: "toolCall", id: "board", name: "todo", arguments: { action: "list" } }] });
+	sessionManager.appendMessage({ role: "toolResult", toolCallId: "board", toolName: "todo", content: [{ type: "text", text: "Board" }],
+		details: { tasks: parallelTasks(4), nextId: 5 }, isError: false, timestamp: 0 });
+	let calls = 0;
+	const agent = new Agent({ initialState: { model, messages: sessionManager.buildSessionContext().messages },
+		streamFn: () => { calls++; const stream = createAssistantMessageEventStream(); stream.push({ type: "done", reason: "stop", message: answer }); return stream; } });
+	const extension = { path: import.meta.filename, resolvedPath: import.meta.filename, sourceInfo: { source: "sdk" },
+		handlers: new Map(), tools: new Map(), commands: new Map(), flags: new Map(), shortcuts: new Map(), messageRenderers: new Map() };
+	const pi = { on: (name: string, fn: any) => extension.handlers.set(name, [...(extension.handlers.get(name) ?? []), fn]),
+		registerCommand: () => {}, events: { on: () => {} },
+		sendMessage: (message: any, options: any) => { void session.sendCustomMessage(message, options); },
+		appendEntry: (customType: string, data: unknown) => sessionManager.appendCustomEntry(customType, data) } as unknown as ExtensionAPI;
+	makeExtension(pi, { ...DEFAULT_CONFIG, legacyFields: [], interval, cooldownLoops: 0 });
+	const resourceLoader = { getExtensions: () => ({ extensions: [extension], runtime: createExtensionRuntime(), errors: [] }),
+		getSystemPrompt: () => "Local delivery test", getAppendSystemPrompt: () => [], getSkills: () => ({ skills: [] }),
+		getAgentsFiles: () => ({ agentsFiles: [] }) } as unknown as ResourceLoader;
+	const session = new AgentSession({ agent, sessionManager, settingsManager, cwd: process.cwd(), resourceLoader,
+		modelRuntime: { hasConfiguredAuth: () => true } as unknown as ModelRuntime, baseToolsOverride: {} });
+	const errors: unknown[] = [];
+	await session.bindExtensions({ onError: (error) => errors.push(error) });
+	return { session, agent, errors, calls: () => calls,
+		reminder: () => sessionManager.getBranch().some((e) => e.type === "custom_message" && (e.details as any)?.inProgressLimitLoop !== undefined) };
+}
+
+test("in-progress delivery: terminal reminder records without another assistant iteration", async () => {
+	delete services[key];
+	const h = await deliverySession(1000);
+	try {
+		await h.session.prompt("Finish within the agreed scope, then wait.", { expandPromptTemplates: false });
+		expect(h.errors).toEqual([]); expect(h.calls()).toBe(1);
+		expect(h.agent.hasQueuedMessages()).toBe(false); expect(h.reminder()).toBe(true);
+	} finally { h.session.dispose(); }
+});
+
+test("in-progress delivery: reminder reaches branch and context while same-boundary JEV remains unresolved", async () => {
+	let entered!: () => void, release!: () => void;
+	const started = new Promise<void>((r) => { entered = r; }), waiting = new Promise<void>((r) => { release = r; });
+	install(async () => { entered(); await waiting; throw new Error("held local judgment released"); });
+	const h = await deliverySession(1);
+	const running = h.session.prompt("Finish within the agreed scope, then wait.", { expandPromptTemplates: false });
+	try {
+		await started; await tick();
+		expect(h.errors).toEqual([]); expect(h.reminder()).toBe(true);
+		expect(h.agent.state.messages.some((m: any) => m.role === "custom" && m.details?.inProgressLimitLoop !== undefined)).toBe(true);
+		expect(h.calls()).toBe(1); expect(h.agent.hasQueuedMessages()).toBe(false);
+	} finally { release(); await running; await tick(); h.session.dispose(); }
+	expect(h.calls()).toBe(1);
+});
 
 test("manual audit persists before delivering reported completion; reload does not rejudge or repeat", async () => {
 	const requests: JudgeRequest[] = [], options: JudgeOptions[] = [];
